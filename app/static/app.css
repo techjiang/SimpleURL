@@ -70,7 +70,7 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 .hero { padding: 26px 0 34px; }
 .hero h1 { font-size: clamp(2.1rem, 5.4vw, 3.4rem); font-weight: 700; margin: 12px 0 14px; }
 .kicker { margin: 0; color: var(--accent); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; }
-.lede { margin: 0; color: var(--text-dim); font-size: 1.02rem; max-width: 56ch; }
+.lede { margin: 0; color: var(--text-dim); font-size: 1.02rem; max-width: 56ch; overflow-wrap: anywhere; word-break: break-word; }
 
 /* ============ 卡片通用 ============ */
 .composer, .board, .result-card, .chart-card, .stat-card {
@@ -194,7 +194,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .back { display: inline-block; font-size: 0.84rem; color: var(--text-dim); margin-bottom: 18px; }
 .back:hover { color: var(--text); }
 .stats-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 26px; }
-.stats-hero h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); margin: 8px 0; }
+.stats-hero h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); margin: 8px 0; overflow-wrap: anywhere; word-break: break-word; }
 .qr { border-radius: var(--radius); background: #fff; padding: 6px; }
 .stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 22px; }
 .stat-card { padding: 18px; display: grid; gap: 6px; }
