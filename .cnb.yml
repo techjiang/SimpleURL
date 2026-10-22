@@ -1,0 +1,24 @@
+# 流水线：安装依赖 -> 测试
+main:
+  push:
+    - name: ci
+      docker:
+        image: python:3.12-slim
+        volumes:
+          - pip-cache:/root/.cache/pip
+      stages:
+        - name: test
+          script:
+            - pip install -q -r requirements-dev.txt
+            - pytest -q app/tests
+  pull_request:
+    - name: ci-pr
+      docker:
+        image: python:3.12-slim
+        volumes:
+          - pip-cache:/root/.cache/pip:read-only
+      stages:
+        - name: test
+          script:
+            - pip install -q -r requirements-dev.txt
+            - pytest -q app/tests

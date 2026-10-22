@@ -1,0 +1,8 @@
+.git
+.venv
+__pycache__
+*.db
+.pytest_cache
+app/static/logo/icon-*.png
+!app/static/logo/icon-192.png
+!app/static/logo/icon-512.png

@@ -1,0 +1,13 @@
+{
+  "name": "SimpleURL",
+  "short_name": "SimpleURL",
+  "description": "轻量、流畅、好用的高级短链接系统",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070b14",
+  "theme_color": "#4f8cff",
+  "icons": [
+    { "src": "/static/logo/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/static/logo/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
