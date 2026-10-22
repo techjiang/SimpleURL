@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>{% block title %}{{ site_name }} · 让长链接更短{% endblock %}</title>
+  <link rel="icon" href="/static/logo/favicon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/static/logo/icon-192.png" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <img src="/static/logo/icon.svg" alt="" width="28" height="28" />
+      <strong>{{ site_name }}</strong>
+      <em>Short Link Service</em>
+    </a>
+    <nav class="topnav">
+      <a href="/" class="nav-link">首页</a>
+      <a href="/#list" class="nav-link">链接库</a>
+      <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
+    </nav>
+  </header>
+  <main class="container">{% block content %}{% endblock %}</main>
+  <footer class="footer">
+    <span>Built with ⚡ by <b>{{ site_name }}</b></span>
+    <span class="dot">·</span>
+    <span>数据可自托管，隐私尽在掌握</span>
+  </footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

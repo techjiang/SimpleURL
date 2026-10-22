@@ -1,0 +1,15 @@
+services:
+  simpleurl:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SITE_NAME=SimpleURL
+      - DATABASE_URL=sqlite:////data/simpleurl.db
+      - CREATE_DAILY_LIMIT=200
+    volumes:
+      - simpleurl-data:/data
+    restart: unless-stopped
+
+volumes:
+  simpleurl-data:

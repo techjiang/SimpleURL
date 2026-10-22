@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 96" width="340" height="96" role="img" aria-label="SimpleURL">
+  <defs><linearGradient id="gMain" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#4f8cff"/><stop offset=".55" stop-color="#7b5cff"/><stop offset="1" stop-color="#d946ef"/>
+  </linearGradient>
+    <linearGradient id="gText" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c9d6ee"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="90" height="90" rx="24" fill="url(#gMain)"/>
+  <rect x="3.75" y="3.75" width="88.5" height="88.5" rx="23.25" fill="none" stroke="#ffffff" stroke-opacity=".28" stroke-width="1.5"/>
+  <path d="M34 44.5h20.5a8.5 8.5 0 0 1 0 17H52" fill="none" stroke="#fff" stroke-width="9"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M45.5 66.5 37 58.5l8.5-8" fill="none" stroke="#fff" stroke-width="9"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="112" y="61" font-family="Inter, 'SF Pro Display', -apple-system, 'Segoe UI', 'PingFang SC', system-ui, sans-serif"
+        font-size="42" font-weight="700" letter-spacing="-1.3" fill="url(#gText)">Simple<tspan fill="#4f8cff">URL</tspan></text>
+</svg>

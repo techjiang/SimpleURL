@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} · {{ link.code }} 统计{% endblock %}
+{% block content %}
+<section class="stats-page">
+  <a class="back" href="/">← 返回首页</a>
+  <div class="stats-hero">
+    <div>
+      <p class="kicker">访问统计</p>
+      <h1><span class="mono">/{{ link.code }}</span></h1>
+      <p class="lede"><a href="{{ link.target }}" target="_blank" rel="noopener">{{ link.target }}</a></p>
+    </div>
+    <img src="/api/qr/{{ link.code }}" alt="二维码" width="120" height="120" class="qr" />
+  </div>
+  <div class="stat-grid">
+    <div class="stat-card"><span class="stat-label">总点击</span><strong>{{ data.clicks }}</strong></div>
+    <div class="stat-card"><span class="stat-label">独立访客</span><strong>{{ data.unique_visitors }}</strong></div>
+    <div class="stat-card"><span class="stat-label">近 30 天</span><strong>{{ data.daily | sum(attribute='count') }}</strong></div>
+    <div class="stat-card"><span class="stat-label">最近点击</span><strong>{{ data.last_click_at.strftime('%m-%d %H:%M') if data.last_click_at else '—' }}</strong></div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-head"><h2>每日点击趋势</h2><span class="hint">最近 30 天</span></div>
+    <div class="chart-scroll"><div class="chart" id="chart" data-daily='{{ data.daily | tojson }}'></div></div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-head"><h2>来源 Top</h2></div>
+    <ul class="ref-list">
+      {% for r in data.top_referrers %}
+      <li><span>{{ r.source }}</span><b>{{ r.count }}</b></li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const el = document.getElementById('chart');
+  if (!el || !window.SimpleURL?.renderChart) return;
+  window.SimpleURL.renderChart(el, JSON.parse(el.dataset.daily || '[]'));
+});
+</script>
+{% endblock %}

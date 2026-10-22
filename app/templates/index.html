@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <p class="kicker">轻量 · 流畅 · 好用</p>
+    <h1>把冗长的链接<br /><span class="grad">收进一行短码</span></h1>
+    <p class="lede">粘贴链接，回车即得。自带访问统计、二维码与标签管理，全程自托管。</p>
+  </div>
+</section>
+
+<section class="composer" id="create">
+  <form id="create-form" class="composer-form" autocomplete="off">
+    <div class="field main">
+      <label for="target">目标链接</label>
+      <input id="target" name="target" type="url" placeholder="https://example.com/very/long/url" required />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="code">自定义短码 <span class="hint">留空自动生成</span></label>
+        <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" />
+      </div>
+      <div class="field">
+        <label for="title">标题 <span class="hint">可选</span></label>
+        <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="tags">标签 <span class="hint">逗号分隔</span></label>
+        <input id="tags" name="tags" type="text" placeholder="活动, 文档" maxlength="200" />
+      </div>
+      <div class="field">
+        <label for="expires_at">过期时间 <span class="hint">可选，如 2026-12-31 23:59</span></label>
+        <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
+      </div>
+    </div>
+    <div class="composer-actions">
+      <button type="submit" class="btn primary" id="submit-btn">生成短链接</button>
+      <span class="status" id="create-status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+  <div class="result" id="result" hidden>
+    <div class="result-card">
+      <p class="result-label">你的短链接</p>
+      <div class="result-main">
+        <a id="result-link" href="#" target="_blank" rel="noopener"></a>
+        <button class="btn ghost copy" id="copy-btn" type="button">复制</button>
+      </div>
+      <div class="result-meta">
+        <img id="result-qr" alt="二维码" width="96" height="96" />
+        <div class="result-tags" id="result-tags"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="board" id="list">
+  <div class="board-head">
+    <h2>链接库</h2>
+    <div class="board-tools">
+      <div class="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21 21l-4.3-4.3M17 10a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="search-input" type="search" placeholder="搜索短码 / 目标 / 标题 / 标签" />
+      </div>
+      <select id="status-filter" aria-label="状态筛选">
+        <option value="">全部状态</option>
+        <option value="enabled">已启用</option>
+        <option value="disabled">已停用</option>
+        <option value="expired">已过期</option>
+      </select>
+      <select id="sort-select" aria-label="排序方式">
+        <option value="created_desc">最近创建</option>
+        <option value="clicks_desc">点击最多</option>
+        <option value="code_asc">短码排序</option>
+      </select>
+    </div>
+  </div>
+  <div class="summary" id="summary"></div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>标签</th><th>状态</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="links-body"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>
+      <img src="/static/logo/icon.svg" alt="" width="44" height="44" />
+      <p>还没有链接，先创建一个吧</p>
+    </div>
+  </div>
+  <div class="pager">
+    <button class="btn ghost" id="prev-btn" type="button">上一页</button>
+    <span id="page-info"></span>
+    <button class="btn ghost" id="next-btn" type="button">下一页</button>
+  </div>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+{% endblock %}
