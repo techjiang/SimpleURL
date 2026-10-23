@@ -43,7 +43,17 @@ def validate_custom_code(code: str, min_len: int, max_len: int) -> tuple[bool, s
     if not all(ch.isalnum() or ch in "-_" for ch in code):
         return False, "短码仅支持字母、数字、- 和 _"
     lowered = code.lower()
-    if lowered in {"api", "admin", "static", "healthz", "favicon.ico", "robots.txt"}:
+    if lowered in {
+        "api",
+        "admin",
+        "login",
+        "logout",
+        "static",
+        "healthz",
+        "favicon.ico",
+        "robots.txt",
+        "s",
+    }:
         return False, "该短码为系统保留字"
     return True, ""
 

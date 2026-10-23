@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from app.core import auth
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
@@ -53,6 +54,8 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/s/{code}", response_class=HTMLResponse, summary="统计页")
 def stats_page(code: str, request: Request, db: Session = Depends(get_db)):
+    if not auth.resolve_access(request).is_admin:
+        raise auth.AuthError("访问统计仅管理员可见", 401)
     link = get_link_by_code(db, code)
     data = get_stats(db, code, days=30)
     return HTMLResponse(render_stats(request, link, data))

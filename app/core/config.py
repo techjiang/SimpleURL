@@ -48,7 +48,14 @@ class Settings:
         # 存储：默认 SQLite，可切换到 Postgres
         self.database_url: str = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{base_dir / 'simpleurl.db'}"
 
-        # 管理后台（留空表示关闭）
+        # 访问模式：public（开放外部可使用）/ admin（仅管理员可使用）/ invite（邀请码可使用）
+        raw_mode = os.getenv("ACCESS_MODE", "").strip().lower()
+        legacy_admin = _as_bool("ADMIN_ONLY", False)
+        if not raw_mode:
+            raw_mode = "admin" if legacy_admin else "public"
+        self.access_mode: str = raw_mode if raw_mode in ("public", "admin", "invite") else "public"
+
+        # 管理密钥：留空则管理功能关闭，admin / invite 模式自动退回 public
         self.admin_token: str = os.getenv("ADMIN_TOKEN", "").strip()
 
         # 模板目录
@@ -57,6 +64,17 @@ class Settings:
 
         # 统计数据的采样间隔（秒），用于做简单的请求限速保护
         self.stats_rate_limit: int = _as_int("STATS_RATE_LIMIT", 1)
+
+    @property
+    def admin_enabled(self) -> bool:
+        return bool(self.admin_token)
+
+    @property
+    def effective_mode(self) -> str:
+        """未配密钥时 admin / invite 会退化，这里给出实际生效的模式。"""
+        if self.access_mode in ("admin", "invite") and not self.admin_enabled:
+            return "public"
+        return self.access_mode
 
 
 @lru_cache

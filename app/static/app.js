@@ -5,6 +5,7 @@
   const $ = (sel) => document.querySelector(sel);
   const state = { page: 1, pageSize: 10, q: '', status: '', sort: 'created_desc', total: 0 };
   let summary = { total_links: 0, total_clicks: 0 };
+  let access = { mode: 'public', is_admin: false, can_create: true, mode_label: '开放外部可使用' };
 
   /* ---------- 工具 ---------- */
   const escapeHtml = (str) =>
@@ -37,11 +38,118 @@
   };
 
   async function api(path, options) {
-    const res = await fetch(path, options);
+    const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, options));
     let data = {};
     try { data = await res.json(); } catch (_) { /* ignore */ }
-    if (!res.ok) throw new Error(data.message || `请求失败（${res.status}）`);
+    if (!res.ok) {
+      const err = new Error(data.message || `请求失败（${res.status}）`);
+      err.status = res.status;
+      throw err;
+    }
     return data;
+  }
+
+  /* ---------- 访问模式 ---------- */
+  async function loadAccess() {
+    try {
+      access = await api('/api/access');
+    } catch (_) {
+      access = { mode: 'public', is_admin: false, can_create: true, mode_label: '开放外部可使用' };
+    }
+    applyAccess();
+    return access;
+  }
+
+  function applyAccess() {
+    const isAdmin = !!access.is_admin;
+    const board = $('#list');
+    if (board) board.hidden = !isAdmin;
+
+    // 顶栏控制台
+    const badge = $('#mode-badge');
+    const loginBtn = $('#console-login');
+    const logoutBtn = $('#console-logout');
+    const inviteBtn = $('#console-invite');
+    if (badge) {
+      badge.textContent = isAdmin ? '管理员' : access.mode_label;
+      badge.className = 'badge mode' + (isAdmin ? ' admin' : access.mode === 'admin' ? ' locked' : '');
+      badge.hidden = false;
+    }
+    if (loginBtn) loginBtn.hidden = isAdmin || !access.admin_login_enabled;
+    if (logoutBtn) logoutBtn.hidden = !isAdmin;
+    if (inviteBtn) inviteBtn.hidden = !(isAdmin && access.mode === 'invite');
+
+    // 创建区
+    const form = $('#create-form');
+    const composer = $('#create');
+    const bar = $('#access-bar');
+    const text = $('#access-text');
+    const inviteForm = $('#invite-form');
+    if (form) {
+      const blocked = !access.can_create;
+      form.querySelectorAll('input, button').forEach((el) => { el.disabled = blocked; });
+      form.hidden = blocked;
+      // 顺带收起整个卡片，避免露出空壳
+      if (composer) composer.classList.toggle('locked', blocked);
+    }
+    if (bar) {
+      const notice = access.reason || '';
+      const show = !access.can_create || (!!notice && isAdmin);
+      bar.hidden = !show;
+      if (text) text.textContent = notice;
+    }
+    if (inviteForm) inviteForm.hidden = !(access.invite_required && access.admin_login_enabled);
+  }
+
+  async function doLogin(secret) {
+    await api('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': secret },
+    });
+    await bootstrap();
+  }
+
+  function bindConsole() {
+    const loginBtn = $('#console-login');
+    if (loginBtn) loginBtn.addEventListener('click', () => { location.href = '/admin/login'; });
+
+    const logoutBtn = $('#console-logout');
+    if (logoutBtn) logoutBtn.addEventListener('click', async () => {
+      await api('/api/admin/logout', { method: 'POST' });
+      toast('已退出登录');
+      await bootstrap();
+    });
+
+    const inviteBtn = $('#console-invite');
+    if (inviteBtn) inviteBtn.addEventListener('click', async () => {
+      try {
+        const data = await api('/api/admin/invite');
+        await copyText(data.invite_code);
+        toast('邀请码已复制：' + data.invite_code);
+      } catch (err) { toast(err.message); }
+    });
+
+    const inviteForm = $('#invite-form');
+    if (inviteForm) inviteForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = $('#invite-code').value.trim();
+      if (!code) return;
+      try {
+        await api('/api/invite?code=' + encodeURIComponent(code), { method: 'POST' });
+        toast('邀请码有效，可以创建了');
+        await bootstrap();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
   }
 
   /* ---------- 创建 ---------- */
@@ -165,6 +273,7 @@
       $('#prev-btn').disabled = data.page <= 1;
       $('#next-btn').disabled = data.page * state.pageSize >= data.total;
     } catch (err) {
+      if (err.status === 401) { $('#list').hidden = true; return; }
       toast(err.message);
     }
   }
@@ -217,8 +326,35 @@
   }
 
   /* ---------- 启动 ---------- */
+  async function bootstrap() {
+    await loadAccess();
+    await loadSummary();
+    if (access.is_admin) await loadLinks();
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
-    bindCreate(); bindCopy(); bindBoard(); loadSummary(); loadLinks();
+    bindCreate(); bindCopy(); bindBoard(); bindConsole();
+    const loginForm = $('#login-form');
+    if (loginForm) {
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = $('#login-btn');
+        const status = $('#login-status');
+        btn.disabled = true;
+        status.textContent = '验证中…';
+        status.className = 'status';
+        try {
+          await doLogin($('#login-secret').value.trim());
+          status.textContent = '登录成功，正在进入…';
+          location.href = '/';
+        } catch (err) {
+          status.textContent = err.message;
+          status.className = 'status err';
+          btn.disabled = false;
+        }
+      });
+    }
+    bootstrap();
   });
 
   window.SimpleURL = { renderChart };

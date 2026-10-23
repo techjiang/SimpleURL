@@ -8,6 +8,14 @@
   </div>
 </section>
 
+<section class="access-bar" id="access-bar" hidden>
+  <p id="access-text"></p>
+  <form id="invite-form" autocomplete="off" hidden>
+    <input id="invite-code" type="text" placeholder="输入邀请码解锁创建" maxlength="32" />
+    <button class="btn tiny primary" type="submit">解锁</button>
+  </form>
+</section>
+
 <section class="composer" id="create">
   <form id="create-form" class="composer-form" autocomplete="off">
     <div class="field main">
@@ -54,7 +62,7 @@
   </div>
 </section>
 
-<section class="board" id="list">
+<section class="board admin-only" id="list" hidden>
   <div class="board-head">
     <h2>链接库</h2>
     <div class="board-tools">
