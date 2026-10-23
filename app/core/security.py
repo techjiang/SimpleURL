@@ -1,4 +1,4 @@
-"""安全相关：URL 校验、IP 哈希、限速。"""
+"""安全相关：URL 校验、IP 取址、限速。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ import ipaddress
 import re
 import time
 from urllib.parse import urlparse
+
+from app.core.config import settings
 
 ALLOWED_SCHEMES = {"http", "https"}
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
@@ -26,27 +28,43 @@ def normalize_url(raw: str) -> str:
 
 
 def is_public_url(url: str) -> bool:
-    """校验 URL：协议、长度、域名格式。"""
+    """校验 URL：协议、长度、主机、是否指向内网。
+
+    重点挡两类坑：
+    - `https://user@host` 形式的 userinfo：钓鱼页最爱，域名显示和实际访问不是一回事
+    - 内网 / 回环 / 链路本地地址：短链被当成 SSRF 跳板去摸内网服务
+    """
     if not url or len(url) > MAX_URL_LENGTH:
         return False
     if url != url.strip():
         return False
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
     if parsed.scheme.lower() not in ALLOWED_SCHEMES:
         return False
-    host = (parsed.hostname or "").lower()
+    # 带上账号信息的一律不收，防止 https://trusted.com@evil.com 这种伪装
+    if parsed.username or parsed.password or "@" in url.split("//", 1)[-1].split("/", 1)[0]:
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
     if not host or "." not in host:
         return False
-    if host in BLOCKED_HOSTS or host.endswith(".local") or host.endswith(".internal"):
+    if host in BLOCKED_HOSTS or host.endswith(".local") or host.endswith(".internal") or host.endswith(".localhost"):
+        return False
+    if any(ord(ch) < 0x20 or ch in "<>\"{}|\\^`" for ch in url):
         return False
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         ip = None
-    if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
-        return False
-    if any(ord(ch) < 0x20 or ch in "<>\"{}|\\^`" for ch in url):
-        return False
+    if ip is not None:
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+        # IPv4 映射的 IPv6 地址（::ffff:127.0.0.1）等畸形写法
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if mapped is not None and (mapped.is_private or mapped.is_loopback or mapped.is_link_local):
+            return False
     return True
 
 
@@ -98,14 +116,55 @@ def parse_user_agent(ua: str | None) -> tuple[str, str]:
     return name, device
 
 
+def _trusted_proxies() -> set[str]:
+    raw = settings.trusted_proxies
+    if raw == "*":
+        return {"*"}
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def _is_trusted_proxy(ip: str | None) -> bool:
+    """转发头只有来自受信代理时才认，否则一律按直连地址算。
+
+    不设这道关的话，任何人都能伪造 X-Forwarded-For 把限速和每日配额绕过去。
+    """
+    trusted = _trusted_proxies()
+    if not trusted:
+        return False
+    if "*" in trusted:
+        return True
+    if not ip:
+        return False
+    if ip in trusted:
+        return True
+    # 兼容写成网段的形式，如 10.0.0.0/8
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for entry in trusted:
+        if "/" not in entry:
+            continue
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def client_ip(request) -> str | None:
+    """取客户端 IP：默认只认直连地址，转发头需代理在信任列表里。"""
+    peer = request.client.host if request.client else None
+    if not _is_trusted_proxy(peer):
+        return peer
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
-        return fwd.split(",")[0].strip()
+        return fwd.split(",")[0].strip() or peer
     real = request.headers.get("x-real-ip")
     if real:
-        return real.strip()
-    return request.client.host if request.client else None
+        return real.strip() or peer
+    return peer
 
 
 class RateLimiter:
@@ -115,6 +174,10 @@ class RateLimiter:
         self._hits: dict[str, list[float]] = {}
 
     def allow(self, key: str, limit: int, window_seconds: int = 60) -> bool:
+        # limit <= 0 一律视为不限制：0 是「关闭限速」的约定值，
+        # 不能理解成「一次都不许过」
+        if limit <= 0:
+            return True
         now = time.monotonic()
         bucket = [t for t in self._hits.get(key, []) if now - t < window_seconds]
         if len(bucket) >= limit:

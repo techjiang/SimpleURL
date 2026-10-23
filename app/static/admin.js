@@ -24,8 +24,17 @@
     el.className = 'status' + (kind ? ' ' + kind : '');
   }
 
+  // 写请求统一带 CSRF 令牌（后端双提交校验，见 app/core/middleware.py）
+  function withCsrf(options) {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    const token = meta ? meta.content : '';
+    const headers = Object.assign({}, options && options.headers);
+    if (token) headers['X-CSRF-Token'] = token;
+    return Object.assign({}, options, { headers });
+  }
+
   async function api(path, options) {
-    const res = await fetch(path, options);
+    const res = await fetch(path, withCsrf(options));
     if (res.status === 401) { showLogin(); throw new Error('请先登录'); }
     let data = {};
     try { data = await res.json(); } catch (_) {}

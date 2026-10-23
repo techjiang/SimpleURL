@@ -15,6 +15,7 @@
 - **数据导出** — 按当前筛选一键导出 CSV，Excel 直接打开不乱码
 - **设备统计** — 桌面端 / 移动端 / 机器人来源一目了然
 - **可选私密** — 配一个 `ACCESS_TOKEN` 就能把整个站点锁起来
+- **安全加固** — CSP、CSRF 防护、Argon2id 口令哈希、登录限速、可信代理
 - **精致界面** — 深色玻璃质感、响应式、无框架依赖、极光动效
 - **无背景 Logo** — 提供 SVG 矢量与 16~512px PNG，深浅底色通用
 
@@ -94,6 +95,10 @@ curl -X POST http://localhost:8000/api/links \
 | `ACCESS_MODE` | `open` | `open` 开放外部可使用；`admin` 仅管理员可使用 |
 | `EXPORT_MAX_ROWS` | `50000` | 单次导出 CSV 的最大条数 |
 | `DEBUG` | `false` | 开启后开放 `/api/docs` |
+| `ADMIN_TOKEN` | 空 | 后台口令，`admin:password` 可分别设置，也支持哈希值 |
+| `SECRET_KEY` | 复用 `ADMIN_TOKEN` | 会话签名密钥，建议单独配置 |
+| `TRUSTED_PROXIES` | `127.0.0.1,::1` | 信任哪些代理的转发头，支持网段；`*` 表示全信 |
+| `LOGIN_RATE_LIMIT` | `10` | 单 IP 5 分钟内后台登录尝试上限，`0` 不限制 |
 
 ## 访问模式
 
@@ -110,6 +115,35 @@ curl -X POST http://localhost:8000/api/links \
 # 仅管理员可使用
 ACCESS_MODE=admin ADMIN_TOKEN=$(openssl rand -hex 24) ./run.sh
 ```
+
+## 安全
+
+### 传输与会话
+
+- 全站响应统一带 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 等安全头
+- 页面下发带 nonce 的 CSP：脚本只放行 `'self'` 与带 nonce 的内联块，挡住注入的脚本
+- 管理会话是 HMAC-SHA256 签名的 HttpOnly Cookie，`SameSite=Lax`，服务端不存会话；改 `SECRET_KEY` 等于全站踢下线
+- 后台登录按 IP 限速（默认 5 分钟 10 次），配额用尽后连正确口令也挡
+
+### CSRF
+
+所有写请求都要在 `X-CSRF-Token` 头里回带页面下发的令牌，与 cookie 比对一致才放行。攻击者能诱导浏览器带 cookie，但读不到 cookie 内容，所以伪造不出这个头。`/yourls-api` 兼容接口与静态资源不参与校验。
+
+### 口令哈希
+
+`ADMIN_TOKEN` 支持直接填哈希值而不必存明文，算法优先 Argon2id（m=19MiB / t=2 / p=1），缺依赖时自动退到 PBKDF2-HMAC-SHA256 60 万次迭代。哈希编码带算法名前缀，参数低于当前标准时会提示升级。
+
+```bash
+python -c "from app.core.crypto import hash_secret; print(hash_secret('your-password'))"
+```
+
+### 客户端 IP
+
+默认只信任回环代理的 `X-Forwarded-For` / `X-Real-IP`。不设这道关的话，任何人都能伪造转发头把限速和每日配额绕得一干二净。上了 Nginx 就把内网网段填进 `TRUSTED_PROXIES`。
+
+### URL 校验
+
+创建短链时挡掉带 userinfo 的地址（`https://trusted.com@evil.com` 这类钓鱼伪装）、内网 / 回环 / 链路本地 / IPv4 映射 IPv6 地址，以及非 http/https 协议。自动取标题的请求同样有 SSRF 防护。
 
 ## Logo
 
@@ -133,7 +167,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-55 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计、设备分布、编辑与 CSV 导出。
+168 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计、设备分布、编辑与 CSV 导出、访问模式、管理后台、YOURLS 迁移，以及安全加固（响应头、CSP、CSRF、可信代理、URL 校验、登录限速、口令哈希）。
 
 ## 项目结构
 
@@ -147,12 +181,17 @@ app/
 ├── schemas.py         请求响应模型
 ├── qr.py              二维码生成
 ├── web.py             页面渲染
-├── core/              config / db / codes / security / timeutil
+├── core/              config / db / codes / security / crypto / csrf
+│                       middleware / access / admin / apikey / guard
+│                       clicks / settings_store / titles / yourls / timeutil
 ├── templates/         Jinja2 模板
 ├── static/            CSS / JS / Logo
 ├── tests/             pytest 用例
-│   ├── test_api.py      创建/跳转/筛选/更新/删除
-│   └── test_new.py      编辑/导出/设备统计/UA/访问令牌
+│   ├── test_api.py          创建/跳转/筛选/更新/删除
+│   ├── test_new.py          编辑/导出/设备统计/UA/访问令牌
+│   ├── test_v3.py           后台/延迟计数/防洪/YOURLS 迁移
+│   ├── test_access_mode.py  访问模式
+│   └── test_security.py     安全加固
 └── scripts/           Logo 生成脚本
 ```
 

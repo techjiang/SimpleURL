@@ -65,6 +65,18 @@ class Settings:
         # 统计数据的采样间隔（秒），用于做简单的请求限速保护
         self.stats_rate_limit: int = _as_int("STATS_RATE_LIMIT", 1)
 
+        # ---------- 反向代理 ----------
+        # 信任哪些代理的 X-Forwarded-For / X-Real-IP。默认只信任回环地址，
+        # 直连部署时等于不信任任何转发头；填 * 表示无条件信任（仅限内网可信环境）。
+        self.trusted_proxies: str = os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1").strip()
+
+        # ---------- 登录防爆破 ----------
+        # 单 IP 5 分钟内的后台登录尝试上限，0 不限制
+        self.login_rate_limit: int = max(0, _as_int("LOGIN_RATE_LIMIT", 10))
+
+        # 后台口令最短长度：短口令等于没设防，启动时给个下限
+        self.min_admin_token_length: int = max(0, _as_int("MIN_ADMIN_TOKEN_LENGTH", 12))
+
         # 每页展示条数的可选值
         self.page_sizes: list[int] = [10, 20, 50, 100]
 

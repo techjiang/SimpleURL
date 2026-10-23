@@ -211,4 +211,4 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 {% endblock %}
-{% block scripts %}<script src="/static/admin.js" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/admin.js" defer nonce="{{ csp_nonce(request) }}"></script>{% endblock %}

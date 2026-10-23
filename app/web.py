@@ -6,10 +6,23 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from app.core.config import settings
+from app.core.csrf import current_token
 from app.core.timeutil import ensure_aware, fmt_local, iso, local_naive
 
 templates = Jinja2Templates(directory=str(settings.templates_dir))
 templates.env.globals.update(site_name=settings.site_name)
+
+
+def _csrf_token(request) -> str:
+    """模板里取 CSRF 令牌用：get_template().render() 不走 Request 上下文也能拿到。"""
+    return current_token(request)
+
+
+def _csp_nonce(request) -> str:
+    return getattr(getattr(request, "state", None), "csp_nonce", "") or ""
+
+
+templates.env.globals.update(csrf_token=_csrf_token, csp_nonce=_csp_nonce)
 
 
 def _fmt(value, fmt: str = "%Y-%m-%d %H:%M") -> str:

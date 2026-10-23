@@ -23,6 +23,7 @@ from app.core.admin import (
 from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
+from app.core.security import client_ip, rate_limiter
 from app.core.settings_store import EDITABLE, effective, get_all, set_value
 from app.core.yourls import parse as parse_yourls
 from app.models import ApiKey, ClickEvent, Link, Setting
@@ -66,6 +67,9 @@ def api_login(payload: dict, response: Response, request: Request):
         raise ServiceError("未配置 ADMIN_TOKEN，后台不可用", 403)
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
+    # 登录按 IP 限速：挡掉暴力尝试，也不把账号是否存在漏给攻击者
+    if not rate_limiter.allow(f"login:{client_ip(request)}", settings.login_rate_limit, 300):
+        raise ServiceError("尝试次数过多，请 5 分钟后再试", 429)
     if not check_credentials(username, password):
         raise ServiceError("账号或密码不对", 401)
     response.set_cookie(
