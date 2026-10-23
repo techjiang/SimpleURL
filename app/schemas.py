@@ -153,6 +153,9 @@ class SettingsOut(BaseModel):
     pending_clicks: int
     admin_enabled: bool
     access_required: bool
+    access_mode: str = "open"
+    access_mode_label: str = "开放外部可使用"
+    access_locked: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -162,6 +165,14 @@ class SettingsUpdate(BaseModel):
     fetch_title: Optional[bool] = None
     require_api_key: Optional[bool] = None
     create_daily_limit: Optional[int] = None
+    access_mode: Optional[str] = None
+
+    @field_validator("access_mode", mode="before")
+    @classmethod
+    def _v_access_mode(cls, v):
+        from app.core.access import normalize_mode
+
+        return normalize_mode(v) if v is not None else None
 
 
 class UaRuleOut(BaseModel):

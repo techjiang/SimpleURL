@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core import access
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
@@ -47,6 +48,15 @@ def check_api_key(request: Request, db: Session) -> None:
         db.commit()
 
 
+def require_open_access(request: Request, db: Session) -> None:
+    """admin 模式下，创建/浏览类接口只放行管理员。"""
+    if not access.is_admin_mode(db):
+        return
+    if access.is_admin(request, db):
+        return
+    raise ServiceError("站点已设为仅管理员可使用，请先登录后台", 401)
+
+
 @router.get("/links", response_model=LinkListOut, summary="短链接列表")
 def api_list_links(
     request: Request,
@@ -59,6 +69,7 @@ def api_list_links(
     db: Session = Depends(get_db),
 ):
     check_api_key(request, db)
+    require_open_access(request, db)
     total, items = list_links(db, q=q, tag=tag, status=status, sort=sort, page=page, page_size=page_size)
     return LinkListOut(
         total=total, page=page, page_size=page_size, items=[_serialize(item, request) for item in items]
@@ -88,6 +99,7 @@ def api_export(
 @router.post("/links", response_model=LinkOut, status_code=201, summary="创建短链接")
 def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
+    require_open_access(request, db)
     link = create_link(db, payload, ip=client_ip(request))
     db.commit()
     db.refresh(link)
@@ -97,6 +109,7 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
 @router.get("/links/{code}", response_model=LinkOut, summary="短链接详情")
 def api_get_link(code: str, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
+    require_open_access(request, db)
     return _serialize(get_link_by_code(db, code), request)
 
 
@@ -112,6 +125,7 @@ def api_update_link(code: str, payload: LinkUpdate, request: Request, db: Sessio
 @router.delete("/links/{code}", summary="删除短链接")
 def api_delete_link(code: str, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
+    require_open_access(request, db)
     delete_link(db, code)
     db.commit()
     return {"ok": True, "message": f"已删除 {code}"}
@@ -122,12 +136,14 @@ def api_link_stats(
     code: str, days: int = Query(30, ge=1, le=365), request: Request = None, db: Session = Depends(get_db)
 ):
     check_api_key(request, db)
+    require_open_access(request, db)
     return StatsOut(**get_stats(db, code, days=days))
 
 
 @router.get("/qr/{code}", summary="二维码 PNG")
 def api_qr(code: str, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
+    require_open_access(request, db)
     link = get_link_by_code(db, code)
     url = str(request.base_url).rstrip("/") + "/" + link.code
     return Response(
@@ -135,6 +151,11 @@ def api_qr(code: str, request: Request, db: Session = Depends(get_db)):
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@router.get("/access", summary="当前访问模式")
+def api_access(request: Request, db: Session = Depends(get_db)):
+    return access.snapshot(db, request)
 
 
 @router.get("/stats/summary", summary="总览统计")
@@ -150,4 +171,5 @@ def api_summary(request: Request, db: Session = Depends(get_db)):
         "total_clicks": int(total_clicks or 0),
         "site_name": settings.site_name,
         "access_required": bool(settings.access_token),
+        **access.snapshot(db, request),
     }

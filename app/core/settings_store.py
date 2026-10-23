@@ -19,6 +19,7 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "fetch_title": (True, "创建时自动获取目标页标题"),
     "require_api_key": (False, "要求 API 请求携带密钥"),
     "create_daily_limit": (200, "单 IP 每日创建上限，0 不限制"),
+    "access_mode": ("open", "访问模式：open 开放外部可使用，admin 仅管理员可使用"),
 }
 
 
@@ -37,6 +38,10 @@ def _cast(key: str, raw: str, default: object) -> object:
             return int(raw.strip())
         except (TypeError, ValueError):
             return default
+    if key == "access_mode":
+        from app.core.access import normalize_mode
+
+        return normalize_mode(raw)
     return raw.strip() or default
 
 

@@ -59,6 +59,7 @@ docker compose up -d         # 首次需构建
 | `GET` | `/api/qr/{code}` | 二维码 PNG |
 | `GET` | `/api/links/export` | 导出 CSV（沿用列表的筛选参数） |
 | `GET` | `/api/stats/summary` | 总览 |
+| `GET` | `/api/access` | 当前访问模式与登录态 |
 | `POST` | `/api/admin/login` | 后台登录 |
 | `GET` | `/api/admin/dashboard` | 仪表盘数据 |
 | `GET/POST` | `/api/admin/settings` | 读取 / 保存运行参数 |
@@ -90,8 +91,25 @@ curl -X POST http://localhost:8000/api/links \
 | `CODE_MIN_LENGTH` / `CODE_MAX_LENGTH` | `3` / `16` | 自定义短码长度限制 |
 | `CREATE_DAILY_LIMIT` | `200` | 单 IP 每日创建上限，`0` 不限制 |
 | `ACCESS_TOKEN` | 空 | 设置后访问短链与统计页需带 `?token=`，留空则公开 |
+| `ACCESS_MODE` | `open` | `open` 开放外部可使用；`admin` 仅管理员可使用 |
 | `EXPORT_MAX_ROWS` | `50000` | 单次导出 CSV 的最大条数 |
 | `DEBUG` | `false` | 开启后开放 `/api/docs` |
+
+## 访问模式
+
+站点级开关，决定外部访客能干什么，后台「设置 → 访问模式」随时可改。
+
+| 模式 | 访客能创建 | 访客能看链接库/详情/二维码 | 访客能打开短链 | 访客能看统计页 |
+| --- | --- | --- | --- | --- |
+| `open` 开放外部可使用 | 可以 | 可以 | 可以 | 可以 |
+| `admin` 仅管理员可使用 | 需登录 | 需登录 | 可以 | 需登录 |
+
+无论哪种模式，**改、删、后台本身都要求管理员登录**。未配置 `ADMIN_TOKEN` 时自动按 `open` 运行，避免配错把站点锁死在门外。
+
+```bash
+# 仅管理员可使用
+ACCESS_MODE=admin ADMIN_TOKEN=$(openssl rand -hex 24) ./run.sh
+```
 
 ## Logo
 

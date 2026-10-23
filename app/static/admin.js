@@ -286,12 +286,24 @@
       $('#set-create').value = s.create_daily_limit;
       $('#set-fetch').checked = !!s.fetch_title;
       $('#set-require-key').checked = !!s.require_api_key;
+      $('#set-access-mode').value = s.access_mode || 'open';
+      $('#access-mode-hint').textContent = (s.access_mode || 'open') === 'admin'
+        ? '当前：访客仅能跳转短链接，创建、链接库与统计页均需登录后台。'
+        : '当前：访客可创建与查看链接库，改、删仍需要登录后台。';
       $('#flush-interval').textContent = s.click_flush_interval;
       $('#pending-count').textContent = s.pending_clicks;
     } catch (err) { toast(err.message); }
   }
 
   function bindSettings() {
+    const modeSel = $('#set-access-mode');
+    if (modeSel) {
+      modeSel.addEventListener('change', () => {
+        $('#access-mode-hint').textContent = modeSel.value === 'admin'
+          ? '保存后：访客仅能跳转短链接，创建、链接库与统计页均需登录后台。'
+          : '保存后：访客可创建与查看链接库，改、删仍需要登录后台。';
+      });
+    }
     const form = $('#settings-form');
     if (!form) return;
     form.addEventListener('submit', async (e) => {
@@ -303,9 +315,11 @@
           create_daily_limit: parseInt($('#set-create').value, 10) || 0,
           fetch_title: $('#set-fetch').checked,
           require_api_key: $('#set-require-key').checked,
+          access_mode: $('#set-access-mode').value,
         });
         setStatus('#settings-status', '已保存', 'ok');
         toast('设置已保存');
+        loadSettings();
       } catch (err) { setStatus('#settings-status', err.message, 'err'); }
     });
     const rs = $('#reset-settings');

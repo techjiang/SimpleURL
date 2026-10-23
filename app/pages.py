@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.core import guard
+from app.core import access, guard
 from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
@@ -105,6 +105,14 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
 def stats_page(code: str, request: Request, db: Session = Depends(get_db)):
     if not _check_access(request):
         return _access_denied(request, code)
+    # admin 模式下统计页也要登录，避免链接库数据外泄
+    if access.is_admin_mode(db) and not access.is_admin(request, db):
+        return HTMLResponse(
+            templates.get_template("gone.html").render(
+                request=request, code=code, message="站点已设为仅管理员可使用，请先登录后台"
+            ),
+            status_code=401,
+        )
     link = get_link_by_code(db, code)
     data = get_stats(db, code, days=30)
     return HTMLResponse(render_stats(request, link, data))

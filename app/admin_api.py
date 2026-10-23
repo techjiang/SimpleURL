@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core import guard
+from app.core import access, guard
 from app.core.admin import (
     COOKIE_NAME,
     check_credentials,
@@ -189,6 +189,9 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
         pending_clicks=click_buffer.pending(),
         admin_enabled=is_admin_enabled(),
         access_required=bool(settings.access_token),
+        access_mode=access.current_mode(db),
+        access_mode_label=access.LABELS.get(access.current_mode(db), ""),
+        access_locked=access.is_admin_mode(db),
     )
 
 
@@ -201,6 +204,8 @@ def api_save_settings(payload: SettingsUpdate, request: Request, db: Session = D
             continue
         if key in {"redirect_rate_limit", "click_daily_limit", "create_daily_limit"}:
             value = max(0, int(value))
+        if key == "access_mode":
+            value = access.normalize_mode(value)
         set_value(db, key, value)
     db.commit()
     return {"ok": True, "message": "已保存"}

@@ -327,3 +327,16 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   .admin-tabs { border-radius: var(--radius); }
   .admin-tab { flex: 1; text-align: center; }
 }
+
+/* ============ 访问模式横幅 ============ */
+.mode-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; margin-bottom: 22px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); font-size: 0.82rem; color: var(--text-dim);
+}
+.mode-banner.locked { border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.09); color: var(--warn); }
+.mode-banner .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); flex: none; }
+.mode-banner.locked .mode-dot { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+.mode-banner #mode-action { margin-left: auto; }
+.mode-banner[hidden] { display: none; }

@@ -15,6 +15,8 @@
   };
   let summary = { total_links: 0, total_clicks: 0, access_required: false };
   let editing = null;
+  // 站点访问模式快照，来自 /api/access
+  const access = { mode: 'open', admin_mode: false, is_admin: false, can_create: true, can_browse: true };
 
   /* ---------- 工具 ---------- */
   const escapeHtml = (str) =>
@@ -62,10 +64,46 @@
       showGate();
       throw new Error('访问令牌校验失败');
     }
+    if (res.status === 401 && access.admin_mode && !access.is_admin) {
+      throw new Error('站点已设为仅管理员可使用，请先登录后台');
+    }
     let data = {};
     try { data = await res.json(); } catch (_) { /* ignore */ }
     if (!res.ok) throw new Error(data.message || `请求失败（${res.status}）`);
     return data;
+  }
+
+  /* ---------- 访问模式 ---------- */
+  async function loadAccess() {
+    try {
+      const data = await api('/api/access');
+      Object.assign(access, data);
+    } catch (_) {
+      Object.assign(access, { mode: 'open', admin_mode: false, is_admin: false, can_create: true, can_browse: true });
+    }
+    applyAccess();
+    return access;
+  }
+
+  function applyAccess() {
+    const locked = access.admin_mode && !access.is_admin;
+    document.body.dataset.mode = access.admin_mode ? 'admin' : 'open';
+    document.body.dataset.auth = access.is_admin ? 'true' : 'false';
+
+    const banner = $('#mode-banner');
+    if (banner) {
+      banner.hidden = false;
+      banner.classList.toggle('locked', locked);
+      $('#mode-text').textContent = locked
+        ? '仅管理员可使用：外部访客只能打开已生成的短链接，创建与管理需登录后台。'
+        : (access.admin_mode
+            ? '仅管理员可使用：你已登录，管理功能可用。'
+            : '开放外部可使用：任何人都能创建与管理短链接。');
+    }
+    const bar = $('#create');
+    if (bar) bar.hidden = locked;
+    const board = $('#list');
+    if (board) board.classList.toggle('locked', locked);
   }
 
   /* ---------- 访问令牌门禁 ---------- */
@@ -186,6 +224,13 @@
     const tags = (link.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
     const title = link.title ? `<span class="title-cell">${escapeHtml(link.title)}</span>` : '';
     const tq = tokenQuery();
+    const locked = access.admin_mode && !access.is_admin;
+    const actions = locked
+      ? `<span class="hint">只读</span>`
+      : `<a class="btn tiny ghost" href="/${encodeURIComponent(link.code)}${tq}" target="_blank" rel="noopener">访问</a>
+        <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(link.code)}">编辑</button>
+        <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(link.code)}">${link.enabled ? '停用' : '启用'}</button>
+        <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(link.code)}">删除</button>`;
     return `<tr>
       <td><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}</td>
       <td class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
@@ -193,12 +238,7 @@
       <td>${tags || '<span class="hint">—</span>'}</td>
       <td>${badgeOf(link)}</td>
       <td class="created-cell">${fmtDate(link.created_at)}</td>
-      <td>
-        <a class="btn tiny ghost" href="/${encodeURIComponent(link.code)}${tq}" target="_blank" rel="noopener">访问</a>
-        <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(link.code)}">编辑</button>
-        <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(link.code)}">${link.enabled ? '停用' : '启用'}</button>
-        <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(link.code)}">删除</button>
-      </td>
+      <td>${actions}</td>
     </tr>`;
   }
 
@@ -214,6 +254,7 @@
       state.total = data.total;
       body.innerHTML = data.items.map(rowOf).join('');
       $('#empty').hidden = data.items.length > 0;
+      $('#empty').querySelector('p').textContent = '还没有链接，先创建一个吧';
       const pages = Math.max(1, Math.ceil(data.total / state.pageSize));
       $('#summary').innerHTML = [
         `<span class="chip">共 ${data.total} 条</span>`,
@@ -224,6 +265,17 @@
       $('#prev-btn').disabled = data.page <= 1;
       $('#next-btn').disabled = data.page * state.pageSize >= data.total;
     } catch (err) {
+      if (access.admin_mode && !access.is_admin) {
+        body.innerHTML = '';
+        state.total = 0;
+        $('#empty').hidden = false;
+        $('#empty').querySelector('p').textContent = '站点已设为仅管理员可使用，登录后台后查看链接库';
+        $('#page-info').textContent = '';
+        $('#prev-btn').disabled = true;
+        $('#next-btn').disabled = true;
+        $('#summary').innerHTML = '';
+        return;
+      }
       toast(err.message);
     }
   }
@@ -378,8 +430,9 @@
   }
 
   /* ---------- 启动 ---------- */
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     bindCreate(); bindCopy(); bindBoard(); bindEdit(); bindGate();
+    await loadAccess();
     loadSummary(); loadLinks();
   });
 
