@@ -8,7 +8,7 @@
 
 - **一键生成** — 粘贴长链接回车即得短码，也可自定义短码
 - **访问模式** — 开放外部可使用 / 仅管理员可使用 / 邀请码可使用，一键切换
-- **安全可靠** — URL 白名单校验、内网地址拦截、短码去重、防刷创建限额
+- **安全可靠** — Argon2id 密钥哈希、CSP nonce、全套安全响应头、SSRF 防护、防刷限额
 - **访问统计** — 总点击 / 独立访客 / 30 天趋势图 / 来源 Top，按 IP 哈希脱敏
 - **二维码** — 每条链接自动生成 PNG 二维码
 - **标签管理** — 标签检索、状态筛选、多字段搜索、多种排序
@@ -22,7 +22,11 @@
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 启动
+# 2. 生成两个密钥（生产环境务必做）
+export SECRET_KEY=$(openssl rand -hex 32)      # 会话签名
+export ADMIN_TOKEN=$(openssl rand -hex 24)     # 管理密钥
+
+# 3. 启动
 ./run.sh                     # 默认 http://localhost:8000
 ```
 
@@ -88,8 +92,11 @@ curl -X POST http://localhost:8000/api/links \
 | `CREATE_DAILY_LIMIT` | `200` | 单 IP 每日创建上限，`0` 不限制 |
 | `DEBUG` | `false` | 开启后开放 `/api/docs` |
 | `ACCESS_MODE` | `public` | 访问模式：`public` / `admin` / `invite` |
-| `ADMIN_TOKEN` | 空 | 管理密钥，留空则管理功能关闭 |
+| `ADMIN_TOKEN` | 空 | 管理密钥，留空则管理功能关闭；可直接填 Argon2id 哈希 |
 | `ADMIN_ONLY` | `false` | 旧版开关，等价于 `ACCESS_MODE=admin` |
+| `SECRET_KEY` | 随机 | 会话签名密钥，与 `ADMIN_TOKEN` 无关；改它等于全站重新登录 |
+| `CSP_REPORT_ONLY` | `false` | CSP 只上报不拦截，上线初期用于观察误伤 |
+| `TRUSTED_PROXIES` | 空 | 可信反代地址，逗号分隔；留空则不采信 `X-Forwarded-For` |
 
 ## 访问模式
 
@@ -137,8 +144,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-53 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计与二维码，
-以及三种访问模式、登录登出与鉴权绕过。
+102 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计与二维码，
+三种访问模式、登录登出与鉴权绕过，以及安全加固专项：响应头、CSP nonce、
+Argon2id 哈希与降级、会话绑定与轮换、Cookie 属性、IP 信任边界、开放跳板。
 
 ## 项目结构
 
@@ -152,15 +160,69 @@ app/
 ├── schemas.py         请求响应模型
 ├── qr.py              二维码生成
 ├── web.py             页面渲染
-├── core/              config / db / codes / security / auth / timeutil
+├── core/              config / db / codes / crypto / security / auth / middleware / timeutil
 ├── templates/         Jinja2 模板
 ├── static/            CSS / JS / Logo
 └── tests/             pytest 用例
 ```
 
-## 说明
+## 安全设计
 
-- 默认 SQLite，日活十万以内完全够用；量大了切 Postgres 只需改 `DATABASE_URL`
-- 统计数据仅存 IP 的 SHA-256 前 32 位，不落明文 IP
-- 停用 / 过期 / 不存在的短码都会返回友好页面，不会裸奔报错
-- 登录接口按 IP 限速（5 分钟 10 次），防止密钥被暴力尝试
+### 密钥与登录
+
+- 管理密钥用 **Argon2id**（m=19MiB, t=2, p=1）哈希存储。`ADMIN_TOKEN`
+  既可以写明文，也可以直接填哈希串——填哈希的话，配置文件泄露也拿不回原密钥：
+
+  ```bash
+  python -c "from app.core.crypto import hash_secret; print(hash_secret('你的密钥'))"
+  ```
+
+  环境缺 `argon2-cffi` 时自动退回 PBKDF2-HMAC-SHA256（60 万次迭代），
+  两种编码格式互不兼容但接口一致，检测到参数偏低会提示重新哈希。
+- 密钥比对一律恒定时间，不泄露时序信息。
+- 登录密钥**只接受 `X-Admin-Token` 请求头**，不接受 URL query——
+  query 会进访问日志、浏览器历史和 Referer，等于把钥匙抄在门上。
+- 登录接口按 IP 限速（5 分钟 10 次），超限返回 429。
+- 会话是 HMAC-SHA256 签名的 HttpOnly Cookie，服务端不存会话。
+  有效期与密钥指纹都签进令牌，所以轮换 `ADMIN_TOKEN` 或 `SECRET_KEY`
+  会让旧 Cookie 立刻全部失效，不需要维护黑名单。
+
+### 响应头与 CSP
+
+所有响应统一带：
+
+| 头 | 作用 |
+| --- | --- |
+| `Content-Security-Policy` | 默认 `'self'`，脚本走 nonce 模式 |
+| `X-Content-Type-Options: nosniff` | 禁掉 MIME 嗅探 |
+| `X-Frame-Options: DENY` | 禁点击劫持 |
+| `Referrer-Policy` | 站外只传 origin |
+| `Permissions-Policy` | 关掉定位/摄像头/麦克风等强权限 |
+| `Cross-Origin-Opener-Policy` / `Cross-Origin-Resource-Policy` | 隔离跨域窗口与资源 |
+| `Strict-Transport-Security` | 仅 https 下发送，两年有效期 |
+
+CSP 用 **nonce** 而非 hash 白名单：每次请求生成随机 nonce，模板里的
+`<script>` 必须带上它才放行。这意味着任何通过字符串拼进页面的事件处理器
+都会失效——这是有意的收紧。`style-src` 保留 `'unsafe-inline'`，
+因为图表柱高、二维码尺寸要靠内联样式。
+
+上线初期建议先开 `CSP_REPORT_ONLY=true` 观察会不会误伤，稳定后再关。
+
+### IP 与限速
+
+`X-Forwarded-For` / `X-Real-IP` **默认不采信**——任何人都能伪造它们，
+采信了就等于给限速和 IP 配额开后门。只有把反代地址写进 `TRUSTED_PROXIES`
+后才会从这些头里取真实客户端地址，且取最右侧一个非信任节点。
+
+```bash
+TRUSTED_PROXIES=127.0.0.1,10.0.0.1 ./run.sh
+```
+
+### 其它
+
+- URL 校验拦掉内网 / 回环 / 链路本地地址，自动取标题时同样生效（防 SSRF）
+- 短码目标强制补成完整绝对 URL，危险协议（`javascript:`、`data:`、`file:`）一律拒绝
+- 统计数据只存 IP 的 SHA-256 前 32 位，不落明文
+- 停用 / 过期 / 不存在的短码都给友好页面，不裸奔 JSON
+- 未配 `ADMIN_TOKEN` 时 `admin` / `invite` 自动退回 `public`，
+  避免少写一行配置把整站锁死

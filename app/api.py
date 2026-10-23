@@ -106,13 +106,13 @@ def api_link_stats(
 def api_qr(
     code: str,
     request: Request,
-    token: str | None = Query(None, description="管理密钥，未登录时用于生成私有链接二维码"),
+    secret: str | None = Header(None, alias="X-Admin-Token"),
     db: Session = Depends(get_db),
 ):
     link = get_link_by_code(db, code)
     if settings.effective_mode in ("admin", "invite"):
         # 私有模式下二维码里的短链必须能被访问，未登录则拒绝，避免泄露目标
-        if not auth.resolve_access(request).is_admin and not auth.admin_password_ok(token):
+        if not auth.resolve_access(request).is_admin and not auth.admin_password_ok(secret):
             raise auth.AuthError("仅管理员可获取二维码", 401)
     url = str(request.base_url).rstrip("/") + "/" + link.code
     return Response(
@@ -142,14 +142,26 @@ def api_summary(access: Access = Depends(get_access), db: Session = Depends(get_
 _SESSION_MAX_AGE = auth.COOKIE_MAX_AGE
 
 
-def _set_session(response: Response, name: str, value: str) -> None:
+def _is_https(request: Request) -> bool:
+    """判断本次请求是否走 https。
+
+    直连时看 scheme；挂在反代后面时看 X-Forwarded-Proto。
+    """
+    if request.url.scheme == "https":
+        return True
+    proto = request.headers.get("x-forwarded-proto", "")
+    return proto.split(",")[0].strip().lower() == "https"
+
+
+def _set_session(request: Request, response: Response, name: str, value: str) -> None:
     response.set_cookie(
         name,
         value,
         max_age=_SESSION_MAX_AGE,
-        httponly=True,
-        samesite="lax",
-        secure=False,
+        httponly=True,   # JS 读不到，挡掉 XSS 偷 Cookie
+        samesite="lax",  # 站外 POST 不带 Cookie，挡住跨站伪造请求
+        secure=_is_https(request),  # https 下才加 Secure，防明文嗅探
+        path="/",
     )
 
 
@@ -165,16 +177,21 @@ def api_login(
     secret: str | None = Header(None, alias="X-Admin-Token"),
     access: Access = Depends(get_access),
 ):
-    password = secret or (request.query_params.get("token") or "").strip()
+    # 密钥只从请求头取。URL query 会进访问日志、浏览器历史和 Referer，
+    # 那等于把钥匙抄在门上，所以这里明确不接受。
+    if not secret:
+        raise auth.AuthError("请通过 X-Admin-Token 请求头提供管理密钥", 400)
     if access.is_admin:
         return {"ok": True, "is_admin": True}
     if not auth.admin_enabled():
         raise auth.AuthError("服务端未配置管理密钥，无法登录", 400)
     if not auth.login_allowed(request):
         raise auth.AuthError("尝试过于频繁，请稍后再试", 429)
-    if not auth.admin_password_ok(password):
+    if not auth.admin_password_ok(secret):
+        # 不区分「密钥错」和「没配密钥」，避免探测站点状态
+        logger.warning("管理密钥校验失败，来源 IP %s", client_ip(request) or "unknown")
         raise auth.AuthError("管理密钥不正确", 401)
-    _set_session(response, auth.ADMIN_COOKIE, auth.admin_session())
+    _set_session(request, response, auth.ADMIN_COOKIE, auth.admin_session())
     return {"ok": True, "is_admin": True}
 
 
@@ -198,5 +215,5 @@ def api_redeem_invite(request: Request, response: Response, code: str = Query(..
         raise auth.AuthError("尝试过于频繁，请稍后再试", 429)
     if not auth.invite_ok(code):
         raise auth.AuthError("邀请码无效或已过期", 403)
-    _set_session(response, auth.INVITE_COOKIE, auth._token(f"invite::{auth.invite_key()}", _SESSION_MAX_AGE))
+    _set_session(request, response, auth.INVITE_COOKIE, auth.invite_session())
     return {"ok": True, "can_create": True}

@@ -8,6 +8,8 @@ import re
 import time
 from urllib.parse import urlparse
 
+from app.core.config import settings
+
 ALLOWED_SCHEMES = {"http", "https"}
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
 MAX_URL_LENGTH = 2048
@@ -57,13 +59,27 @@ def ip_hash(ip: str | None) -> str:
 
 
 def client_ip(request) -> str | None:
+    """取客户端 IP。
+
+    反代头（X-Forwarded-For / X-Real-IP）默认**不采信**：任何人都能伪造它，
+    采信了就等于给限速和 IP 配额开了个后门。只有把反代地址写进
+    TRUSTED_PROXIES 后，才从这些头里取真实客户端地址。
+    """
+    direct = request.client.host if request.client else None
+    if not settings.trusted_proxies or direct not in settings.trusted_proxies:
+        return direct
+
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
+        # 取最右侧一个非信任地址，那是反代真实看到的客户端
+        for candidate in reversed([h.strip() for h in fwd.split(",") if h.strip()]):
+            if candidate not in settings.trusted_proxies:
+                return candidate
         return fwd.split(",")[0].strip()
     real = request.headers.get("x-real-ip")
     if real:
         return real.strip()
-    return request.client.host if request.client else None
+    return direct
 
 
 class RateLimiter:

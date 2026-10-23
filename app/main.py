@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -15,9 +15,10 @@ from app.api import router as api_router
 from app.core import auth
 from app.core.config import settings
 from app.core.db import init_db
+from app.core.middleware import SecurityHeadersMiddleware
 from app.pages import router as pages_router
 from app.services import ServiceError
-from app.web import templates
+from app.web import render
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -43,6 +44,7 @@ app = FastAPI(
     redoc_url=None,
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
 app.include_router(api_router)
 app.include_router(pages_router)
@@ -52,12 +54,9 @@ app.include_router(pages_router)
 async def auth_error_handler(request: Request, exc: auth.AuthError):
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=exc.status, content={"ok": False, "message": exc.message})
-    from fastapi.responses import HTMLResponse
 
     return HTMLResponse(
-        templates.get_template("login.html").render(
-            request=request, message=exc.message, access=auth.resolve_access(request)
-        ),
+        render(request, "login.html", message=exc.message, access=auth.resolve_access(request)),
         status_code=exc.status,
     )
 
@@ -79,7 +78,7 @@ async def http_error_handler(request: Request, exc: StarletteHTTPException):
 
 @app.get("/", include_in_schema=False)
 def index(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"access": auth.resolve_access(request)})
+    return HTMLResponse(render(request, "index.html", access=auth.resolve_access(request)))
 
 
 @app.get("/admin/login", include_in_schema=False)
@@ -87,6 +86,6 @@ def admin_login_page(request: Request):
     """登录页走主应用，避免被 /{code} 短码路由抢先匹配。"""
     if auth.resolve_access(request).is_admin:
         return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse(
-        request, "login.html", {"access": auth.resolve_access(request), "message": "请输入管理密钥"}
+    return HTMLResponse(
+        render(request, "login.html", access=auth.resolve_access(request), message="请输入管理密钥")
     )

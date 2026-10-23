@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["ADMIN_TOKEN"] = "test-token"
+# 会话签名密钥必须稳定，否则每次 import 出的 Settings 都不一样，签名 Cookie 全部失效
+os.environ["SECRET_KEY"] = "test-secret-key"
 
 
 ADMIN_TOKEN = "test-token"

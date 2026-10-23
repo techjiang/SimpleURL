@@ -13,7 +13,7 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
 from app.services import ServiceError, get_link_by_code, get_stats, record_click, resolve_redirect
-from app.web import render_stats, templates
+from app.web import render, render_stats
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(tags=["pages"])
@@ -39,9 +39,7 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     except ServiceError as exc:
         # 未收录 / 已停用 / 已过期：给一个友好页面，而不是裸 JSON
         return HTMLResponse(
-            templates.get_template("gone.html").render(
-                request=request, code=code, message=exc.message
-            ),
+            render(request, "gone.html", code=code, message=exc.message),
             status_code=exc.status if exc.status in (404, 410) else 404,
         )
     referrer = request.headers.get("referer") or request.headers.get("referrer")

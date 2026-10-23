@@ -241,6 +241,12 @@ select option { background: var(--bg-soft); color: var(--text); }
   .target-cell { max-width: 150px; }
   .brand em { display: none; }
   .container { padding: 18px 0 60px; }
+  /* 窄屏顶栏分两行：品牌一行，导航与控制台一行，避免横向溢出 */
+  .topbar { flex-wrap: wrap; gap: 10px; padding: 14px 0; }
+  .topnav { flex: 1 1 100%; justify-content: flex-start; overflow-x: auto; scrollbar-width: none; }
+  .topnav::-webkit-scrollbar { display: none; }
+  .nav-link { padding: 6px 10px; white-space: nowrap; }
+  .console { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
   .chart { height: 110px; }

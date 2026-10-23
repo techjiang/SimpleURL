@@ -3,16 +3,19 @@
 - `public`：谁都能创建链接，管理操作（改、删、列表、统计）需要管理员
 - `admin`：只有管理员能创建和管理，访客只能跳转
 - `invite`：访客凭邀请码创建，邀请码由管理员签发，管理操作仍归管理员
+
+密钥校验全部走 Argon2id（见 `crypto.py`）。配置里既可以写明文密钥，
+也可以直接写 Argon2id 哈希串——后者即使配置文件泄露也拿不回原密钥。
+会话令牌用独立的 `SECRET_KEY` 签名，不依赖管理密钥本身。
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import time
 
 from fastapi import Depends, Request
 
+from app.core import crypto
 from app.core.config import settings
 from app.core.security import client_ip
 
@@ -31,6 +34,7 @@ MODE_LABELS = {
 ADMIN_COOKIE = "su_admin"
 INVITE_COOKIE = "su_invite_key"
 COOKIE_MAX_AGE = 7 * 24 * 3600
+_SESSION_TOKEN_PREFIX = "su1"
 
 
 class AuthError(Exception):
@@ -42,25 +46,42 @@ class AuthError(Exception):
         self.status = status
 
 
-def _sign(value: str, secret: str) -> str:
-    return hmac.new(secret.encode(), value.encode(), hashlib.sha256).hexdigest()
+def _sign(value: str) -> str:
+    """会话签名：用 SECRET_KEY，不用管理密钥。"""
+    return crypto.sign(settings.secret_key, value)
 
 
-def _token(secret: str, ttl: int) -> str:
-    """由密钥派生、带时间戳的签名令牌，无需服务端存会话。"""
-    ts = str(int(time.time()))
-    return f"{ts}.{_sign(ts, secret)[:32]}"
+def _token(value: str, ttl: int) -> str:
+    """由密钥派生、带时间戳的签名令牌，无需服务端存会话。
+
+    有效期 ttl 一并签进令牌：否则签发时声明的短有效期，
+    校验方可以拿一个更长的默认值把它「救活」。
+    """
+    ts = int(time.time())
+    return f"{ts}.{_sign(f'{_SESSION_TOKEN_PREFIX}:{value}:{ts}:{ttl}')}"
 
 
-def _token_valid(token: str | None, secret: str, ttl: int) -> bool:
-    if not token or not secret or "." not in token:
+def _token_valid(token: str | None, value: str, ttl: int) -> bool:
+    if not token or "." not in token:
         return False
     ts, sig = token.split(".", 1)
     if not ts.isdigit():
         return False
+    # ttl 既参与签名也参与过期判断，改任一边都验不过
     if int(ts) + ttl < int(time.time()):
         return False
-    return hmac.compare_digest(sig, _sign(ts, secret)[:32])
+    return crypto.compare_digest(sig, _sign(f'{_SESSION_TOKEN_PREFIX}:{value}:{ts}:{ttl}'))
+
+
+def _secret_matches(secret: str | None) -> bool:
+    """校验管理密钥。支持明文与 Argon2id 哈希两种配置形式。"""
+    if not secret or not settings.admin_token:
+        return False
+    configured = settings.admin_token
+    if crypto.is_hash(configured):
+        return crypto.verify_secret(secret, configured)
+    # 兼容明文配置；比对用恒定时间，防时序侧信道
+    return crypto.compare_digest(secret.strip(), configured)
 
 
 def admin_token() -> str:
@@ -71,31 +92,56 @@ def admin_enabled() -> bool:
     return bool(settings.admin_token)
 
 
+def _admin_epoch() -> str:
+    """管理员会话的「代际」标识。
+
+    会话令牌只带 SECRET_KEY 签名，这里把当前管理密钥的指纹也编进签名内容，
+    换来两个性质：
+    - 轮换 / 停用 ADMIN_TOKEN 时，旧 Cookie 立刻全部失效（不需要维护黑名单）
+    - 令牌不会泄露管理密钥本身
+    """
+    if not settings.admin_token:
+        return "disabled"
+    # 只取指纹，避免把密钥明文编进签名内容
+    return crypto.fingerprint(settings.admin_token)
+
+
 def admin_session(ttl: int = COOKIE_MAX_AGE) -> str:
-    return _token(settings.admin_token, ttl)
+    return _token(f"admin::{_admin_epoch()}", ttl)
 
 
 def is_admin_token(token: str | None) -> bool:
-    """是否为本实例签发的有效管理员会话。"""
-    return _token_valid(token, settings.admin_token, COOKIE_MAX_AGE)
+    """是否为本实例、当前密钥下签发的有效管理员会话。"""
+    if not settings.admin_token:
+        return False
+    return _token_valid(token, f"admin::{_admin_epoch()}", COOKIE_MAX_AGE)
 
 
 def admin_password_ok(password: str | None) -> bool:
-    if not password or not settings.admin_token:
-        return False
-    return hmac.compare_digest(password, settings.admin_token)
+    return _secret_matches(password)
 
 
-def invite_key(ttl: int = COOKIE_MAX_AGE) -> str:
+def invite_key() -> str:
     """当前邀请码（随管理密钥与日期滚动）。"""
     day = time.strftime("%Y-%m-%d")
-    return _sign(f"invite::{day}", settings.admin_token)[:16]
+    return _sign(f"invite::{day}")[:16]
+
+
+def invite_session(ttl: int = COOKIE_MAX_AGE) -> str:
+    """邀请码解锁后写入 Cookie 的会话令牌。"""
+    return _token(f"invite::{_admin_epoch()}::{invite_key()}", ttl)
+
+
+def invite_session_ok(token: str | None) -> bool:
+    if not settings.admin_token:
+        return False
+    return _token_valid(token, f"invite::{_admin_epoch()}::{invite_key()}", COOKIE_MAX_AGE)
 
 
 def invite_ok(code: str | None) -> bool:
     if not code or not settings.admin_token:
         return False
-    return hmac.compare_digest(code.strip().lower(), invite_key())
+    return crypto.compare_digest(code.strip().lower(), invite_key())
 
 
 # ---- 每次请求的判定 ----
@@ -141,17 +187,18 @@ def resolve_access(request: Request) -> Access:
     if mode == MODE_PUBLIC:
         return Access(mode, is_admin, can_create=True)
 
+    # admin / invite 模式下没配密钥：退回开放，但**不能**因为「没有管理员」就把
+    # 持有旧 Cookie 的人判成管理员。密钥撤了就该彻底失效，否则撤钥反而不降权。
+    if not admin_enabled():
+        return Access(MODE_PUBLIC, False, can_create=True,
+                      reason="未配置 ADMIN_TOKEN，已自动切换为开放模式")
+
     if mode == MODE_ADMIN:
-        if not admin_enabled():
-            # 没设管理密钥就退回公开，避免整站被锁死
-            return Access(MODE_PUBLIC, True, can_create=True, reason="未配置 ADMIN_TOKEN，已自动切换为开放模式")
         return Access(mode, is_admin, can_create=is_admin,
                       reason="" if is_admin else "站点当前为管理员模式，创建链接需先登录")
 
     # invite
-    if not admin_enabled():
-        return Access(MODE_PUBLIC, True, can_create=True, reason="未配置 ADMIN_TOKEN，已自动切换为开放模式")
-    has_key = _token_valid(_cookie(request, INVITE_COOKIE), f"invite::{invite_key()}", COOKIE_MAX_AGE)
+    has_key = invite_session_ok(_cookie(request, INVITE_COOKIE))
     if is_admin:
         return Access(mode, True, can_create=True)
     return Access(mode, False, can_create=has_key,

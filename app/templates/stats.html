@@ -30,7 +30,7 @@
     </ul>
   </div>
 </section>
-<script>
+<script nonce="{{ csp_nonce }}">
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('chart');
   if (!el || !window.SimpleURL?.renderChart) return;

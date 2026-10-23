@@ -58,6 +58,18 @@ class Settings:
         # 管理密钥：留空则管理功能关闭，admin / invite 模式自动退回 public
         self.admin_token: str = os.getenv("ADMIN_TOKEN", "").strip()
 
+        # 会话签名密钥：与 ADMIN_TOKEN 无关，改了等于全站重新登录。
+        # 生产环境务必显式设置，否则每次重启都会重新生成，重启即踢下线。
+        self.secret_key: str = os.getenv("SECRET_KEY", "").strip() or _default_secret()
+
+        # CSP 只上报不拦截：上线初期用它观察会不会误伤，稳定后再关掉
+        self.csp_report_only: bool = _as_bool("CSP_REPORT_ONLY", False)
+
+        # 可信反代列表：只有这些来源的 X-Forwarded-For 才被采信，防伪造 IP 绕过限速
+        self.trusted_proxies: list[str] = [
+            p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(",") if p.strip()
+        ]
+
         # 模板目录
         self.templates_dir = base_dir / 'app' / 'templates'
         self.static_dir = base_dir / 'app' / 'static'
@@ -75,6 +87,17 @@ class Settings:
         if self.access_mode in ("admin", "invite") and not self.admin_enabled:
             return "public"
         return self.access_mode
+
+
+def _default_secret() -> str:
+    """未配置 SECRET_KEY 时每次进程生成一个随机值。
+
+    好处是不存在写死的默认密钥；代价是重启后旧会话全部失效，所以生产环境
+    应显式配置一个稳定的 SECRET_KEY。
+    """
+    import secrets
+
+    return secrets.token_urlsafe(32)
 
 
 @lru_cache
