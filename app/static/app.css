@@ -300,3 +300,30 @@ select option { background: var(--bg-soft); color: var(--text); }
   .board-tools select { flex: 1; min-width: 0; }
   .created-cell { display: none; }
 }
+
+/* ============ 管理后台 ============ */
+.admin { padding: 10px 0 40px; animation: rise .3s ease both; }
+.admin-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+.admin-head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); margin: 8px 0; }
+.admin-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.admin-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; }
+.admin-tab { padding: 8px 16px; border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); font-size: 0.86rem; font-family: inherit; cursor: pointer; transition: color .18s, background .18s; }
+.admin-tab:hover { color: var(--text); background: var(--surface-strong); }
+.admin-tab.active { color: #fff; background: linear-gradient(120deg, var(--brand), var(--brand-2)); box-shadow: 0 6px 18px -8px rgba(79,140,255,0.7); }
+.admin-panel { display: none; }
+.admin-panel.active { display: block; }
+.admin-cols { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
+.admin-cols .ref-list li span:first-child { font-family: var(--mono); font-size: 0.82rem; }
+.admin-cols .ref-list li { align-items: center; gap: 10px; }
+textarea { width: 100%; padding: 10px 12px; font-family: var(--mono); font-size: 0.84rem; color: var(--text); background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: var(--radius-sm); resize: vertical; line-height: 1.6; }
+textarea:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
+.check { display: flex; align-items: center; gap: 10px; font-size: 0.88rem; color: var(--text-dim); cursor: pointer; }
+.check input { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
+code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(0,0,0,0.3); padding: 3px 7px; border-radius: 6px; border: 1px solid var(--border); word-break: break-all; }
+.admin .chart-card { margin-bottom: 18px; }
+.admin .pager button[disabled] { opacity: .5; }
+@media (max-width: 720px) {
+  .admin-cols { grid-template-columns: 1fr; }
+  .admin-tabs { border-radius: var(--radius); }
+  .admin-tab { flex: 1; text-align: center; }
+}

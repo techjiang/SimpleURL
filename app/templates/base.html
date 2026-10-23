@@ -21,6 +21,7 @@
     <nav class="topnav">
       <a href="/" class="nav-link">首页</a>
       <a href="/#list" class="nav-link">链接库</a>
+      <a href="/admin" class="nav-link">后台</a>
       <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
     </nav>
   </header>
@@ -30,6 +31,6 @@
     <span class="dot">·</span>
     <span>数据可自托管，隐私尽在掌握</span>
   </footer>
-  <script src="/static/app.js" defer></script>
+  {% block scripts %}<script src="/static/app.js" defer></script>{% endblock %}
 </body>
 </html>

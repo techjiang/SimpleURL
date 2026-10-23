@@ -41,6 +41,7 @@ docker compose up -d         # 首次需构建
 | 页面 | 地址 |
 | --- | --- |
 | 首页（创建 + 链接库） | `/` |
+| 管理后台 | `/admin` |
 | 链接统计 | `/s/{短码}` |
 | 健康检查 | `/healthz` |
 | API 文档（DEBUG 模式） | `/api/docs` |
@@ -58,7 +59,15 @@ docker compose up -d         # 首次需构建
 | `GET` | `/api/qr/{code}` | 二维码 PNG |
 | `GET` | `/api/links/export` | 导出 CSV（沿用列表的筛选参数） |
 | `GET` | `/api/stats/summary` | 总览 |
-| `GET` | `/{code}` | 跳转（307），自动记录点击 |
+| `POST` | `/api/admin/login` | 后台登录 |
+| `GET` | `/api/admin/dashboard` | 仪表盘数据 |
+| `GET/POST` | `/api/admin/settings` | 读取 / 保存运行参数 |
+| `GET/POST` | `/api/admin/ua-rules` | UA 屏蔽规则 |
+| `GET/POST/DELETE` | `/api/admin/api-keys` | API 密钥管理 |
+| `POST` | `/api/admin/migrate/yourls` | 从 YOURLS 迁移 |
+| `POST` | `/api/admin/flush-clicks` | 立即结算延迟计数 |
+| `POST` | `/yourls-api` | YOURLS 兼容接口（shorturl / expand / url-stats / db-stats） |
+| `GET` | `/{code}` | 跳转（307），延迟记录点击 |
 
 创建示例：
 
@@ -134,3 +143,6 @@ app/
 - 默认 SQLite，日活十万以内完全够用；量大了切 Postgres 只需改 `DATABASE_URL`
 - 统计数据仅存 IP 的 SHA-256 前 32 位，不落明文 IP
 - 停用 / 过期 / 不存在的短码都会返回友好页面，不会裸奔报错
+- 延迟计数是内存缓冲，进程退出时会强制结算一次；极端崩溃可能丢最近几秒的点击
+- 被 UA 屏蔽的访问仍会跳转，也会留一条带 `blocked` 标记的记录，只是不计入点击数
+- 自动取标题会请求目标站，已做 SSRF 防护（内网/回环/链路本地地址一律不抓）

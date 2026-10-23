@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} · 管理后台{% endblock %}
+{% block content %}
+<section class="admin">
+  <div class="admin-head">
+    <div>
+      <p class="kicker">Console</p>
+      <h1>管理后台</h1>
+      <p class="lede">链接、防洪、密钥、迁移，一屏搞定。</p>
+    </div>
+    <div class="admin-head-actions">
+      <a class="btn ghost" href="/">回到首页</a>
+      <button class="btn ghost" id="logout-btn" type="button">退出登录</button>
+    </div>
+  </div>
+
+  <nav class="admin-tabs" id="admin-tabs">
+    <button class="admin-tab active" data-tab="dash" type="button">仪表盘</button>
+    <button class="admin-tab" data-tab="links" type="button">链接管理</button>
+    <button class="admin-tab" data-tab="guard" type="button">防洪 / UA 屏蔽</button>
+    <button class="admin-tab" data-tab="keys" type="button">API 密钥</button>
+    <button class="admin-tab" data-tab="migrate" type="button">数据迁移</button>
+    <button class="admin-tab" data-tab="settings" type="button">设置</button>
+  </nav>
+
+  <!-- 仪表盘 -->
+  <div class="admin-panel active" data-panel="dash">
+    <div class="stat-grid" id="dash-cards"></div>
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>近 14 天点击</h2>
+        <span class="hint">延迟计数待结算 <b id="dash-pending">0</b> 条</span>
+      </div>
+      <div class="chart-scroll"><div class="chart" id="dash-chart"></div></div>
+    </div>
+    <div class="admin-cols">
+      <div class="chart-card">
+        <div class="chart-head"><h2>点击 Top</h2></div>
+        <ul class="ref-list" id="dash-top"></ul>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><h2>最近访问</h2></div>
+        <ul class="ref-list" id="dash-recent"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 链接管理 -->
+  <div class="admin-panel" data-panel="links">
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>链接管理</h2>
+        <div class="board-tools">
+          <div class="search">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21 21l-4.3-4.3M17 10a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <input id="admin-search" type="search" placeholder="搜索短码 / 目标 / 标题" />
+          </div>
+          <select id="admin-status" aria-label="状态筛选">
+            <option value="">全部状态</option>
+            <option value="enabled">已启用</option>
+            <option value="disabled">已停用</option>
+            <option value="expired">已过期</option>
+          </select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody id="admin-links-body"></tbody>
+        </table>
+        <div class="empty" id="admin-links-empty" hidden><p>没有符合条件的链接</p></div>
+      </div>
+      <div class="pager">
+        <button class="btn ghost" id="admin-prev" type="button">上一页</button>
+        <span id="admin-page-info"></span>
+        <button class="btn ghost" id="admin-next" type="button">下一页</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 防洪 / UA 屏蔽 -->
+  <div class="admin-panel" data-panel="guard">
+    <div class="chart-card">
+      <div class="chart-head"><h2>防洪</h2><span class="hint">改完即时生效</span></div>
+      <form class="composer-form" id="guard-form" autocomplete="off">
+        <div class="row">
+          <div class="field">
+            <label for="guard-redirect">单 IP 每分钟跳转上限</label>
+            <input id="guard-redirect" type="number" min="0" step="1" />
+          </div>
+          <div class="field">
+            <label for="guard-click">单 IP 每日点击上限 <span class="hint">0 不限制</span></label>
+            <input id="guard-click" type="number" min="0" step="1" />
+          </div>
+        </div>
+        <div class="composer-actions">
+          <button type="submit" class="btn primary">保存防洪策略</button>
+          <span class="status" id="guard-status" role="status"></span>
+        </div>
+      </form>
+    </div>
+    <div class="chart-card">
+      <div class="chart-head"><h2>UA 屏蔽</h2><span class="hint">一行一条，支持 * 通配</span></div>
+      <form class="composer-form" id="ua-form" autocomplete="off">
+        <div class="field">
+          <label for="ua-rules">屏蔽的 User-Agent</label>
+          <textarea id="ua-rules" rows="6" placeholder="curl/&#10;python-requests&#10;BadBot*"></textarea>
+        </div>
+        <div class="composer-actions">
+          <button type="submit" class="btn primary">保存规则</button>
+          <span class="status" id="ua-status" role="status"></span>
+        </div>
+      </form>
+      <p class="hint">命中规则的访问仍然照常跳转，只是不计入点击数，并在「最近访问」里标记为已拦截。</p>
+    </div>
+  </div>
+
+  <!-- API 密钥 -->
+  <div class="admin-panel" data-panel="keys">
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>API 密钥</h2>
+        <button class="btn primary" id="new-key-btn" type="button">新建密钥</button>
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead><tr><th>名称</th><th>密钥</th><th>状态</th><th>最近使用</th><th>操作</th></tr></thead>
+          <tbody id="keys-body"></tbody>
+        </table>
+        <div class="empty" id="keys-empty" hidden><p>还没有密钥</p></div>
+      </div>
+      <p class="hint">开启「设置 → 要求 API 密钥」后，所有 <code>/api/*</code> 请求都要带头部 <code>X-Api-Key</code> 或参数 <code>?key=</code>。</p>
+    </div>
+  </div>
+
+  <!-- 数据迁移 -->
+  <div class="admin-panel" data-panel="migrate">
+    <div class="chart-card">
+      <div class="chart-head"><h2>从 YOURLS 迁移</h2><span class="hint">SQL 转储或 JSON 导出</span></div>
+      <form class="composer-form" id="migrate-form" autocomplete="off">
+        <div class="field">
+          <label for="migrate-payload">粘贴 YOURLS 数据</label>
+          <textarea id="migrate-payload" rows="9" placeholder="INSERT INTO `yourls_url` (`keyword`, `url`, ...) VALUES (...);&#10;或 JSON：{&quot;keyword&quot;: &quot;https://...&quot;}"></textarea>
+        </div>
+        <div class="composer-actions">
+          <button type="submit" class="btn primary" id="migrate-btn">开始迁移</button>
+          <span class="status" id="migrate-status" role="status"></span>
+        </div>
+      </form>
+      <p class="hint">短码冲突时会自动换一个可用短码，不会覆盖你已有的链接。</p>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div class="admin-panel" data-panel="settings">
+    <div class="chart-card">
+      <div class="chart-head"><h2>站点设置</h2><span class="hint">环境变量是出厂默认</span></div>
+      <form class="composer-form" id="settings-form" autocomplete="off">
+        <div class="row">
+          <div class="field">
+            <label for="set-site">站点名称</label>
+            <input id="set-site" type="text" maxlength="32" />
+          </div>
+          <div class="field">
+            <label for="set-create">单 IP 每日创建上限 <span class="hint">0 不限制</span></label>
+            <input id="set-create" type="number" min="0" step="1" />
+          </div>
+        </div>
+        <label class="check">
+          <input id="set-fetch" type="checkbox" />
+          <span>创建时自动获取目标页标题</span>
+        </label>
+        <label class="check">
+          <input id="set-require-key" type="checkbox" />
+          <span>要求 API 请求携带密钥</span>
+        </label>
+        <div class="composer-actions">
+          <button type="submit" class="btn primary">保存设置</button>
+          <button class="btn ghost" id="reset-settings" type="button">恢复默认</button>
+          <button class="btn ghost" id="flush-btn" type="button">立即结算延迟计数</button>
+          <span class="status" id="settings-status" role="status"></span>
+        </div>
+      </form>
+      <p class="hint">延迟计数周期 <b id="flush-interval">5</b> 秒；当前缓冲 <b id="pending-count">0</b> 条。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 登录 -->
+<div class="gate" id="admin-login" hidden>
+  <form class="gate-card" id="admin-login-form" autocomplete="off">
+    <img src="/static/logo/icon.svg" alt="" width="40" height="40" />
+    <h3>管理后台登录</h3>
+    <p class="hint">使用部署时配置的 ADMIN_TOKEN</p>
+    <input id="login-user" type="text" placeholder="账号" autocomplete="username" />
+    <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password" />
+    <button class="btn primary" type="submit">登录</button>
+    <span class="status" id="login-status" role="status"></span>
+  </form>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+{% endblock %}
+{% block scripts %}<script src="/static/admin.js" defer></script>{% endblock %}

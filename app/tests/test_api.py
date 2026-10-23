@@ -75,11 +75,12 @@ class TestCreate:
 
 
 class TestRedirect:
-    def test_redirect_and_click(self, client):
+    def test_redirect_and_click(self, client, flush_clicks):
         link = create(client, code="go1")
         r = client.get("/go1", follow_redirects=False)
         assert r.status_code == 307
         assert r.headers["location"] == "https://example.com/page"
+        assert flush_clicks() == 1
         detail = client.get("/api/links/go1").json()
         assert detail["clicks"] == 1
 
@@ -173,10 +174,11 @@ class TestUpdateDelete:
 
 
 class TestStatsAndQr:
-    def test_stats(self, client):
+    def test_stats(self, client, flush_clicks):
         create(client, code="st1")
         client.get("/st1")
         client.get("/st1")
+        assert flush_clicks() == 2
         data = client.get("/api/links/st1/stats").json()
         assert data["clicks"] == 2
         assert data["unique_visitors"] >= 1

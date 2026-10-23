@@ -138,3 +138,84 @@ class StatsOut(BaseModel):
 class MessageOut(BaseModel):
     ok: bool = True
     message: str
+
+
+class SettingsOut(BaseModel):
+    """后台可见的生效配置。"""
+
+    site_name: str
+    redirect_rate_limit: int
+    click_daily_limit: int
+    fetch_title: bool
+    require_api_key: bool
+    create_daily_limit: int
+    click_flush_interval: int
+    pending_clicks: int
+    admin_enabled: bool
+    access_required: bool
+
+
+class SettingsUpdate(BaseModel):
+    site_name: Optional[str] = None
+    redirect_rate_limit: Optional[int] = None
+    click_daily_limit: Optional[int] = None
+    fetch_title: Optional[bool] = None
+    require_api_key: Optional[bool] = None
+    create_daily_limit: Optional[int] = None
+
+
+class UaRuleOut(BaseModel):
+    ok: bool = True
+    rules: list[str] = Field(default_factory=list)
+
+
+class ApiKeyOut(BaseModel):
+    id: int
+    name: str
+    key: str
+    enabled: bool
+    created_at: Optional[dt.datetime] = None
+    last_used_at: Optional[dt.datetime] = None
+
+
+class ApiKeyCreate(BaseModel):
+    name: Optional[str] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _v_name(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v[:64] or None
+
+
+class MigrationOut(BaseModel):
+    ok: bool = True
+    imported: int
+    renamed: int
+    failed: int
+    total: int
+
+
+class MigrationIn(BaseModel):
+    payload: str = Field(..., description="YOURLS 的 SQL 转储或 JSON 导出文本")
+
+
+class AdminLogin(BaseModel):
+    username: str
+    password: str
+
+
+class DashboardOut(BaseModel):
+    total_links: int
+    total_clicks: int
+    enabled_links: int
+    disabled_links: int
+    expired_links: int
+    pending_clicks: int
+    blocked_events: int
+    clicks_today: int
+    top_links: list[dict] = Field(default_factory=list)
+    recent_clicks: list[dict] = Field(default_factory=list)
+    daily: list[dict] = Field(default_factory=list)

@@ -1,0 +1,350 @@
+/* 管理后台逻辑 */
+(function () {
+  'use strict';
+
+  const $ = (s) => document.querySelector(s);
+  const escapeHtml = (str) =>
+    String(str == null ? '' : str).replace(/[&<>"']/g, (c) =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  let toastTimer = null;
+  function toast(msg) {
+    const el = $('#toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
+  }
+
+  function setStatus(id, msg, kind) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  async function api(path, options) {
+    const res = await fetch(path, options);
+    if (res.status === 401) { showLogin(); throw new Error('请先登录'); }
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) throw new Error(data.message || `请求失败（${res.status}）`);
+    return data;
+  }
+
+  const post = (path, body) =>
+    api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+
+  /* ---------- 登录 ---------- */
+  function showLogin() { const g = $('#admin-login'); if (g) g.hidden = false; }
+  function hideLogin() { const g = $('#admin-login'); if (g) g.hidden = true; }
+
+  function bindLogin() {
+    const form = $('#admin-login-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setStatus('#login-status', '登录中…');
+      try {
+        await post('/api/admin/login', {
+          username: ($('#login-user').value || '').trim(),
+          password: $('#login-pass').value || '',
+        });
+        hideLogin();
+        toast('登录成功');
+        boot();
+      } catch (err) {
+        setStatus('#login-status', err.message, 'err');
+      }
+    });
+    const out = $('#logout-btn');
+    if (out) out.addEventListener('click', async () => {
+      await post('/api/admin/logout', {});
+      toast('已退出');
+      showLogin();
+    });
+  }
+
+  /* ---------- 页签 ---------- */
+  function bindTabs() {
+    const wrap = $('#admin-tabs');
+    if (!wrap) return;
+    wrap.addEventListener('click', (e) => {
+      const btn = e.target.closest('.admin-tab');
+      if (!btn) return;
+      wrap.querySelectorAll('.admin-tab').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.admin-panel').forEach((p) => {
+        p.classList.toggle('active', p.dataset.panel === btn.dataset.tab);
+      });
+      if (btn.dataset.tab === 'dash') loadDashboard();
+      if (btn.dataset.tab === 'links') loadAdminLinks();
+      if (btn.dataset.tab === 'keys') loadKeys();
+      if (btn.dataset.tab === 'guard') loadGuard();
+      if (btn.dataset.tab === 'settings') loadSettings();
+    });
+  }
+
+  /* ---------- 仪表盘 ---------- */
+  async function loadDashboard() {
+    try {
+      const d = await api('/api/admin/dashboard');
+      const cards = [
+        ['链接总数', d.total_links], ['总点击', d.total_clicks],
+        ['已启用', d.enabled_links], ['已停用', d.disabled_links],
+        ['已过期', d.expired_links], ['今日点击', d.clicks_today],
+        ['拦截访问', d.blocked_events], ['待结算', d.pending_clicks],
+      ];
+      $('#dash-cards').innerHTML = cards
+        .map(([k, v]) => `<div class="stat-card"><span class="stat-label">${k}</span><strong>${v}</strong></div>`)
+        .join('');
+      $('#dash-pending').textContent = d.pending_clicks;
+      renderChart($('#dash-chart'), d.daily);
+      $('#dash-top').innerHTML = d.top_links.length
+        ? d.top_links.map((l) => `<li><span class="mono">/${escapeHtml(l.code)}</span><b>${l.clicks}</b></li>`).join('')
+        : '<li><span>暂无数据</span><b>0</b></li>';
+      $('#dash-recent').innerHTML = d.recent_clicks.length
+        ? d.recent_clicks.map((c) => {
+            const mark = c.blocked ? '<span class="badge exp">已拦截</span>' : '';
+            return `<li><span class="mono">/${escapeHtml(c.code)}</span><span>${escapeHtml(c.device)}${mark}</span></li>`;
+          }).join('')
+        : '<li><span>暂无访问</span><b>—</b></li>';
+    } catch (err) { toast(err.message); }
+  }
+
+  function renderChart(el, daily) {
+    if (!el) return;
+    const max = Math.max(1, ...daily.map((d) => d.count));
+    el.innerHTML = daily
+      .map((d) => `<div class="bar" title="${d.date}：${d.count}"><i style="height:${(d.count / max) * 100}%"></i><b>${d.date.slice(5)}</b></div>`)
+      .join('');
+  }
+
+  /* ---------- 链接管理 ---------- */
+  const lstate = { page: 1, size: 10, q: '', status: '', total: 0 };
+
+  async function loadAdminLinks() {
+    const params = new URLSearchParams({ page: lstate.page, page_size: lstate.size });
+    if (lstate.q) params.set('q', lstate.q);
+    if (lstate.status) params.set('status', lstate.status);
+    try {
+      const data = await api('/api/links?' + params.toString());
+      lstate.total = data.total;
+      $('#admin-links-body').innerHTML = data.items.map((l) => `<tr>
+        <td><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
+        <td class="target-cell" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
+        <td class="clicks-cell">${l.clicks}</td>
+        <td>${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
+        <td>
+          <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(l.code)}">${l.enabled ? '停用' : '启用'}</button>
+          <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(l.code)}">删除</button>
+        </td>
+      </tr>`).join('');
+      $('#admin-links-empty').hidden = data.items.length > 0;
+      const pages = Math.max(1, Math.ceil(data.total / lstate.size));
+      $('#admin-page-info').textContent = `第 ${data.page} 页 / 共 ${pages} 页`;
+      $('#admin-prev').disabled = data.page <= 1;
+      $('#admin-next').disabled = data.page * lstate.size >= data.total;
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindAdminLinks() {
+    const body = $('#admin-links-body');
+    if (!body) return;
+    let t = null;
+    $('#admin-search').addEventListener('input', (e) => {
+      clearTimeout(t);
+      t = setTimeout(() => { lstate.q = e.target.value.trim(); lstate.page = 1; loadAdminLinks(); }, 260);
+    });
+    $('#admin-status').addEventListener('change', (e) => { lstate.status = e.target.value; lstate.page = 1; loadAdminLinks(); });
+    $('#admin-prev').addEventListener('click', () => { if (lstate.page > 1) { lstate.page -= 1; loadAdminLinks(); } });
+    $('#admin-next').addEventListener('click', () => { lstate.page += 1; loadAdminLinks(); });
+    body.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const code = btn.dataset.code;
+      try {
+        if (btn.dataset.act === 'del') {
+          if (!confirm(`确定删除 /${code}？不可恢复`)) return;
+          await api('/api/links/' + encodeURIComponent(code), { method: 'DELETE' });
+          toast(`已删除 /${code}`);
+        } else {
+          const cur = await api('/api/links/' + encodeURIComponent(code));
+          await api('/api/links/' + encodeURIComponent(code), {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !cur.enabled }),
+          });
+          toast(`/${code} 已${cur.enabled ? '停用' : '启用'}`);
+        }
+        loadAdminLinks();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  /* ---------- 防洪 / UA ---------- */
+  async function loadGuard() {
+    try {
+      const s = await api('/api/admin/settings');
+      $('#guard-redirect').value = s.redirect_rate_limit;
+      $('#guard-click').value = s.click_daily_limit;
+      const ua = await api('/api/admin/ua-rules');
+      $('#ua-rules').value = (ua.rules || []).join('\n');
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindGuard() {
+    const gf = $('#guard-form');
+    if (gf) gf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setStatus('#guard-status', '保存中…');
+      try {
+        await post('/api/admin/settings', {
+          redirect_rate_limit: parseInt($('#guard-redirect').value, 10) || 0,
+          click_daily_limit: parseInt($('#guard-click').value, 10) || 0,
+        });
+        setStatus('#guard-status', '已保存', 'ok');
+        toast('防洪策略已更新');
+      } catch (err) { setStatus('#guard-status', err.message, 'err'); }
+    });
+    const uf = $('#ua-form');
+    if (uf) uf.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setStatus('#ua-status', '保存中…');
+      try {
+        const r = await post('/api/admin/ua-rules', { rules: $('#ua-rules').value });
+        $('#ua-rules').value = (r.rules || []).join('\n');
+        setStatus('#ua-status', `已保存 ${r.rules.length} 条规则`, 'ok');
+        toast('UA 屏蔽规则已更新');
+      } catch (err) { setStatus('#ua-status', err.message, 'err'); }
+    });
+  }
+
+  /* ---------- API 密钥 ---------- */
+  async function loadKeys() {
+    try {
+      const keys = await api('/api/admin/api-keys');
+      $('#keys-body').innerHTML = keys.map((k) => `<tr>
+        <td>${escapeHtml(k.name)}</td>
+        <td><code class="key-cell">${escapeHtml(k.key)}</code></td>
+        <td>${k.enabled ? '<span class="badge on">启用</span>' : '<span class="badge off">停用</span>'}</td>
+        <td class="created-cell">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '未使用'}</td>
+        <td><button class="btn tiny danger" data-key="${k.id}">删除</button></td>
+      </tr>`).join('');
+      $('#keys-empty').hidden = keys.length > 0;
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindKeys() {
+    const nb = $('#new-key-btn');
+    if (nb) nb.addEventListener('click', async () => {
+      try {
+        const k = await post('/api/admin/api-keys', {});
+        toast('已创建密钥，请及时复制');
+        await navigator.clipboard?.writeText(k.key).catch(() => {});
+        loadKeys();
+      } catch (err) { toast(err.message); }
+    });
+    const body = $('#keys-body');
+    if (body) body.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-key]');
+      if (!btn) return;
+      if (!confirm('确定删除该密钥？')) return;
+      try {
+        await api('/api/admin/api-keys/' + btn.dataset.key, { method: 'DELETE' });
+        toast('已删除');
+        loadKeys();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  /* ---------- 迁移 ---------- */
+  function bindMigrate() {
+    const form = $('#migrate-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = $('#migrate-payload').value;
+      if (!payload.trim()) { setStatus('#migrate-status', '先粘贴点数据', 'err'); return; }
+      const btn = $('#migrate-btn');
+      btn.disabled = true;
+      setStatus('#migrate-status', '解析并导入中…');
+      try {
+        const r = await post('/api/admin/migrate/yourls', { payload });
+        setStatus('#migrate-status', `导入 ${r.imported} 条，换码 ${r.renamed}，失败 ${r.failed}`, 'ok');
+        toast(`迁移完成：${r.imported} 条`);
+      } catch (err) {
+        setStatus('#migrate-status', err.message, 'err');
+      } finally { btn.disabled = false; }
+    });
+  }
+
+  /* ---------- 设置 ---------- */
+  async function loadSettings() {
+    try {
+      const s = await api('/api/admin/settings');
+      $('#set-site').value = s.site_name;
+      $('#set-create').value = s.create_daily_limit;
+      $('#set-fetch').checked = !!s.fetch_title;
+      $('#set-require-key').checked = !!s.require_api_key;
+      $('#flush-interval').textContent = s.click_flush_interval;
+      $('#pending-count').textContent = s.pending_clicks;
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindSettings() {
+    const form = $('#settings-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      setStatus('#settings-status', '保存中…');
+      try {
+        await post('/api/admin/settings', {
+          site_name: ($('#set-site').value || '').trim() || 'SimpleURL',
+          create_daily_limit: parseInt($('#set-create').value, 10) || 0,
+          fetch_title: $('#set-fetch').checked,
+          require_api_key: $('#set-require-key').checked,
+        });
+        setStatus('#settings-status', '已保存', 'ok');
+        toast('设置已保存');
+      } catch (err) { setStatus('#settings-status', err.message, 'err'); }
+    });
+    const rs = $('#reset-settings');
+    if (rs) rs.addEventListener('click', async () => {
+      if (!confirm('恢复所有设置为环境变量默认值？')) return;
+      try { await post('/api/admin/settings/reset', {}); toast('已恢复默认'); loadSettings(); }
+      catch (err) { toast(err.message); }
+    });
+    const fb = $('#flush-btn');
+    if (fb) fb.addEventListener('click', async () => {
+      try {
+        const r = await post('/api/admin/flush-clicks', {});
+        toast(`已结算 ${r.written} 条点击`);
+        loadDashboard();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  /* ---------- 启动 ---------- */
+  async function boot() {
+    bindTabs(); bindAdminLinks(); bindGuard(); bindKeys(); bindMigrate(); bindSettings();
+    await loadDashboard();
+  }
+
+  document.addEventListener('DOMContentLoaded', async () => {
+    bindLogin();
+    try {
+      const s = await api('/api/admin/session');
+      if (s.admin) { hideLogin(); boot(); }
+      else if (s.enabled) { showLogin(); }
+      else {
+        // 没配 ADMIN_TOKEN：后台不可用，给个提示
+        const g = $('#admin-login');
+        if (g) {
+          g.hidden = false;
+          $('#admin-login-form').innerHTML =
+            '<img src="/static/logo/icon.svg" alt="" width="40" height="40" /><h3>后台未启用</h3><p class="hint">请设置 ADMIN_TOKEN 环境变量后重启</p>';
+        }
+      }
+    } catch (_) { showLogin(); }
+  });
+})();

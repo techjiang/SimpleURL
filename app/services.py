@@ -12,9 +12,13 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.core import guard
 from app.core.codes import generate_unique_code, normalize_code, validate_custom_code
 from app.core.config import settings
+from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
+from app.core.settings_store import effective
+from app.core.titles import guess_title
 from app.core.timeutil import ensure_aware, utcnow
 from app.models import ClickEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
@@ -84,6 +88,9 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
     except IntegrityError as exc:
         db.rollback()
         raise ServiceError("该短码已被占用，换一个试试", 409) from exc
+    if not link.title and effective(db, "fetch_title"):
+        # 拿不到就留空，绝不让标题获取拖垮创建
+        link.title = guess_title(link.target)
     logger.info("创建短链 %s -> %s", link.code, link.target)
     return link
 
@@ -205,19 +212,26 @@ def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
     return link, link.target
 
 
-def record_click(db: Session, link: Link, referrer: str | None, ua: str | None, ip: str | None) -> None:
-    link.clicks = (link.clicks or 0) + 1
-    _, device = parse_user_agent(ua)
-    db.add(
-        ClickEvent(
-            link_id=link.id,
-            referrer=(referrer or "")[:512] or None,
-            ua=(ua or "")[:512] or None,
-            device=device,
-            ip_hash=ip_hash(ip) or None,
-        )
-    )
-    db.flush()
+def record_click(db: Session, link: Link, referrer: str | None, ua: str | None, ip: str | None) -> dict:
+    """记录一次点击。
+
+    走延迟计数：只入内存缓冲，不直接写库。UA 命中屏蔽规则时也照样记一条
+    （打上 blocked 标记），方便后台看到拦了多少，但不会算进点击数。
+    返回 {'recorded': bool, 'blocked': bool}
+    """
+    blocked_rule = guard.is_ua_blocked(ua, guard.blocked_ua_rules(db))
+    if blocked_rule:
+        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True)
+        logger.info("UA 屏蔽命中 %s -> %s", link.code, blocked_rule)
+        return {"recorded": False, "blocked": True}
+
+    allowed, reason = guard.check_click_quota(db, ip)
+    if not allowed:
+        logger.info("点击配额拦截 %s -> %s", link.code, reason)
+        return {"recorded": False, "blocked": False, "reason": reason}
+
+    click_buffer.add(db, link.id, referrer, ua, ip, blocked=False)
+    return {"recorded": True, "blocked": False}
 
 
 def get_stats(db: Session, code: str, days: int = 30) -> dict:
@@ -345,3 +359,71 @@ def _host(referrer: str) -> str | None:
     except ValueError:
         return None
     return h or None
+
+
+# ---------- 延迟计数辅助 ----------
+
+
+def pending_clicks(db: Session, code: str) -> int:
+    """某条链接还没落库的点击数。"""
+    link = get_link_by_code(db, code)
+    return click_buffer.pending_for(link.id)
+
+
+def flush_clicks() -> int:
+    """立即结算缓冲里的点击，返回写入条数。"""
+    return click_buffer.flush()
+
+
+# ---------- YOURLS 迁移 ----------
+
+
+def import_yourls(db: Session, rows: list[dict]) -> dict:
+    """把 YOURLS 导出的记录灌进库。
+
+    短码冲突时自动换一个可用的码，不让整批导入失败。
+    """
+    imported, skipped, failed = 0, 0, 0
+    for row in rows:
+        target = _ensure_target(row.get("target", ""))
+        code = normalize_code(row.get("code") or "")
+        if not target or not code:
+            failed += 1
+            continue
+        ok, _msg = validate_custom_code(code, settings.code_min_length, settings.code_max_length)
+        if not ok:
+            code = generate_unique_code(settings.code_length)
+        if _code_taken(db, code):
+            code = generate_unique_code(settings.code_length)
+            skipped += 1
+        link = Link(
+            code=code,
+            target=target,
+            title=(row.get("title") or "").strip()[:255] or None,
+            clicks=int(row.get("clicks") or 0),
+        )
+        created = row.get("created_at")
+        if created:
+            parsed = ensure_aware(created) if isinstance(created, dt.datetime) else _parse_iso(created)
+            if parsed:
+                link.created_at = parsed
+        db.add(link)
+        try:
+            db.flush()
+            imported += 1
+        except IntegrityError:
+            db.rollback()
+            failed += 1
+    logger.info("YOURLS 迁移完成：导入 %d，换码 %d，失败 %d", imported, skipped, failed)
+    return {"imported": imported, "renamed": skipped, "failed": failed, "total": len(rows)}
+
+
+def _code_taken(db: Session, code: str) -> bool:
+    return db.execute(select(Link.id).where(func.lower(Link.code) == code.lower())).first() is not None
+
+
+def _parse_iso(value: str):
+    try:
+        return ensure_aware(dt.datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+    except (ValueError, TypeError):
+        return None

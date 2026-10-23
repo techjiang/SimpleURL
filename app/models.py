@@ -86,9 +86,46 @@ class ClickEvent(Base):
     device: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     ip_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     country: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # 是否被 UA 屏蔽规则拦下（拦下也记一条，方便后台看战果）
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default='0')
 
     link: Mapped[Link] = relationship(back_populates="events")
 
     __table_args__ = (
         Index("ix_click_events_link_ts", "link_id", "ts"),
     )
+
+
+class Setting(Base):
+    """键值配置表：存可在后台改的运行参数。"""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class ApiKey(Base):
+    """API 访问密钥。"""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, default="默认密钥")
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_used_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "key": self.key,
+            "enabled": self.enabled,
+            "created_at": iso(self.created_at),
+            "last_used_at": iso(self.last_used_at),
+        }

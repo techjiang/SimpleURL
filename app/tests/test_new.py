@@ -69,18 +69,20 @@ class TestEdit:
 
 
 class TestDeviceStats:
-    def test_device_breakdown(self, client):
+    def test_device_breakdown(self, client, flush_clicks):
         client.post("/api/links", json={"target": "https://example.com/a", "code": "dv1"})
         client.get("/dv1", headers={"user-agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/131.0 Safari/537.36"})
         client.get("/dv1", headers={"user-agent": "Mozilla/5.0 (iPhone) Version/17.0 Mobile Safari/604.1"})
+        assert flush_clicks() == 2
         data = client.get("/api/links/dv1/stats").json()
         names = {d["device"]: d["count"] for d in data["devices"]}
         assert names.get("桌面端") == 1
         assert names.get("移动端") == 1
 
-    def test_bot_recorded(self, client):
+    def test_bot_recorded(self, client, flush_clicks):
         client.post("/api/links", json={"target": "https://example.com/a", "code": "dv2"})
         client.get("/dv2", headers={"user-agent": "curl/8.4.0"})
+        assert flush_clicks() == 1
         data = client.get("/api/links/dv2/stats").json()
         assert any(d["device"] == "机器人 / 脚本" for d in data["devices"])
 

@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from app.core import guard
+from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
@@ -18,7 +20,17 @@ logger = logging.getLogger("simpleurl")
 router = APIRouter(tags=["pages"])
 
 # 页面路径，不能被短码占用
-RESERVED_PATHS = {"healthz", "robots.txt", "s", "static", "api", "favicon.ico", "manifest.webmanifest"}
+RESERVED_PATHS = {
+    "healthz",
+    "robots.txt",
+    "s",
+    "static",
+    "api",
+    "admin",
+    "favicon.ico",
+    "manifest.webmanifest",
+    "yourls-api",
+}
 
 
 def _check_access(request: Request) -> bool:
@@ -36,6 +48,12 @@ def _access_denied(request: Request, code: str) -> HTMLResponse:
         ),
         status_code=403,
     )
+
+
+@router.get("/admin", response_class=HTMLResponse, summary="管理后台")
+def admin_page(request: Request):
+    """后台页本身不卡登录，前端按 /api/admin/session 结果自行弹登录框。"""
+    return HTMLResponse(templates.get_template("admin.html").render(request=request))
 
 
 @router.get("/healthz", summary="健康检查")
@@ -67,7 +85,17 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         )
     referrer = request.headers.get("referer") or request.headers.get("referrer")
     ua = request.headers.get("user-agent")
-    record_click(db, link, referrer=referrer, ua=ua, ip=client_ip(request))
+    ip = client_ip(request)
+
+    allowed, reason = guard.check_redirect_quota(db, ip)
+    if not allowed:
+        return HTMLResponse(
+            templates.get_template("gone.html").render(request=request, code=code, message=reason),
+            status_code=429,
+        )
+
+    # 延迟计数：只入缓冲，不阻塞跳转
+    record_click(db, link, referrer=referrer, ua=ua, ip=ip)
     db.commit()
     logger.info("跳转 %s -> %s", code, target)
     return RedirectResponse(url=target, status_code=307)

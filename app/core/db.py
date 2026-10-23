@@ -16,7 +16,7 @@ logger = logging.getLogger("simpleurl")
 
 _engine = None
 _SessionLocal: sessionmaker[Session] | None = None
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 class Base(DeclarativeBase):
@@ -58,11 +58,14 @@ def get_sessionmaker() -> sessionmaker[Session]:
     global _SessionLocal
     if _SessionLocal is not None:
         return _SessionLocal
+    # 先把 engine 建好（它内部有自己的锁），再进来建 sessionmaker，
+    # 避免持锁期间再次抢同一把锁把自己锁死。
+    engine = get_engine()
     with _lock:
         if _SessionLocal is not None:
             return _SessionLocal
         _SessionLocal = sessionmaker(
-            bind=get_engine(), autoflush=False, autocommit=False, expire_on_commit=False, future=True
+            bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True
         )
         return _SessionLocal
 

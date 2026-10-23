@@ -11,12 +11,16 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
+from app.admin_api import router as admin_router
 from app.api import router as api_router
+from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import init_db
 from app.pages import router as pages_router
 from app.services import ServiceError
 from app.web import templates
+from app.yourls_api import install as install_yourls_mw
+from app.yourls_api import router as yourls_router
 
 logging.basicConfig(
     level=logging.DEBUG if settings.debug else logging.INFO,
@@ -28,8 +32,17 @@ logger = logging.getLogger("simpleurl")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    click_buffer.start(settings.click_flush_interval)
     logger.info("SimpleURL v%s 已启动", __version__)
     yield
+    # 退出前把缓冲里的点击结算掉，别丢数据
+    try:
+        written = click_buffer.flush_all()
+        if written:
+            logger.info("退出前结算 %d 条点击", written)
+    except Exception:
+        logger.exception("退出前结算点击失败")
+    click_buffer.stop()
     logger.info("SimpleURL 已关闭")
 
 
@@ -43,7 +56,10 @@ app = FastAPI(
 )
 
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
+install_yourls_mw(app)
 app.include_router(api_router)
+app.include_router(admin_router)
+app.include_router(yourls_router)
 app.include_router(pages_router)
 
 
