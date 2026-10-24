@@ -131,9 +131,14 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
             "blocked": bool(blocked),
             "ts": ensure_iso(ts),
             "referrer": (referrer or "")[:80] or None,
+            "platform": platform_key or "",
+            "platform_label": social.label(platform_key),
         }
-        for code, device, blocked, ts, referrer in db.execute(
-            select(Link.code, ClickEvent.device, ClickEvent.blocked, ClickEvent.ts, ClickEvent.referrer)
+        for code, device, blocked, ts, referrer, platform_key in db.execute(
+            select(
+                Link.code, ClickEvent.device, ClickEvent.blocked,
+                ClickEvent.ts, ClickEvent.referrer, ClickEvent.platform,
+            )
             .join(Link, Link.id == ClickEvent.link_id)
             .order_by(ClickEvent.ts.desc())
             .limit(12)
@@ -280,23 +285,39 @@ def api_save_social_rules(payload: dict, request: Request, db: Session = Depends
 @router.get("/platform-stats", summary="社交平台访问分布")
 def api_platform_stats(request: Request, days: int = Query(14, ge=1, le=365), db: Session = Depends(get_db)):
     require_admin(request)
-    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days - 1)
-    rows = db.execute(
-        select(ClickEvent.platform, ClickEvent.blocked, func.count(ClickEvent.id))
-        .where(ClickEvent.ts >= since)
-        .group_by(ClickEvent.platform, ClickEvent.blocked)
-    ).all()
-    agg: dict[str, dict] = {}
-    for key, blocked, count in rows:
-        item = agg.setdefault(key or "other", {"key": key or "other", "count": 0, "blocked": 0})
-        if blocked:
-            item["blocked"] += int(count)
-        else:
-            item["count"] += int(count)
-    items = sorted(agg.values(), key=lambda i: i["count"] + i["blocked"], reverse=True)
-    for item in items:
-        item["label"] = social.label(None if item["key"] == "other" else item["key"])
+    items = guard.platform_hit_stats(db, days)
     return {"days": days, "items": items, "total": sum(i["count"] + i["blocked"] for i in items)}
+
+
+@router.get("/blocked-events", summary="最近被防洪规则拦下的访问")
+def api_blocked_events(
+    request: Request,
+    limit: int = Query(20, ge=1, le=100),
+    platform: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """拦截留痕：平台、时间、UA 摘要，不含 IP 明文（只存哈希也一并省略）。"""
+    require_admin(request)
+    stmt = (
+        select(Link.code, ClickEvent.platform, ClickEvent.ua, ClickEvent.ts)
+        .join(Link, Link.id == ClickEvent.link_id)
+        .where(ClickEvent.blocked.is_(True))
+        .order_by(ClickEvent.ts.desc())
+        .limit(limit)
+    )
+    if platform and social.known(platform):
+        stmt = stmt.where(ClickEvent.platform == platform)
+    items = [
+        {
+            "code": code,
+            "platform": platform_key or "",
+            "label": social.label(platform_key),
+            "ua": (ua or "")[:90],
+            "ts": ensure_iso(ts),
+        }
+        for code, platform_key, ua, ts in db.execute(stmt).all()
+    ]
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/api-keys", response_model=list[ApiKeyOut], summary="API 密钥列表")

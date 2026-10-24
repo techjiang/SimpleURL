@@ -115,7 +115,11 @@
       $('#dash-recent').innerHTML = d.recent_clicks.length
         ? d.recent_clicks.map((c) => {
             const mark = c.blocked ? '<span class="badge exp">已拦截</span>' : '';
-            return `<li><span class="mono">/${escapeHtml(c.code)}</span><span>${escapeHtml(c.device)}${mark}</span></li>`;
+            // 带上来源平台，一眼看出这条是被微信拦的还是 QQ 里点的
+            const plat = c.platform
+              ? `<i class="plat-dot" data-plat="${escapeHtml(c.platform)}" title="${escapeHtml(c.platform_label || '')}"></i>`
+              : '';
+            return `<li><span class="mono">/${escapeHtml(c.code)}</span><span>${plat}${escapeHtml(c.device)}${mark}</span></li>`;
           }).join('')
         : '<li><span>暂无访问</span><b>—</b></li>';
     } catch (err) { toast(err.message); }
@@ -243,6 +247,32 @@
         <li><span><i class="plat-dot" data-plat="${escapeHtml(i.key)}"></i>${escapeHtml(i.label)}</span>
         <b>${i.count}${i.blocked ? ` <em class="hint">拦截 ${i.blocked}</em>` : ''}</b></li>`).join('');
     } catch (err) { toast(err.message); }
+    loadBlockedEvents();
+  }
+
+  async function loadBlockedEvents() {
+    const list = $('#blocked-list');
+    if (!list) return;
+    try {
+      const data = await api('/api/admin/blocked-events?limit=8');
+      const items = data.items || [];
+      if (!items.length) {
+        list.innerHTML = '<li><span class="hint">还没有被拦下的访问</span><b>0</b></li>';
+        return;
+      }
+      list.innerHTML = items.map((i) => `
+        <li title="${escapeHtml(i.ua)}"><span><i class="plat-dot" data-plat="${escapeHtml(i.platform || 'other')}"></i>
+        ${escapeHtml(i.label)} · <span class="mono">/${escapeHtml(i.code)}</span></span>
+        <b>${escapeHtml(shortTime(i.ts))}</b></li>`).join('');
+    } catch (err) { toast(err.message); }
+  }
+
+  function shortTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
   function bindSocial() {

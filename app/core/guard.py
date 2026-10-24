@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import fnmatch
 import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core import social
 from app.core.security import rate_limiter
 from app.models import Setting
 
@@ -125,28 +127,64 @@ def platform_hit(platform: str | None, rules: dict[str, str]) -> str | None:
     return platform if rules.get(platform) == "block" else None
 
 
+def _client_key(ip: str | None) -> str | None:
+    """限速用的客户端标识。
+
+    不给 IP 就退化成「同一个人」——所有没有地址的请求共用一份配额。
+    反过来做（直接放行）等于留个后门：反代没配置好、连接信息缺失时，
+    限速会静默失效，而人还在以为有保护。
+    """
+    return ip or "unknown"
+
+
 def check_redirect_quota(db: Session, ip: str | None) -> tuple[bool, str | None]:
     """跳转限速：单 IP 每分钟上限。返回 (是否放行, 拒绝原因)。"""
     from app.core.settings_store import effective
 
     per_minute = effective(db, "redirect_rate_limit")
-    if not ip or not per_minute or per_minute <= 0:
+    if not per_minute or per_minute <= 0:
         return True, None
-    if not rate_limiter.allow(f"redirect:{ip}", per_minute, 60):
+    if not rate_limiter.allow(f"redirect:{_client_key(ip)}", per_minute, 60):
         return False, f"访问过于频繁（每分钟上限 {per_minute} 次），请稍后再试"
     return True, None
 
 
 def check_click_quota(db: Session, ip: str | None) -> tuple[bool, str | None]:
-    """点击数配额：单 IP 每日上限，超出后不计点击。"""
+    """点击数配额：单 IP 每日上限，按自然日重置，超出后不计点击。"""
     from app.core.settings_store import effective
 
     daily = effective(db, "click_daily_limit")
-    if not ip or not daily or daily <= 0:
+    if not daily or daily <= 0:
         return True, None
-    if not rate_limiter.allow(f"click:{ip}", daily, 86400):
+    if not rate_limiter.allow(f"click:{_client_key(ip)}", daily, 86400, daily=True):
         return False, f"今日点击次数已达上限（{daily} 次）"
     return True, None
+
+
+def platform_hit_stats(db: Session, days: int = 14) -> list[dict]:
+    """按平台汇总近 N 天访问：正常计数与拦截各多少。
+
+    只看 ClickEvent，不碰缓冲里还没落库的那部分——后台要的是趋势，
+    不是精确到秒的实时值，为这个去抢锁不值得。
+    """
+    from sqlalchemy import func, select
+
+    from app.core.timeutil import utcnow
+    from app.models import ClickEvent
+
+    since = utcnow() - dt.timedelta(days=max(1, days) - 1)
+    rows = db.execute(
+        select(ClickEvent.platform, ClickEvent.blocked, func.count(ClickEvent.id))
+        .where(ClickEvent.ts >= since)
+        .group_by(ClickEvent.platform, ClickEvent.blocked)
+    ).all()
+    agg: dict[str, dict] = {}
+    for key, blocked, count in rows:
+        item = agg.setdefault(key or "", {"key": key or "other", "count": 0, "blocked": 0})
+        item["blocked" if blocked else "count"] += int(count)
+    for item in agg.values():
+        item["label"] = social.label(None if item["key"] == "other" else item["key"])
+    return sorted(agg.values(), key=lambda i: i["count"] + i["blocked"], reverse=True)
 
 
 def reset_guard() -> None:

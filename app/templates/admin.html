@@ -39,7 +39,7 @@
         <ul class="ref-list" id="dash-top"></ul>
       </div>
       <div class="chart-card">
-        <div class="chart-head"><h2>最近访问</h2></div>
+        <div class="chart-head"><h2>最近访问</h2><span class="hint">含拦截留痕</span></div>
         <ul class="ref-list" id="dash-recent"></ul>
       </div>
     </div>
@@ -122,7 +122,7 @@
           <span class="status" id="social-status" role="status"></span>
         </div>
       </form>
-      <p class="hint">放行并计数＝正常访问；放行不计数＝挡住刷量但用户无感；拦截并提示＝返回带说明的中转页。被拦下的访问不计入点击数，但会在仪表盘留痕。</p>
+      <p class="hint">放行并计数＝正常访问；放行不计数＝挡住刷量但用户无感；拦截并提示＝返回带说明的中转页。被拦下的访问不计入点击数，但会在下方「拦截留痕」里看得到。</p>
     </div>
     <div class="chart-card">
       <div class="chart-head">
@@ -130,6 +130,13 @@
         <span class="hint">近 14 天</span>
       </div>
       <ul class="ref-list" id="platform-list"></ul>
+    </div>
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>拦截留痕</h2>
+        <span class="hint">最近被拦下的访问 · 只留痕不计数</span>
+      </div>
+      <ul class="ref-list" id="blocked-list"></ul>
     </div>
     <div class="chart-card">
       <div class="chart-head"><h2>UA 屏蔽</h2><span class="hint">一行一条，支持 * 通配</span></div>

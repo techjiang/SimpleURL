@@ -33,6 +33,12 @@ STRATEGIES = {
 }
 DEFAULT_STRATEGY = "allow"
 
+# Referer 里出现这些片段就认作对应平台
+REFERRER_TOKENS: dict[str, tuple[str, ...]] = {
+    "wechat": ("weixin.qq.com", "servicewechat.com"),
+    "qq": ("url.cn", "qurl.cn", "qzone.qq.com", "im.qq.com"),
+}
+
 # 常见来源落地页 -> 平台（微信/QQ 里经常拿不到 Referer，UA 也认不出时靠它兜底）
 _PLATFORM_TOKENS = tuple(
     (name, (marker, *marks)) for name, (marker, marks) in PLATFORMS.items()
@@ -49,7 +55,15 @@ def detect(ua: str | None, referrer: str | None = None) -> str | None:
             return key
     if referrer:
         ref = referrer.lower()
-        return platform_of_host(ref)
+        hit = platform_of_host(ref)
+        if hit:
+            return hit
+        # 最后一道：微信 / QQ 的「复制链接」会在 Referer 里带上自家域名，
+        # 认域名比猜 UA 稳，也顺手覆盖了从聊天窗口外链打开的情况
+        for key in ("wechat", "qq"):
+            for token in REFERRER_TOKENS.get(key, ()):
+                if token in ref:
+                    return key
     return None
 
 

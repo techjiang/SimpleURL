@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import ipaddress
 import re
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -168,27 +170,61 @@ def client_ip(request) -> str | None:
 
 
 class RateLimiter:
-    """极简内存滑动窗口限速器（按 key 计数）。"""
+    """极简内存滑动窗口限速器（按 key 计数）。
 
-    def __init__(self) -> None:
+    两件事必须做对，否则限速只是看起来在工作：
+    - **原子性**：先读后写在并发下会把上限放大好几倍，热链接上尤其明显
+    - **自然日配额**：`window` 给 86400 不代表「今日」，滚动 24 小时
+      会让昨晚刷满的人在今天早上还继续被拦。`daily=True` 按自然日重置。
+    """
+
+    def __init__(self, clock=None) -> None:
         self._hits: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+        self._clock = clock or time.time
+        self._last_sweep = 0.0
 
-    def allow(self, key: str, limit: int, window_seconds: int = 60) -> bool:
+    def allow(self, key: str, limit: int, window_seconds: int = 60, daily: bool = False) -> bool:
         # limit <= 0 一律视为不限制：0 是「关闭限速」的约定值，
         # 不能理解成「一次都不许过」
         if limit <= 0:
             return True
-        now = time.monotonic()
-        bucket = [t for t in self._hits.get(key, []) if now - t < window_seconds]
-        if len(bucket) >= limit:
+        now = self._clock()
+        with self._lock:
+            if daily and self._hits.get(key) and self._day_of(self._hits[key][-1]) != self._day_of(now):
+                # 跨自然日：昨天的配额一笔勾销
+                self._hits.pop(key, None)
+            since = self._day_start(now) if daily else now - window_seconds
+            bucket = [t for t in self._hits.get(key, []) if t >= since]
+            if len(bucket) >= limit:
+                self._hits[key] = bucket
+                return False
+            bucket.append(now)
             self._hits[key] = bucket
-            return False
-        bucket.append(now)
-        self._hits[key] = bucket
-        return True
+            self._sweep(now)
+            return True
+
+    @staticmethod
+    def _day_start(ts: float) -> float:
+        moment = dt.datetime.fromtimestamp(ts)
+        return moment.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+    @staticmethod
+    def _day_of(ts: float) -> dt.date:
+        return dt.datetime.fromtimestamp(ts).date()
+
+    def _sweep(self, now: float) -> None:
+        """每 10 分钟清一次过期 key，长跑进程的内存不能只涨不落。"""
+        if now - self._last_sweep < 600:
+            return
+        self._last_sweep = now
+        horizon = now - 86400
+        for key in [k for k, v in self._hits.items() if not v or v[-1] < horizon]:
+            self._hits.pop(key, None)
 
     def reset(self) -> None:
-        self._hits.clear()
+        with self._lock:
+            self._hits.clear()
 
 
 rate_limiter = RateLimiter()

@@ -222,9 +222,10 @@ def record_click(
 ) -> dict:
     """记录一次点击。
 
-    走延迟计数：只入内存缓冲，不直接写库。UA 命中屏蔽规则时也照样记一条
-    （打上 blocked 标记），方便后台看到拦了多少，但不会算进点击数。
-    微信 / QQ 等平台的访问会打上来源标记，方便统计里按平台分账。
+    走延迟计数：只入内存缓冲，不直接写库。几种「不计数」的情况都留痕
+    （打上 blocked 标记），后台才看得到拦了多少，但它们都不会进点击数。
+
+    社交平台策略里的 silent 在这里生效：照常跳转、只记不算。
     返回 {'recorded': bool, 'blocked': bool, 'platform': str | None}
     """
     platform = social.detect(ua, referrer)
@@ -243,6 +244,11 @@ def record_click(
     if not allowed:
         logger.info("点击配额拦截 %s -> %s", link.code, reason)
         return {"recorded": False, "blocked": False, "reason": reason, "platform": platform}
+
+    if platform and effective(db, "social_guard") and guard.platform_rules(db).get(platform) == "silent":
+        # 放行不计数：怀疑被刷量的平台上，真实用户照样能打开，只是不进统计
+        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
+        return {"recorded": False, "blocked": True, "platform": platform}
 
     click_buffer.add(db, link.id, referrer, ua, ip, blocked=False, platform=platform)
     return {"recorded": True, "blocked": False, "platform": platform}
