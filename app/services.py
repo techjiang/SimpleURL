@@ -10,11 +10,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core import runtime
+from app.core.clickbuffer import click_buffer
 from app.core.codes import generate_unique_code, normalize_code, validate_custom_code
 from app.core.config import settings
+from app.core.fetcher import fetch_title
 from app.core.security import is_public_url, ip_hash, rate_limiter
 from app.core.timeutil import ensure_aware, utcnow
-from app.models import ClickEvent, Link
+from app.models import ClickEvent, GuardEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
 
 logger = logging.getLogger("simpleurl")
@@ -45,9 +48,10 @@ def _expiry_guard(value: dt.datetime | None) -> dt.datetime | None:
 
 
 def check_create_quota(ip: str | None) -> None:
-    if not ip or settings.create_daily_limit <= 0:
+    limit = runtime.get_int("create_daily_limit")
+    if not ip or limit <= 0:
         return
-    if not rate_limiter.allow(f"create:{ip}", settings.create_daily_limit, 86400):
+    if not rate_limiter.allow(f"create:{ip}", limit, 86400):
         raise ServiceError("今日创建次数已达上限，请明天再试", 429)
 
 
@@ -65,11 +69,15 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         if exists:
             raise ServiceError("该短码已被占用，换一个试试", 409)
 
-    code = custom or generate_unique_code(settings.code_length)
+    code = custom or generate_unique_code(runtime.get_int("code_length"))
+    title = payload.title
+    if not title and runtime.get_bool("auto_title"):
+        # 抓不到就用 None，让前端显示 URL 兜底，不塞一个假标题
+        title = fetch_title(target)
     link = Link(
         code=code,
         target=target,
-        title=payload.title,
+        title=title,
         note=payload.note,
         tags=json.dumps(payload.tags, ensure_ascii=False) if payload.tags else None,
         expires_at=expires_at,
@@ -174,16 +182,30 @@ def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
 
 
 def record_click(db: Session, link: Link, referrer: str | None, ua: str | None, ip: str | None) -> None:
-    link.clicks = (link.clicks or 0) + 1
-    db.add(
-        ClickEvent(
-            link_id=link.id,
-            referrer=(referrer or "")[:512] or None,
-            ua=(ua or "")[:512] or None,
-            ip_hash=ip_hash(ip) or None,
+    """点击先入内存缓冲，由后台线程批量落库（见 core/clickbuffer.py）。
+
+    这里只把内存里的计数 +1，让同请求内的页面能立刻看到「刚被点过」，
+    真正的持久化交给批量事务。
+    """
+    click_buffer.add(link.id, referrer=referrer, ua=ua, ip_hash=ip_hash(ip) or None)
+
+
+def log_guard_event(db: Session, code: str | None, kind: str, ua: str | None,
+                    ip: str | None, detail: str = "") -> None:
+    """防洪留痕。写失败不影响跳转——留痕是辅助，不是主流程。"""
+    try:
+        db.add(
+            GuardEvent(
+                code=(code or "")[:32] or None,
+                kind=kind[:24],
+                ua=(ua or "")[:512] or None,
+                ip_hash=ip_hash(ip) or None,
+                detail=(detail or "")[:255] or None,
+            )
         )
-    )
-    db.flush()
+        db.flush()
+    except Exception as exc:  # pragma: no cover
+        logger.warning("写防洪日志失败：%s", exc)
 
 
 def get_stats(db: Session, code: str, days: int = 30) -> dict:

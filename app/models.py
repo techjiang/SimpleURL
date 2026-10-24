@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -90,4 +90,58 @@ class ClickEvent(Base):
 
     __table_args__ = (
         Index("ix_click_events_link_ts", "link_id", "ts"),
+    )
+
+
+class SettingsRow(Base):
+    """后台可改的运行期配置（键值对，值存 JSON 文本）。"""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class ApiKey(Base):
+    """API 密钥：只存哈希，明文仅在创建时回显一次。"""
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)  # 便于人工辨认，非机密
+    key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_used_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "prefix": self.prefix,
+            "created_at": iso(self.created_at),
+            "last_used_at": iso(self.last_used_at),
+            "revoked": self.revoked,
+        }
+
+
+class GuardEvent(Base):
+    """防洪留痕：被拦截或被 UA 屏蔽的请求，用来复盘攻击。"""
+
+    __tablename__ = "guard_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+    code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)  # rate / ua / wechat / qq
+    ua: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    ip_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (
+        Index("ix_guard_events_kind_ts", "kind", "ts"),
     )

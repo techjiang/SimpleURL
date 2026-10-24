@@ -15,7 +15,7 @@ import time
 
 from fastapi import Depends, Request
 
-from app.core import crypto
+from app.core import crypto, runtime
 from app.core.config import settings
 from app.core.security import client_ip
 
@@ -180,8 +180,14 @@ def _cookie(request: Request, name: str) -> str | None:
     return request.cookies.get(name)
 
 
+def current_mode() -> str:
+    """当前生效的访问模式：后台配置优先，其次环境变量。"""
+    mode = runtime.get_str("access_mode") or settings.access_mode
+    return mode if mode in ACCESS_MODES else MODE_PUBLIC
+
+
 def resolve_access(request: Request) -> Access:
-    mode = settings.access_mode
+    mode = current_mode()
     is_admin = is_admin_token(_cookie(request, ADMIN_COOKIE))
 
     if mode == MODE_PUBLIC:
@@ -220,6 +226,48 @@ def require_create(access: Access = Depends(get_access)) -> Access:
     if not access.can_create:
         raise AuthError(access.reason or "当前不允许创建短链接", 403)
     return access
+
+
+# ---- API 密钥 ----
+API_KEY_HEADER = "X-Api-Key"
+
+
+def _hash_api_key(raw: str) -> str:
+    return crypto.sign(settings.secret_key, f"apikey::{raw}")
+
+
+def create_api_key(db, name: str) -> tuple[str, object]:
+    """返回 (明文密钥, 记录)。明文只在这一刻存在，之后只能看前缀。"""
+    from app.models import ApiKey
+
+    raw = "sk_" + crypto.random_token(24)
+    record = ApiKey(name=(name or "未命名")[:64], prefix=raw[:10], key_hash=_hash_api_key(raw))
+    db.add(record)
+    db.flush()
+    return raw, record
+
+
+def verify_api_key(db, raw: str | None) -> bool:
+    """校验 API 密钥；命中就顺手记一次使用时间。"""
+    if not raw:
+        return False
+    from sqlalchemy import select
+
+    from app.models import ApiKey
+    from app.core.timeutil import utcnow
+
+    digest = _hash_api_key(raw.strip())
+    row = db.execute(select(ApiKey).where(ApiKey.revoked.is_(False))).scalars().all()
+    for record in row:
+        if crypto.compare_digest(record.key_hash, digest):
+            record.last_used_at = utcnow()
+            db.flush()
+            return True
+    return False
+
+
+def api_key_required() -> bool:
+    return runtime.get_bool("api_key_required")
 
 
 # ---- 简单的登录限速 ----

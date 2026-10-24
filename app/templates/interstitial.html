@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ link.title or ('/' + code) }} · {{ site_name }}{% endblock %}
+{% block content %}
+<section class="gate">
+  <div class="gate-card wide" id="interstitial" data-target="{{ target }}"
+       data-channel="{{ channel }}" data-code="{{ code }}">
+    <div class="channel-mark" aria-hidden="true">
+      {% if channel == 'wechat' %}<span class="ch ch-wechat">微信</span>{% else %}<span class="ch ch-qq">QQ</span>{% endif %}
+    </div>
+    <h1>{{ link.title or ('/' + code) }}</h1>
+    <p class="gate-tip">
+      你正在 {{ '微信' if channel == 'wechat' else 'QQ' }} 内置浏览器中打开这个短链接。
+      部分页面在这里会被拦截，建议复制到系统浏览器再访问。
+    </p>
+    <p class="target-box"><code id="target-text">{{ target }}</code></p>
+    <div class="inter-actions">
+      <button class="btn primary" id="copy-target" type="button">复制链接</button>
+      <a class="btn ghost" href="{{ target }}" rel="noopener" id="continue-btn">仍是继续访问</a>
+    </div>
+    <p class="gate-hint">已复制的链接可以粘贴到任意浏览器打开，统计仍然计数在这条短链上。</p>
+    <div class="gate-back"><a class="btn tiny ghost" href="/">← 返回 {{ site_name }}</a></div>
+  </div>
+</section>
+{% endblock %}

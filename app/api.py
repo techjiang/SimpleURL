@@ -29,6 +29,21 @@ logger = logging.getLogger("simpleurl")
 router = APIRouter(prefix="/api", tags=["api"])
 
 
+def api_key_guard(request: Request, db: Session = Depends(get_db)) -> None:
+    """开启「强制 API 密钥」后，/api/* 必须带 X-Api-Key。
+
+    放在路由函数里逐个调用而不是全局中间件，是为了让登录、跳转这些接口
+    不被误伤——客户端拿不到密钥就进不去后台，那才是真的锁死。
+    """
+    if not auth.api_key_required():
+        return
+    header = request.headers.get(auth.API_KEY_HEADER)
+    if not header:
+        raise auth.AuthError(f"缺少 {auth.API_KEY_HEADER} 请求头", 401)
+    if not auth.verify_api_key(db, header):
+        raise auth.AuthError("API 密钥无效", 401)
+
+
 def _serialize(link: Link, request: Request) -> LinkOut:
     out = LinkOut.model_validate(link.to_dict())
     out.short_url = str(request.base_url).rstrip("/") + "/" + link.code
@@ -39,6 +54,7 @@ def _serialize(link: Link, request: Request) -> LinkOut:
 def api_list_links(
     request: Request,
     _: Access = Depends(require_admin),
+    __: None = Depends(api_key_guard),
     q: str | None = Query(None, description="搜索短码/目标/标题/标签"),
     tag: str | None = None,
     status: str | None = Query(None, pattern="^(enabled|disabled|expired)$"),
@@ -58,6 +74,7 @@ def api_create_link(
     payload: LinkCreate,
     request: Request,
     access: Access = Depends(require_create),
+    __: None = Depends(api_key_guard),
     db: Session = Depends(get_db),
 ):
     link = create_link(db, payload, ip=client_ip(request))
@@ -86,7 +103,12 @@ def api_update_link(
 
 
 @router.delete("/links/{code}", summary="删除短链接")
-def api_delete_link(code: str, _: Access = Depends(require_admin), db: Session = Depends(get_db)):
+def api_delete_link(
+    code: str,
+    _: Access = Depends(require_admin),
+    __: None = Depends(api_key_guard),
+    db: Session = Depends(get_db),
+):
     delete_link(db, code)
     db.commit()
     return {"ok": True, "message": f"已删除 {code}"}
@@ -163,6 +185,13 @@ def _set_session(request: Request, response: Response, name: str, value: str) ->
         secure=_is_https(request),  # https 下才加 Secure，防明文嗅探
         path="/",
     )
+
+
+@router.get("/announcement", summary="站点公告")
+def api_announcement():
+    from app.core import runtime
+
+    return {"text": runtime.get_str("announcement"), "site_name": runtime.get_str("site_name")}
 
 
 @router.get("/access", summary="当前访问模式与身份")

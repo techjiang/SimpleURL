@@ -246,6 +246,7 @@
       <td>${badgeOf(link)}</td>
       <td>
         <a class="btn tiny ghost" href="/${encodeURIComponent(link.code)}" target="_blank" rel="noopener">访问</a>
+        <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(link.code)}">编辑</button>
         <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(link.code)}">${link.enabled ? '停用' : '启用'}</button>
         <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(link.code)}">删除</button>
       </td>
@@ -291,11 +292,22 @@
     $('#prev-btn').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; loadLinks(); } });
     $('#next-btn').addEventListener('click', () => { state.page += 1; loadLinks(); });
 
+    const sizeSel = $('#page-size');
+    if (sizeSel) sizeSel.addEventListener('change', (e) => {
+      state.pageSize = Number(e.target.value) || 10; state.page = 1; loadLinks();
+    });
+    const exportBtn = $('#export-btn');
+    if (exportBtn) exportBtn.addEventListener('click', exportCsv);
+
     body.addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-act]');
       if (!btn) return;
       const code = btn.dataset.code;
       try {
+        if (btn.dataset.act === 'edit') {
+          await openEditor(code);
+          return;
+        }
         if (btn.dataset.act === 'del') {
           if (!confirm(`确定删除 /${code} ？该操作不可恢复`)) return;
           await api('/api/links/' + encodeURIComponent(code), { method: 'DELETE' });
@@ -317,6 +329,97 @@
     });
   }
 
+
+  /* ---------- 编辑弹窗 ---------- */
+  let editing = null;
+
+  async function openEditor(code) {
+    let link;
+    try {
+      link = await api('/api/links/' + encodeURIComponent(code));
+    } catch (err) { toast(err.message); return; }
+    editing = link;
+    const modal = $('#editor');
+    if (!modal) return;
+    $('#edit-code').textContent = '/' + link.code;
+    $('#edit-target').value = link.target || '';
+    $('#edit-title').value = link.title || '';
+    $('#edit-tags').value = (link.tags || []).join(', ');
+    $('#edit-expires').value = link.expires_at ? link.expires_at.slice(0, 16) : '';
+    $('#edit-status').textContent = '';
+    modal.hidden = false;
+    $('#edit-target').focus();
+  }
+
+  function closeEditor() {
+    const modal = $('#editor');
+    if (modal) modal.hidden = true;
+    editing = null;
+  }
+
+  function bindEditor() {
+    const modal = $('#editor');
+    if (!modal) return;
+    $('#edit-cancel').addEventListener('click', closeEditor);
+    $('#edit-cancel-2').addEventListener('click', closeEditor);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeEditor(); });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !modal.hidden) closeEditor();
+    });
+
+    $('#edit-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!editing) return;
+      const btn = $('#edit-save');
+      const payload = {
+        target: $('#edit-target').value.trim(),
+        title: $('#edit-title').value.trim(),
+        tags: $('#edit-tags').value.trim(),
+        // 清空过期时间要显式传 null，否则后端会当成「未提供」
+        expires_at: $('#edit-expires').value ? $('#edit-expires').value : null,
+      };
+      btn.disabled = true;
+      $('#edit-status').textContent = '保存中…';
+      try {
+        await api('/api/links/' + encodeURIComponent(editing.code), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        toast('已保存');
+        closeEditor();
+        loadLinks();
+      } catch (err) {
+        $('#edit-status').textContent = err.message;
+      } finally { btn.disabled = false; }
+    });
+  }
+
+  /* ---------- CSV 导出 ---------- */
+  async function exportCsv() {
+    const params = new URLSearchParams({ page: 1, page_size: 100, sort: state.sort });
+    if (state.q) params.set('q', state.q);
+    if (state.status) params.set('status', state.status);
+    try {
+      const data = await api('/api/links?' + params.toString());
+      const head = ['短码', '目标地址', '标题', '标签', '点击', '状态', '创建时间'];
+      const rows = data.items.map((l) => [
+        l.code, l.target, l.title || '', (l.tags || []).join('|'),
+        l.clicks, l.expired ? '已过期' : l.enabled ? '已启用' : '已停用', fmtDate(l.created_at),
+      ]);
+      const cell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+      const csv = [head, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
+      // 带 BOM，Excel 双击打开中文不乱码
+      const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `simpleurl-links-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast(`已导出 ${rows.length} 条`);
+    } catch (err) { toast(err.message); }
+  }
+
   /* ---------- 图表 ---------- */
   function renderChart(el, daily) {
     const max = Math.max(1, ...daily.map((d) => d.count));
@@ -326,14 +429,24 @@
   }
 
   /* ---------- 启动 ---------- */
+  async function loadAnnouncement() {
+    const el = document.getElementById('announcement');
+    if (!el) return;
+    try {
+      const data = await api('/api/announcement');
+      if (data.text) { el.textContent = data.text; el.hidden = false; }
+    } catch (_) { /* 公告拿不到不影响主流程 */ }
+  }
+
   async function bootstrap() {
     await loadAccess();
     await loadSummary();
+    loadAnnouncement();
     if (access.is_admin) await loadLinks();
   }
 
   document.addEventListener('DOMContentLoaded', () => {
-    bindCreate(); bindCopy(); bindBoard(); bindConsole();
+    bindCreate(); bindCopy(); bindBoard(); bindConsole(); bindEditor();
     const loginForm = $('#login-form');
     if (loginForm) {
       loginForm.addEventListener('submit', async (e) => {

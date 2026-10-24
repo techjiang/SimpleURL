@@ -76,10 +76,13 @@ class TestCreate:
 
 class TestRedirect:
     def test_redirect_and_click(self, client):
-        link = create(client, code="go1")
+        from app.core.clickbuffer import click_buffer
+
+        create(client, code="go1")
         r = client.get("/go1", follow_redirects=False)
         assert r.status_code == 307
         assert r.headers["location"] == "https://example.com/page"
+        click_buffer.flush()  # 延迟计数：读点击数前先结算
         detail = client.get("/api/links/go1").json()
         assert detail["clicks"] == 1
 
@@ -174,9 +177,12 @@ class TestUpdateDelete:
 
 class TestStatsAndQr:
     def test_stats(self, client):
+        from app.core.clickbuffer import click_buffer
+
         create(client, code="st1")
         client.get("/st1")
         client.get("/st1")
+        click_buffer.flush()  # 点击是攒批落库的，读统计前先结算
         data = client.get("/api/links/st1/stats").json()
         assert data["clicks"] == 2
         assert data["unique_visitors"] >= 1

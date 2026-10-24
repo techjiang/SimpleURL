@@ -8,6 +8,8 @@
   </div>
 </section>
 
+<p class="announcement" id="announcement" hidden></p>
+
 <section class="access-bar" id="access-bar" hidden>
   <p id="access-text"></p>
   <form id="invite-form" autocomplete="off" hidden>
@@ -76,11 +78,18 @@
         <option value="disabled">已停用</option>
         <option value="expired">已过期</option>
       </select>
+      <select id="page-size" aria-label="每页条数">
+        <option value="10">10 条/页</option>
+        <option value="20">20 条/页</option>
+        <option value="50">50 条/页</option>
+        <option value="100">100 条/页</option>
+      </select>
       <select id="sort-select" aria-label="排序方式">
         <option value="created_desc">最近创建</option>
         <option value="clicks_desc">点击最多</option>
         <option value="code_asc">短码排序</option>
       </select>
+      <button class="btn tiny ghost" id="export-btn" type="button">导出 CSV</button>
     </div>
   </div>
   <div class="summary" id="summary"></div>
@@ -104,6 +113,40 @@
     <button class="btn ghost" id="next-btn" type="button">下一页</button>
   </div>
 </section>
+
+<div class="modal" id="editor" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="edit-heading">
+    <div class="modal-head">
+      <h2 id="edit-heading">编辑 <span class="mono" id="edit-code"></span></h2>
+      <button class="btn tiny ghost" id="edit-cancel-2" type="button" aria-label="关闭">✕</button>
+    </div>
+    <form id="edit-form" autocomplete="off">
+      <div class="field main">
+        <label for="edit-target">目标链接</label>
+        <input id="edit-target" type="text" placeholder="https://example.com/page" />
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="edit-title">标题</label>
+          <input id="edit-title" type="text" maxlength="255" />
+        </div>
+        <div class="field">
+          <label for="edit-tags">标签 <span class="hint">逗号分隔</span></label>
+          <input id="edit-tags" type="text" maxlength="200" />
+        </div>
+      </div>
+      <div class="field main">
+        <label for="edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>
+        <input id="edit-expires" type="datetime-local" />
+      </div>
+      <div class="composer-actions">
+        <button class="btn primary" id="edit-save" type="submit">保存</button>
+        <button class="btn ghost" id="edit-cancel" type="button">取消</button>
+        <span class="status" id="edit-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 {% endblock %}

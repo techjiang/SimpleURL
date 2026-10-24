@@ -37,10 +37,13 @@ class Settings:
         self.port: int = _as_int("PORT", 8000)
         self.debug: bool = _as_bool("DEBUG", False)
 
-        # 短码规则：默认 6 位，最短 4 位，最长 16 位
-        self.code_length: int = max(4, min(16, _as_int("CODE_LENGTH", 6)))
+        # 短码规则：默认 6 位，最短可到 3 位，最长 32 位。
+        # 这里不再对 CODE_LENGTH 做硬编码下限，否则设 3 会被悄悄抬回 4。
         self.code_min_length: int = max(3, min(16, _as_int("CODE_MIN_LENGTH", 3)))
         self.code_max_length: int = max(8, min(32, _as_int("CODE_MAX_LENGTH", 16)))
+        self.code_length: int = max(
+            self.code_min_length, min(self.code_max_length, _as_int("CODE_LENGTH", 6))
+        )
 
         # 每个 IP 每天最多创建的链接数，防止滥用
         self.create_daily_limit: int = _as_int("CREATE_DAILY_LIMIT", 200)
@@ -76,6 +79,36 @@ class Settings:
 
         # 统计数据的采样间隔（秒），用于做简单的请求限速保护
         self.stats_rate_limit: int = _as_int("STATS_RATE_LIMIT", 1)
+
+        # ---- 防洪（Flash Flood）----
+        # 单 IP 每分钟跳转上限，超出返回友好 429 页；0 表示关闭
+        self.guard_ip_per_minute: int = _as_int("GUARD_IP_PER_MINUTE", 120)
+        # 单 IP 每日点击配额；0 表示关闭
+        self.guard_ip_daily: int = _as_int("GUARD_IP_DAILY", 20000)
+        # 单个短码每分钟点击上限，0 表示关闭。热链接被打爆时先牺牲它，保站点存活
+        self.guard_code_per_minute: int = _as_int("GUARD_CODE_PER_MINUTE", 0)
+        # 命中限流后封禁多久（秒）
+        self.guard_block_seconds: int = _as_int("GUARD_BLOCK_SECONDS", 60)
+        # UA 黑名单，逗号分隔，支持子串与 * 通配；命中仍跳转但不计数
+        self.blocked_uas: list[str] = [
+            p.strip() for p in os.getenv("BLOCKED_UAS", "").split(",") if p.strip()
+        ]
+        self.blocked_ua_enabled: bool = _as_bool("BLOCKED_UA_ENABLED", True)
+
+        # ---- 微信 / QQ 防洪与兼容 ----
+        # blocked: 一律拦截（站内提示页）；warn: 放行并在页面顶部提示复制到浏览器（默认）
+        self.wechat_mode: str = (os.getenv("WECHAT_MODE", "warn").strip().lower() or "warn")
+        if self.wechat_mode not in ("off", "warn", "blocked"):
+            self.wechat_mode = "warn"
+        self.qq_mode: str = (os.getenv("QQ_MODE", "warn").strip().lower() or "warn")
+        if self.qq_mode not in ("off", "warn", "blocked"):
+            self.qq_mode = "warn"
+
+        # ---- 点击计数 ----
+        # 点击先入内存缓冲，攒够这么久再批量落库；调小更抗崩溃，调大更省 IO
+        self.click_flush_interval: float = _as_int("CLICK_FLUSH_INTERVAL", 5)
+        # 缓冲条数阈值，攒够立刻结算
+        self.click_flush_batch: int = _as_int("CLICK_FLUSH_BATCH", 200)
 
     @property
     def admin_enabled(self) -> bool:

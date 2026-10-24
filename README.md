@@ -13,6 +13,10 @@
 - **二维码** — 每条链接自动生成 PNG 二维码
 - **标签管理** — 标签检索、状态筛选、多字段搜索、多种排序
 - **链接控制** — 随时停用 / 启用 / 删除，支持设置过期时间
+- **管理后台** — `/admin` 六面板：仪表盘、链接管理、防洪/UA、API 密钥、数据迁移、设置
+- **防洪** — 单 IP / 单短码多维限速、UA 黑名单、微信与 QQ 内置浏览器兼容处理
+- **延迟计数** — 点击先入内存缓冲，按间隔批量落库，热链接不会把库写爆
+- **自动取标题** — 创建时抓目标页 `<title>`，带 SSRF 防护，抓不到用 URL 兜底
 - **精致界面** — 深色玻璃质感、响应式、无框架依赖、极光动效
 - **无背景 Logo** — 提供 SVG 矢量与 16~512px PNG，深浅底色通用
 
@@ -43,6 +47,7 @@ docker compose up -d         # 首次需构建
 | 页面 | 地址 |
 | --- | --- |
 | 首页（创建 + 链接库） | `/` |
+| 管理后台（六面板） | `/admin` |
 | 管理员登录 | `/admin/login` |
 | 链接统计 | `/s/{短码}` |
 | 健康检查 | `/healthz` |
@@ -62,6 +67,13 @@ docker compose up -d         # 首次需构建
 | `GET` | `/api/stats/summary` | 总览 |
 | `GET` | `/{code}` | 跳转（307），自动记录点击 |
 | `GET` | `/api/access` | 当前访问模式与身份 |
+| `GET` | `/api/announcement` | 站点公告 |
+| `GET` | `/api/admin/overview` | 仪表盘数据（管理员） |
+| `GET/POST` | `/api/admin/settings` | 读取 / 保存运行配置（管理员） |
+| `GET/POST` | `/api/admin/keys` | API 密钥列表 / 创建（管理员） |
+| `POST` | `/api/admin/migrate` | YOURLS 数据导入（管理员） |
+| `GET` | `/api/admin/export` | 导出全部链接 JSON（管理员） |
+| `POST` | `/api/admin/flush` | 立即结算点击缓冲（管理员） |
 | `POST` | `/api/admin/login` | 管理员登录（`X-Admin-Token` 头） |
 | `POST` | `/api/admin/logout` | 退出登录 |
 | `GET` | `/api/admin/invite` | 查看当前邀请码（管理员） |
@@ -77,6 +89,58 @@ curl -X POST http://localhost:8000/api/links \
   -H 'Content-Type: application/json' \
   -d '{"target":"https://example.com/very/long/url","code":"my-link","tags":["文档"]}'
 ```
+
+## 防洪与微信 / QQ
+
+短链最容易被两件事搞死：被人当跳板刷量，以及一条链接在微信群里被引爆。
+
+### 限速
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `GUARD_IP_PER_MINUTE` | 120 | 单 IP 每分钟跳转上限，超出返回 429 友好页 |
+| `GUARD_IP_DAILY` | 20000 | 单 IP 每日点击配额 |
+| `GUARD_CODE_PER_MINUTE` | 0 | 单短码每分钟上限，0 不限制 |
+| `GUARD_BLOCK_SECONDS` | 60 | 命中后封禁多久 |
+
+任何一项设为 `0` 即关闭。所有阈值都能在 `/admin/guard` 里改，落库后立即生效、重启不丢，
+且**数据库里的值优先于环境变量**。
+
+超限不是返回裸 JSON，而是一张告诉你「大约多少秒后解除」的页面。
+
+### UA 屏蔽
+
+`BLOCKED_UAS` 支持逗号分隔的多条规则，支持子串与 `*` 通配：
+
+```
+BLOCKED_UAS=*bot*,curl/,SemrushBot
+```
+
+**命中后仍然正常跳转，只是不计入点击**，并在后台留痕。理由很直接：
+统计是给运营看的，不该成为访客能否打开链接的开关。
+
+### 微信 / QQ 内打开
+
+这两个 App 的内置浏览器会拦掉不少落地页，用户看到白屏就走了。默认策略是**中转页**：
+
+- `WECHAT_MODE` / `QQ_MODE` = `warn`（默认）— 给一张带「复制链接」「仍是继续访问」的页面
+- `blocked` — 一律拦截，返回 403 与复制按钮
+- `off` — 不做任何处理，直接 307
+
+微信 UA 里常带 QQ 浏览器的内核标记，判定时微信优先，不会被误判成 QQ。
+
+## 点击计数
+
+一次点击原先就是一次 `INSERT` + 一次 `UPDATE`，热链接能把 SQLite 写满。现在改成：
+
+1. 点击先入内存队列
+2. 攒够 `CLICK_FLUSH_BATCH`（默认 200）条，或过了 `CLICK_FLUSH_INTERVAL`（默认 5）秒，统一批量落库
+3. 一批只走一个事务，点击数用一条 `UPDATE ... SET clicks = clicks + n` 合并
+4. 写库失败整批退回队列；进程正常退出（含 SIGTERM）会强制结算一次
+
+代价写在明面上：`kill -9` 会丢掉缓冲里最后几秒的点击。要绝对不丢就把间隔调到 1 秒。
+
+后台「仪表盘」会单独显示「待落库」条数，也能手动点「立即结算缓冲」。
 
 ## 配置
 
@@ -97,6 +161,11 @@ curl -X POST http://localhost:8000/api/links \
 | `SECRET_KEY` | 随机 | 会话签名密钥，与 `ADMIN_TOKEN` 无关；改它等于全站重新登录 |
 | `CSP_REPORT_ONLY` | `false` | CSP 只上报不拦截，上线初期用于观察误伤 |
 | `TRUSTED_PROXIES` | 空 | 可信反代地址，逗号分隔；留空则不采信 `X-Forwarded-For` |
+| `GUARD_IP_PER_MINUTE` / `GUARD_IP_DAILY` | `120` / `20000` | 防洪限速，`0` 关闭 |
+| `GUARD_CODE_PER_MINUTE` | `0` | 单短码每分钟上限 |
+| `BLOCKED_UAS` | 空 | UA 黑名单，逗号分隔，支持 `*` 通配 |
+| `WECHAT_MODE` / `QQ_MODE` | `warn` | 内置浏览器策略：`warn` / `blocked` / `off` |
+| `CLICK_FLUSH_INTERVAL` / `CLICK_FLUSH_BATCH` | `5` / `200` | 延迟计数落库节奏 |
 
 ## 访问模式
 
@@ -144,9 +213,10 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-102 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计与二维码，
-三种访问模式、登录登出与鉴权绕过，以及安全加固专项：响应头、CSP nonce、
-Argon2id 哈希与降级、会话绑定与轮换、Cookie 属性、IP 信任边界、开放跳板。
+145 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计与二维码，
+三种访问模式、登录登出与鉴权绕过，安全加固专项（响应头、CSP nonce、Argon2id 哈希与降级、
+会话绑定与轮换、Cookie 属性、IP 信任边界、开放跳板），以及本轮新增的防洪专项：
+限速 429、UA 屏蔽不计数、微信/QQ 三种策略、延迟计数批量落库，后台各面板与运行配置。
 
 ## 项目结构
 
@@ -160,7 +230,10 @@ app/
 ├── schemas.py         请求响应模型
 ├── qr.py              二维码生成
 ├── web.py             页面渲染
-├── core/              config / db / codes / crypto / security / auth / middleware / timeutil
+├── admin.py           管理后台页面与接口
+├── admin_service.py   仪表盘聚合 / API 密钥 / YOURLS 迁移
+├── core/              config / runtime / db / codes / crypto / security / auth
+│                      / guard / clickbuffer / fetcher / middleware / timeutil
 ├── templates/         Jinja2 模板
 ├── static/            CSS / JS / Logo
 └── tests/             pytest 用例

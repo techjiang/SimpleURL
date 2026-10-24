@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}管理后台 · {{ site_name }}{% endblock %}
+{% block content %}
+<section class="admin" id="admin" data-panel="{{ panel }}">
+  <aside class="admin-nav">
+    <p class="admin-brand"><img src="/static/logo/icon.svg" alt="" width="22" height="22" /> 管理后台</p>
+    <nav>
+      {% for key, label, icon in panels %}
+      <a href="/admin/{{ key }}" class="admin-tab{{ ' active' if key == panel else '' }}"><i>{{ icon }}</i>{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="admin-nav-foot">
+      <a class="btn tiny ghost" href="/">← 返回站点</a>
+      <button class="btn tiny danger" id="admin-logout" type="button">退出登录</button>
+    </div>
+  </aside>
+
+  <div class="admin-main">
+    {% if panel == 'dashboard' %}
+    <header class="admin-head">
+      <h1>仪表盘</h1>
+      <p class="hint">数据实时聚合；点击计数走批量落库，缓冲里的条数单独标注。</p>
+    </header>
+    <div class="board-tools">
+      {% for d in [7, 14, 30, 90] %}
+      <a class="btn tiny {{ 'primary' if dash.days == d else 'ghost' }}" href="/admin?days={{ d }}">近 {{ d }} 天</a>
+      {% endfor %}
+    </div>
+    <div class="stat-grid four" id="dash-cards"></div>
+    <div class="chart-card">
+      <div class="chart-head"><h2>点击趋势</h2><span class="hint">最近 14 天</span></div>
+      <div class="chart-scroll"><div class="chart" id="dash-chart"></div></div>
+    </div>
+    <div class="admin-cols">
+      <div class="chart-card">
+        <div class="chart-head"><h2>热门链接</h2></div>
+        <ul class="ref-list" id="dash-top"></ul>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><h2>防洪拦截</h2><span class="hint" id="guard-badge"></span></div>
+        <ul class="ref-list" id="dash-guard"></ul>
+        <div class="buffer-line" id="buffer-line"></div>
+        <button class="btn tiny ghost" id="flush-now" type="button">立即结算缓冲</button>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-head"><h2>最近风控事件</h2></div>
+      <div class="table-wrap">
+        <table class="table compact"><thead><tr><th>时间</th><th>短码</th><th>类型</th><th>说明</th><th>UA</th></tr></thead>
+          <tbody id="event-body"></tbody></table>
+      </div>
+    </div>
+
+    {% elif panel == 'links' %}
+    <header class="admin-head"><h1>链接管理</h1><p class="hint">共 {{ total }} 条 · 第 {{ page }}/{{ pages }} 页</p></header>
+    <form class="board-tools" id="admin-filter" method="get" action="/admin/links">
+      <div class="search">
+        <input name="q" type="search" value="{{ q }}" placeholder="搜索短码 / 目标 / 标题 / 标签" />
+      </div>
+      <select name="status" aria-label="状态筛选">
+        <option value="" {{ 'selected' if not status else '' }}>全部状态</option>
+        <option value="enabled" {{ 'selected' if status == 'enabled' else '' }}>已启用</option>
+        <option value="disabled" {{ 'selected' if status == 'disabled' else '' }}>已停用</option>
+        <option value="expired" {{ 'selected' if status == 'expired' else '' }}>已过期</option>
+      </select>
+      <select name="sort" aria-label="排序">
+        <option value="created_desc" {{ 'selected' if sort == 'created_desc' else '' }}>最近创建</option>
+        <option value="clicks_desc" {{ 'selected' if sort == 'clicks_desc' else '' }}>点击最多</option>
+        <option value="code_asc" {{ 'selected' if sort == 'code_asc' else '' }}>短码排序</option>
+      </select>
+      <button class="btn tiny primary" type="submit">筛选</button>
+      <button class="btn tiny ghost" id="export-json" type="button">导出 JSON</button>
+      {% if pages > 1 %}
+      {% set qs = 'q=' ~ (q | urlencode) ~ '&status=' ~ (status or '') ~ '&sort=' ~ sort %}
+      <a class="btn tiny ghost" href="/admin/links?{{ qs }}&page={{ page - 1 if page > 1 else 1 }}">上一页</a>
+      <span class="hint">第 {{ page }}/{{ pages }} 页</span>
+      <a class="btn tiny ghost" href="/admin/links?{{ qs }}&page={{ page + 1 if page < pages else pages }}">下一页</a>
+      {% endif %}
+    </form>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>短码</th><th>标题 / 目标</th><th>点击</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="admin-links-body">
+          {% for link in links %}
+          <tr>
+            <td><a class="code-cell" href="/s/{{ link.code }}">/{{ link.code }}</a></td>
+            <td class="target-cell"><span class="title-cell">{{ link.title or '—' }}</span><br />{{ link.target }}</td>
+            <td class="clicks-cell">{{ link.clicks }}</td>
+            <td>{% if link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
+            <td>
+              <button class="btn tiny ghost" data-toggle="{{ link.code }}">{% if link.enabled %}停用{% else %}启用{% endif %}</button>
+              <button class="btn tiny danger" data-del="{{ link.code }}">删除</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if not links %}<div class="empty"><p>还没有链接</p></div>{% endif %}
+    </div>
+
+    {% elif panel == 'guard' %}
+    <header class="admin-head"><h1>防洪 / UA</h1><p class="hint">阈值改动立即生效，不用重启。命中 UA 屏蔽仍会跳转，只是不计数。</p></header>
+    <div class="panel-grid" id="guard-form"></div>
+    <div class="admin-cols">
+      <div class="chart-card">
+        <div class="chart-head"><h2>计时状态</h2></div>
+        <ul class="ref-list" id="guard-state"></ul>
+        <button class="btn tiny ghost" id="flush-now-2" type="button">立即结算缓冲</button>
+      </div>
+      <div class="chart-card">
+        <div class="chart-head"><h2>最近事件</h2></div>
+        <div class="table-wrap" style="max-height:420px;overflow:auto">
+          <table class="table compact"><thead><tr><th>时间</th><th>短码</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody id="event-body-2"></tbody></table>
+        </div>
+      </div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-head"><h2>UA 黑名单</h2><span class="hint">每行一条，支持 * 通配</span></div>
+      <textarea id="ua-editor" class="ua-editor" rows="8" placeholder="例如：&#10;*bot*&#10;curl/&#10;SemrushBot"></textarea>
+      <div class="composer-actions">
+        <button class="btn primary" id="ua-save" type="button">保存黑名单</button>
+        <span class="status" id="ua-status" role="status"></span>
+      </div>
+    </div>
+
+    {% elif panel == 'keys' %}
+    <header class="admin-head"><h1>API 密钥</h1><p class="hint">库里只存哈希，明文仅在创建时显示一次。用于给外部系统调用 /api/*。</p></header>
+    <div class="composer card-inline">
+      <div class="field main"><label for="key-name">密钥名称</label><input id="key-name" type="text" maxlength="64" placeholder="例如：CI 脚本" /></div>
+      <div class="composer-actions"><button class="btn primary" id="key-create" type="button">生成密钥</button><span class="status" id="key-status"></span></div>
+      <p class="secret-box" id="key-secret" hidden></p>
+    </div>
+    <div class="table-wrap">
+      <table class="table"><thead><tr><th>名称</th><th>前缀</th><th>创建时间</th><th>最近使用</th><th>操作</th></tr></thead>
+        <tbody id="key-body"></tbody></table>
+    </div>
+
+    {% elif panel == 'migrate' %}
+    <header class="admin-head"><h1>数据迁移</h1><p class="hint">直接粘贴 YOURLS 的 SQL 转储或 JSON 导出。短码冲突不覆盖，自动换码。</p></header>
+    <div class="chart-card">
+      <textarea id="migrate-input" class="ua-editor" rows="12" placeholder="INSERT INTO `yourls_url` (...) VALUES (...);  或  [{&quot;keyword&quot;:&quot;abc&quot;,&quot;url&quot;:&quot;https://…&quot;}]"></textarea>
+      <div class="composer-actions">
+        <label class="check"><input type="checkbox" id="migrate-skip" /> 冲突项直接跳过（默认换码）</label>
+        <button class="btn primary" id="migrate-run" type="button">开始导入</button>
+        <span class="status" id="migrate-status"></span>
+      </div>
+      <ul class="ref-list" id="migrate-result"></ul>
+    </div>
+
+    {% elif panel == 'settings' %}
+    <header class="admin-head"><h1>设置</h1><p class="hint">这里的值落库优先于环境变量，改完立即生效。</p></header>
+    <div class="panel-grid" id="settings-form"></div>
+    <div class="composer-actions">
+      <button class="btn primary" id="settings-save" type="button">保存设置</button>
+      <span class="status" id="settings-status" role="status"></span>
+    </div>
+    <div class="chart-card danger-card">
+      <div class="chart-head"><h2>危险操作</h2><span class="hint">不可撤销，请确认后再点</span></div>
+      <ul class="ref-list">
+        <li><span>清空设置覆盖值（回到环境变量配置）</span><button class="btn tiny ghost" id="reset-settings" type="button">重置</button></li>
+        <li><span>清零统计数据（保留全部链接）</span><button class="btn tiny danger" id="clear-clicks" type="button">清零</button></li>
+        <li><span>删除全部链接与统计</span><button class="btn tiny danger" id="clear-all" type="button">清空</button></li>
+      </ul>
+      <p class="buffer-line" id="danger-status"></p>
+    </div>
+    {% endif %}
+  </div>
+</section>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/admin.js" defer nonce="{{ csp_nonce }}"></script>
+<script id="admin-bootstrap" type="application/json">{{ {'panel': panel, 'settings': settings_view} | tojson }}</script>
+{% endblock %}

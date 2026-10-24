@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} · 访问受限{% endblock %}
+{% block content %}
+<section class="gate">
+  <div class="gate-card">
+    <img src="/static/logo/icon.svg" alt="" width="44" height="44" />
+    <p class="kicker">{{ label }}</p>
+    <h1>{{ heading }}</h1>
+    <p class="gate-tip">{{ detail }}</p>
+    {% if target %}
+    <p class="target-box"><code id="target-text">{{ target }}</code></p>
+    <div class="inter-actions">
+      <button class="btn primary" id="copy-target" type="button">复制链接</button>
+    </div>
+    {% else %}
+    <p class="gate-hint">大约 {{ retry_after }} 秒后自动解除限制。若觉得是误伤，请联系站点管理员。</p>
+    {% endif %}
+    <div class="gate-back"><a class="btn tiny ghost" href="/">← 返回首页</a></div>
+  </div>
+</section>
+{% endblock %}
