@@ -1,24 +1,30 @@
-# 流水线：安装依赖 -> 测试
+# 流水线：装依赖 -> 测试
+#
+# 缓存靠 docker.volumes（Pipeline 级），格式是字符串 `<path>:<type>`，
+# 不支持 `- name: ... / path: ...` 这种对象写法——平台在 Prepare 阶段就会拒绝：
+#   Unsupported volume type. 不支持的数据卷类型
+# pip 缓存按节点生效，不跨节点；想要跨节点共享得上 docker:cache 内置任务。
 main:
   push:
-    - name: ci
-      docker:
+    - docker:
         image: python:3.12-slim
         volumes:
-          - pip-cache:/root/.cache/pip
+          - /root/.cache/pip:copy-on-write
       stages:
         - name: test
           script:
             - pip install -q -r requirements-dev.txt
-            - pytest -q app/tests
+            - python -m pytest app/tests
   pull_request:
-    - name: ci-pr
-      docker:
+    - docker:
         image: python:3.12-slim
         volumes:
-          - pip-cache:/root/.cache/pip:read-only
+          # PR 场景只读复用缓存，避免并发构建互相写同一份
+          - /root/.cache/pip:copy-on-write-read-only
       stages:
         - name: test
           script:
             - pip install -q -r requirements-dev.txt
-            - pytest -q app/tests
+            # 直接 `pytest` 依赖 PATH 里有名为 pytest 的可执行文件，
+            # python:3.12-slim 这类镜像里不一定有，用 -m 更稳
+            - python -m pytest app/tests
