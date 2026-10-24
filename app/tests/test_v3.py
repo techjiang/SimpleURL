@@ -35,6 +35,7 @@ class TestDelayedClicks:
     def test_flush_failure_requeues(self, db):
         """写库失败时缓冲要原样退回，不能丢数据。"""
         from app.core.db import session_scope
+        from app.core.timeutil import utcnow
         from app.services import create_link
         from app.schemas import LinkCreate
 
@@ -44,7 +45,8 @@ class TestDelayedClicks:
         click_buffer.add(db, link_id, None, "curl/8.4.0", "1.1.1.1")
         assert click_buffer.pending() == 1
         # 掺一条指向不存在链接的记录，外键会整批拦下
-        click_buffer._queue.append(type(click_buffer._queue[0])(9999, None, "curl", "bot", "1.1.1.1", False, None))
+        pending_cls = type(click_buffer._queue[0])
+        click_buffer._queue.append(pending_cls(9999, None, "curl", "bot", None, "1.1.1.1", False, utcnow()))
         with pytest.raises(Exception):
             click_buffer.flush()
         assert click_buffer.pending() == 2

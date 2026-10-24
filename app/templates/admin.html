@@ -102,6 +102,36 @@
       </form>
     </div>
     <div class="chart-card">
+      <div class="chart-head">
+        <h2>社交平台防洪</h2>
+        <span class="hint">微信 / QQ / 微博等内置浏览器</span>
+      </div>
+      <form class="composer-form" id="social-form" autocomplete="off">
+        <label class="check">
+          <input id="social-enabled" type="checkbox" />
+          <span>启用社交平台防洪总开关</span>
+        </label>
+        <div class="social-grid" id="social-grid"></div>
+        <div class="field">
+          <label for="social-hint">拦截页提示语</label>
+          <input id="social-hint" type="text" maxlength="200"
+                 placeholder="请点击右上角选择「在浏览器中打开」" />
+        </div>
+        <div class="composer-actions">
+          <button type="submit" class="btn primary">保存平台策略</button>
+          <span class="status" id="social-status" role="status"></span>
+        </div>
+      </form>
+      <p class="hint">放行并计数＝正常访问；放行不计数＝挡住刷量但用户无感；拦截并提示＝返回带说明的中转页。被拦下的访问不计入点击数，但会在仪表盘留痕。</p>
+    </div>
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>来源平台分布</h2>
+        <span class="hint">近 14 天</span>
+      </div>
+      <ul class="ref-list" id="platform-list"></ul>
+    </div>
+    <div class="chart-card">
       <div class="chart-head"><h2>UA 屏蔽</h2><span class="hint">一行一条，支持 * 通配</span></div>
       <form class="composer-form" id="ua-form" autocomplete="off">
         <div class="field">

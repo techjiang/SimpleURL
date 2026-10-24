@@ -133,6 +133,8 @@ class StatsOut(BaseModel):
     daily: list[dict] = Field(default_factory=list)
     top_referrers: list[dict] = Field(default_factory=list)
     devices: list[dict] = Field(default_factory=list)
+    platforms: list[dict] = Field(default_factory=list)
+    blocked: int = 0
 
 
 class MessageOut(BaseModel):
@@ -156,6 +158,11 @@ class SettingsOut(BaseModel):
     access_mode: str = "open"
     access_mode_label: str = "开放外部可使用"
     access_locked: bool = False
+    # 社交平台防洪
+    social_guard: bool = True
+    social_block_hint: str = ""
+    social_tag_qq: bool = True
+    social_tag_wechat: bool = True
 
 
 class SettingsUpdate(BaseModel):
@@ -166,6 +173,10 @@ class SettingsUpdate(BaseModel):
     require_api_key: Optional[bool] = None
     create_daily_limit: Optional[int] = None
     access_mode: Optional[str] = None
+    social_guard: Optional[bool] = None
+    social_block_hint: Optional[str] = None
+    social_tag_qq: Optional[bool] = None
+    social_tag_wechat: Optional[bool] = None
 
     @field_validator("access_mode", mode="before")
     @classmethod
@@ -178,6 +189,15 @@ class SettingsUpdate(BaseModel):
 class UaRuleOut(BaseModel):
     ok: bool = True
     rules: list[str] = Field(default_factory=list)
+
+
+class PlatformRuleOut(BaseModel):
+    """社交平台防洪：策略表 + 拦截页提示语。"""
+
+    ok: bool = True
+    rules: dict[str, str] = Field(default_factory=dict)
+    hint: str = ""
+    platforms: list[dict] = Field(default_factory=list)
 
 
 class ApiKeyOut(BaseModel):

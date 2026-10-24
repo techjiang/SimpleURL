@@ -95,9 +95,42 @@ def get_db():
         session.close()
 
 
+# 新加的列：老库靠这里补上，否则升级后一写就报 no such column。
+# create_all 只建表不改表，加字段必须手工登记。
+_ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "click_events": {
+        "device": "VARCHAR(16)",
+        "blocked": "BOOLEAN NOT NULL DEFAULT 0",
+        "platform": "VARCHAR(16)",
+    },
+}
+
+
+def _ensure_columns() -> None:
+    """给已有表补新列（幂等）。只做加列，绝不改类型或删列。"""
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            if table not in existing_tables:
+                continue
+            present = {c["name"] for c in inspector.get_columns(table)}
+            for name, ddl in columns.items():
+                if name in present:
+                    continue
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                logger.info("已为 %s 补列 %s", table, name)
+        if "click_events" in existing_tables:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_click_events_platform ON click_events (platform)"))
+
+
 def init_db() -> None:
-    """建表（幂等）。"""
+    """建表 + 补列（幂等）。"""
     from app import models  # noqa: F401  确保模型已注册
 
     Base.metadata.create_all(bind=get_engine())
+    _ensure_columns()
     logger.info("数据库已就绪")

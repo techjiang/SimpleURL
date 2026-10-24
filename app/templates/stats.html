@@ -31,6 +31,22 @@
     </ul>
   </div>
   <div class="chart-card">
+    <div class="chart-head">
+      <h2>来源平台</h2>
+      <span class="hint">微信 / QQ 等内置浏览器</span>
+    </div>
+    <ul class="ref-list">
+      {% for p in data.platforms %}
+      <li><span><i class="plat-dot" data-plat="{{ p.key }}"></i>{{ p.platform }}</span><b>{{ p.count }}</b></li>
+      {% else %}
+      <li><span class="hint">还没有数据</span><b>0</b></li>
+      {% endfor %}
+      {% if data.blocked %}
+      <li><span><i class="plat-dot" data-plat="blocked"></i>被防洪拦截</span><b>{{ data.blocked }}</b></li>
+      {% endif %}
+    </ul>
+  </div>
+  <div class="chart-card">
     <div class="chart-head"><h2>设备分布</h2><span class="hint">全部历史</span></div>
     <ul class="ref-list">
       {% for d in data.devices %}

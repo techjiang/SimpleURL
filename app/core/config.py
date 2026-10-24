@@ -89,6 +89,17 @@ class Settings:
         # 单 IP 每日点击上限，0 表示不限制（可在后台改）
         self.click_daily_limit: int = _as_int("CLICK_DAILY_LIMIT", 0)
 
+        # ---------- 社交平台防洪 ----------
+        # 微信 / QQ 等内置浏览器可能被平台风控，这里给一套可配置的放行/计数/拦截策略，
+        # 后台可逐平台调，改动落库即时生效
+        self.social_guard: bool = _as_bool("SOCIAL_GUARD", True)
+        self.social_block_hint: str = os.getenv(
+            "SOCIAL_BLOCK_HINT",
+            "该链接暂时无法在此处打开，请点击右上角选择「在浏览器中打开」，或复制链接后重试。",
+        ).strip()
+        self.social_tag_wechat: bool = _as_bool("SOCIAL_TAG_WECHAT", True)
+        self.social_tag_qq: bool = _as_bool("SOCIAL_TAG_QQ", True)
+
         # ---------- 延迟计数 ----------
         # 点击事件缓冲多久批量落库一次（秒）
         self.click_flush_interval: int = max(1, min(600, _as_int("CLICK_FLUSH_INTERVAL", 5)))

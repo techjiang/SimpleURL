@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.core import guard
+from app.core import guard, social
 from app.core.codes import generate_unique_code, normalize_code, validate_custom_code
 from app.core.config import settings
 from app.core.clicks import click_buffer
@@ -212,26 +212,40 @@ def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
     return link, link.target
 
 
-def record_click(db: Session, link: Link, referrer: str | None, ua: str | None, ip: str | None) -> dict:
+def record_click(
+    db: Session,
+    link: Link,
+    referrer: str | None,
+    ua: str | None,
+    ip: str | None,
+    blocked: bool = False,
+) -> dict:
     """记录一次点击。
 
     走延迟计数：只入内存缓冲，不直接写库。UA 命中屏蔽规则时也照样记一条
     （打上 blocked 标记），方便后台看到拦了多少，但不会算进点击数。
-    返回 {'recorded': bool, 'blocked': bool}
+    微信 / QQ 等平台的访问会打上来源标记，方便统计里按平台分账。
+    返回 {'recorded': bool, 'blocked': bool, 'platform': str | None}
     """
+    platform = social.detect(ua, referrer)
+    if blocked:
+        # 社交平台策略直接拦下的访问：只留痕，不算点击
+        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
+        return {"recorded": False, "blocked": True, "platform": platform}
+
     blocked_rule = guard.is_ua_blocked(ua, guard.blocked_ua_rules(db))
     if blocked_rule:
-        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True)
+        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
         logger.info("UA 屏蔽命中 %s -> %s", link.code, blocked_rule)
-        return {"recorded": False, "blocked": True}
+        return {"recorded": False, "blocked": True, "platform": platform}
 
     allowed, reason = guard.check_click_quota(db, ip)
     if not allowed:
         logger.info("点击配额拦截 %s -> %s", link.code, reason)
-        return {"recorded": False, "blocked": False, "reason": reason}
+        return {"recorded": False, "blocked": False, "reason": reason, "platform": platform}
 
-    click_buffer.add(db, link.id, referrer, ua, ip, blocked=False)
-    return {"recorded": True, "blocked": False}
+    click_buffer.add(db, link.id, referrer, ua, ip, blocked=False, platform=platform)
+    return {"recorded": True, "blocked": False, "platform": platform}
 
 
 def get_stats(db: Session, code: str, days: int = 30) -> dict:
@@ -289,9 +303,29 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         for dev, c in device_rows
     ]
 
+    # 按来源平台分账：微信 / QQ 里点开多少，一屏看清
+    platform_rows = (
+        db.execute(
+            select(ClickEvent.platform, func.count(ClickEvent.id))
+            .where(ClickEvent.link_id == link.id, ClickEvent.blocked.is_(False))
+            .group_by(ClickEvent.platform)
+            .order_by(func.count(ClickEvent.id).desc())
+        )
+        .all()
+    )
+    platforms = [
+        {"platform": social.label(key), "key": key or "other", "count": int(c)}
+        for key, c in platform_rows
+    ]
+    blocked_count = db.execute(
+        select(func.count(ClickEvent.id)).where(ClickEvent.link_id == link.id, ClickEvent.blocked.is_(True))
+    ).scalar_one()
+
     unique = db.execute(
         select(func.count(func.distinct(ClickEvent.ip_hash))).where(
-            ClickEvent.link_id == link.id, ClickEvent.ip_hash.is_not(None)
+            ClickEvent.link_id == link.id,
+            ClickEvent.ip_hash.is_not(None),
+            ClickEvent.blocked.is_(False),
         )
     ).scalar_one()
 
@@ -308,6 +342,8 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         "daily": [{"date": k, "count": v} for k, v in buckets.items()],
         "top_referrers": top,
         "devices": devices,
+        "platforms": platforms,
+        "blocked": int(blocked_count or 0),
     }
 
 

@@ -25,13 +25,14 @@ logger = logging.getLogger("simpleurl")
 class _Pending:
     """一条待写入的点击。"""
 
-    __slots__ = ("link_id", "referrer", "ua", "device", "ip", "blocked", "ts")
+    __slots__ = ("link_id", "referrer", "ua", "device", "platform", "ip", "blocked", "ts")
 
-    def __init__(self, link_id: int, referrer, ua, device, ip, blocked, ts) -> None:
+    def __init__(self, link_id: int, referrer, ua, device, platform, ip, blocked, ts) -> None:
         self.link_id = link_id
         self.referrer = referrer
         self.ua = ua
         self.device = device
+        self.platform = platform
         self.ip = ip
         self.blocked = blocked
         self.ts = ts
@@ -57,6 +58,7 @@ class ClickBuffer:
         ua: str | None,
         ip: str | None,
         blocked: bool = False,
+        platform: str | None = None,
     ) -> None:
         from app.core.security import parse_user_agent
 
@@ -66,6 +68,7 @@ class ClickBuffer:
             referrer=(referrer or "")[:512] or None,
             ua=(ua or "")[:512] or None,
             device=device,
+            platform=(platform or None),
             ip=ip,
             blocked=blocked,
             ts=utcnow(),
@@ -112,6 +115,7 @@ class ClickBuffer:
                         referrer=item.referrer,
                         ua=item.ua,
                         device=item.device,
+                        platform=item.platform,
                         ip_hash=ip_hash(item.ip) or None,
                         blocked=item.blocked,
                     )

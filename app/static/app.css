@@ -62,8 +62,8 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 .brand img { border-radius: 9px; }
 .brand strong { font-size: 1.05rem; letter-spacing: -0.01em; }
 .brand em { font-style: normal; font-size: 0.7rem; color: var(--text-faint); letter-spacing: 0.14em; text-transform: uppercase; }
-.topnav { display: flex; gap: 4px; }
-.nav-link { padding: 7px 12px; border-radius: 999px; color: var(--text-dim); font-size: 0.86rem; transition: color .2s, background .2s; }
+.topnav { display: flex; gap: 4px; min-width: 0; }
+.nav-link { padding: 7px 12px; border-radius: 999px; color: var(--text-dim); font-size: 0.86rem; white-space: nowrap; transition: color .2s, background .2s; }
 .nav-link:hover { color: var(--text); background: var(--surface-strong); }
 
 /* ============ Hero ============ */
@@ -176,7 +176,12 @@ select option { background: var(--bg-soft); color: var(--text); }
 .target-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .clicks-cell { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
 .title-cell { display: block; font-size: 0.78rem; color: var(--text-faint); margin-top: 2px; }
-.tag-pill { display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; background: rgba(123,92,255,0.16); color: #c4b5fd; margin: 1px 3px 1px 0; border: 1px solid rgba(123,92,255,0.25); }
+.tag-pill {
+  display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px;
+  background: rgba(123,92,255,0.16); color: #c4b5fd; margin: 1px 3px 1px 0;
+  border: 1px solid rgba(123,92,255,0.25);
+  white-space: nowrap; /* 窄屏下被压成竖排单字，比溢出还难看 */
+}
 
 .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 0.74rem; padding: 3px 9px; border-radius: 999px; border: 1px solid; }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
@@ -235,11 +240,20 @@ select option { background: var(--bg-soft); color: var(--text); }
 /* ============ 响应式 ============ */
 @media (max-width: 720px) {
   .row { grid-template-columns: 1fr; }
+  .search { width: 100%; }
   .search input { width: 100%; }
   .board-tools { width: 100%; }
-  .board-tools select { flex: 1; }
+  /* 三个下拉挤一行会把中文标签截成「含」「最近创」，改成按内容宽度各占一行也够整齐 */
+  .board-tools select { flex: 1 1 auto; min-width: 0; }
   .target-cell { max-width: 150px; }
+  .table { font-size: 0.82rem; }
+  .table th, .table td { padding: 10px 8px; }
   .brand em { display: none; }
+  /* 窄屏：顶栏拆两行，导航可横滑。不换行的话「首页/链接库」会被挤成竖排单字 */
+  .topbar { flex-wrap: wrap; gap: 10px; padding: 14px 0; }
+  .topnav { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .topnav::-webkit-scrollbar { display: none; }
+  .nav-link { flex: none; }
   .container { padding: 18px 0 60px; }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
@@ -297,7 +311,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 
 @media (max-width: 720px) {
   .board-tools { width: 100%; }
-  .board-tools select { flex: 1; min-width: 0; }
+  .board-tools select { flex: 1 1 auto; min-width: 0; }
   .created-cell { display: none; }
 }
 
@@ -307,7 +321,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .admin-head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); margin: 8px 0; }
 .admin-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .admin-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; }
-.admin-tab { padding: 8px 16px; border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); font-size: 0.86rem; font-family: inherit; cursor: pointer; transition: color .18s, background .18s; }
+.admin-tab { padding: 8px 16px; border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); font-size: 0.86rem; font-family: inherit; white-space: nowrap; cursor: pointer; transition: color .18s, background .18s; }
 .admin-tab:hover { color: var(--text); background: var(--surface-strong); }
 .admin-tab.active { color: #fff; background: linear-gradient(120deg, var(--brand), var(--brand-2)); box-shadow: 0 6px 18px -8px rgba(79,140,255,0.7); }
 .admin-panel { display: none; }
@@ -324,8 +338,10 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .admin .pager button[disabled] { opacity: .5; }
 @media (max-width: 720px) {
   .admin-cols { grid-template-columns: 1fr; }
-  .admin-tabs { border-radius: var(--radius); }
-  .admin-tab { flex: 1; text-align: center; }
+  /* 窄屏：六个页签平分一行会被压成竖排单字，改成可横滑的一行 */
+  .admin-tabs { border-radius: var(--radius); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .admin-tabs::-webkit-scrollbar { display: none; }
+  .admin-tab { flex: none; text-align: center; }
 }
 
 /* ============ 访问模式横幅 ============ */
@@ -340,3 +356,57 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .mode-banner.locked .mode-dot { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
 .mode-banner #mode-action { margin-left: auto; }
 .mode-banner[hidden] { display: none; }
+
+/* ============ 社交平台防洪 ============ */
+.social-grid { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin: 4px 0 12px; }
+.social-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); font-size: 0.86rem;
+}
+.social-row select { flex: none; max-width: 58%; }
+.social-name { display: inline-flex; align-items: center; gap: 8px; color: var(--text-dim); }
+.plat-dot {
+  width: 8px; height: 8px; border-radius: 3px; flex: none;
+  background: var(--text-dim); display: inline-block;
+}
+.plat-dot[data-plat="wechat"] { background: #07c160; }
+.plat-dot[data-plat="wecom"] { background: #2f7bff; }
+.plat-dot[data-plat="qq"] { background: #12b7f5; }
+.plat-dot[data-plat="weibo"] { background: #e6162d; }
+.plat-dot[data-plat="alipay"] { background: #1677ff; }
+.plat-dot[data-plat="dingtalk"] { background: #3296fa; }
+.plat-dot[data-plat="douyin"] { background: #fe2c55; }
+.plat-dot[data-plat="xiaohongshu"] { background: #ff2442; }
+.plat-dot[data-plat="blocked"] { background: var(--warn); }
+.plat-dot[data-plat="other"] { background: var(--text-dim); }
+.ref-list li span { display: inline-flex; align-items: center; gap: 8px; }
+.ref-list em.hint { font-style: normal; margin-left: 4px; }
+
+@media (max-width: 720px) {
+  .social-grid { grid-template-columns: 1fr; }
+}
+
+/* ============ 社交平台拦截页 ============ */
+.wxblock { max-width: 560px; margin: 0 auto; text-align: center; }
+.wxblock-icon {
+  width: 88px; height: 88px; margin: 8px auto 18px; display: grid; place-items: center;
+  border-radius: 24px; border: 1px solid var(--border-strong);
+  background: radial-gradient(120% 120% at 30% 20%, rgba(79,140,255,0.22), transparent 65%);
+  box-shadow: var(--shadow);
+}
+.wxblock-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 20px 0 8px; }
+.wxblock-steps {
+  list-style: none; counter-reset: step; padding: 0; margin: 22px auto 12px;
+  display: grid; gap: 8px; max-width: 420px; text-align: left;
+}
+.wxblock-steps li {
+  counter-increment: step; position: relative; padding: 10px 14px 10px 42px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); font-size: 0.86rem; color: var(--text-dim);
+}
+.wxblock-steps li::before {
+  content: counter(step); position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(79,140,255,0.16); color: var(--brand); font-size: 0.74rem; font-weight: 700;
+}

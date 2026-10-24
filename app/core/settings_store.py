@@ -20,6 +20,15 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "require_api_key": (False, "要求 API 请求携带密钥"),
     "create_daily_limit": (200, "单 IP 每日创建上限，0 不限制"),
     "access_mode": ("open", "访问模式：open 开放外部可使用，admin 仅管理员可使用"),
+    # ---------- 社交平台防洪 ----------
+    "social_guard": (True, "社交平台防洪总开关（微信 / QQ 等）"),
+    "social_block_hint": (
+        "该链接暂时无法在此处打开，请点击右上角选择「在浏览器中打开」，或复制链接后重试。",
+        "社交平台拦截页的提示语",
+    ),
+    # 标记档：照常跳转、照常计数，只是把来源平台记下来（默认开）
+    "social_tag_qq": (True, "标记 QQ 来源（照常放行计数）"),
+    "social_tag_wechat": (True, "标记微信来源（照常放行计数）"),
 }
 
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.core import access, guard
+from app.core import access, guard, social
 from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
@@ -56,6 +56,15 @@ def admin_page(request: Request):
     return HTMLResponse(templates.get_template("admin.html").render(request=request))
 
 
+def _social_blocked(db: Session, platform: str | None) -> str | None:
+    """命中拦截策略时返回平台键。总开关关掉就一律放行。"""
+    from app.core.settings_store import effective
+
+    if not platform or not effective(db, "social_guard"):
+        return None
+    return guard.platform_hit(platform, guard.platform_rules(db))
+
+
 @router.get("/healthz", summary="健康检查")
 def healthz():
     return {"status": "ok", "site": settings.site_name}
@@ -86,6 +95,25 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     referrer = request.headers.get("referer") or request.headers.get("referrer")
     ua = request.headers.get("user-agent")
     ip = client_ip(request)
+
+    # 社交平台防洪：微信 / QQ 等内置浏览器可能被策略拦下，给一页说明而不是白屏
+    platform = social.detect(ua, referrer)
+    blocked_platform = _social_blocked(db, platform)
+    if blocked_platform:
+        logger.info("社交平台拦截 %s -> %s", code, blocked_platform)
+        # 拦下的访问也算一次「被拒」，落一条 blocked 事件，后台看得到战果
+        record_click(db, link, referrer=referrer, ua=ua, ip=ip, blocked=True)
+        db.commit()
+        return HTMLResponse(
+            templates.get_template("wxblock.html").render(
+                request=request,
+                code=code,
+                platform=social.label(blocked_platform),
+                notice=guard.platform_notice(db),
+                target=target,
+            ),
+            status_code=403,
+        )
 
     allowed, reason = guard.check_redirect_quota(db, ip)
     if not allowed:

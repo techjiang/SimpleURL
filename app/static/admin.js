@@ -199,6 +199,69 @@
       const ua = await api('/api/admin/ua-rules');
       $('#ua-rules').value = (ua.rules || []).join('\n');
     } catch (err) { toast(err.message); }
+    loadSocial();
+  }
+
+  /* ---------- 社交平台防洪 ---------- */
+  const STRATEGY_LABELS = [
+    ['allow', '放行并计数'],
+    ['silent', '放行不计数'],
+    ['block', '拦截并提示'],
+  ];
+
+  async function loadSocial() {
+    try {
+      const [rules, settings] = await Promise.all([
+        api('/api/admin/social-rules'),
+        api('/api/admin/settings'),
+      ]);
+      $('#social-enabled').checked = !!settings.social_guard;
+      $('#social-hint').value = rules.hint || settings.social_block_hint || '';
+      $('#social-grid').innerHTML = (rules.platforms || []).map((p) => `
+        <label class="social-row">
+          <span class="social-name"><i class="plat-dot" data-plat="${escapeHtml(p.key)}"></i>${escapeHtml(p.label)}</span>
+          <select data-plat="${escapeHtml(p.key)}">
+            ${STRATEGY_LABELS.map(([v, t]) =>
+              `<option value="${v}"${p.strategy === v ? ' selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </label>`).join('');
+    } catch (err) { toast(err.message); }
+    loadPlatformStats();
+  }
+
+  async function loadPlatformStats() {
+    const list = $('#platform-list');
+    if (!list) return;
+    try {
+      const data = await api('/api/admin/platform-stats');
+      const items = data.items || [];
+      if (!items.length) {
+        list.innerHTML = '<li><span class="hint">近 14 天还没有访问</span><b>0</b></li>';
+        return;
+      }
+      list.innerHTML = items.map((i) => `
+        <li><span><i class="plat-dot" data-plat="${escapeHtml(i.key)}"></i>${escapeHtml(i.label)}</span>
+        <b>${i.count}${i.blocked ? ` <em class="hint">拦截 ${i.blocked}</em>` : ''}</b></li>`).join('');
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindSocial() {
+    const form = $('#social-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const rules = {};
+      form.querySelectorAll('select[data-plat]').forEach((el) => { rules[el.dataset.plat] = el.value; });
+      setStatus('#social-status', '保存中…');
+      try {
+        await post('/api/admin/settings', { social_guard: $('#social-enabled').checked });
+        const r = await post('/api/admin/social-rules', { rules, hint: $('#social-hint').value });
+        $('#social-hint').value = r.hint || '';
+        setStatus('#social-status', '已保存', 'ok');
+        toast('社交平台防洪已更新');
+        loadPlatformStats();
+      } catch (err) { setStatus('#social-status', err.message, 'err'); }
+    });
   }
 
   function bindGuard() {
@@ -349,7 +412,7 @@
 
   /* ---------- 启动 ---------- */
   async function boot() {
-    bindTabs(); bindAdminLinks(); bindGuard(); bindKeys(); bindMigrate(); bindSettings();
+    bindTabs(); bindAdminLinks(); bindGuard(); bindSocial(); bindKeys(); bindMigrate(); bindSettings();
     await loadDashboard();
   }
 

@@ -14,6 +14,8 @@ from app.models import Setting
 logger = logging.getLogger("simpleurl")
 
 _UA_RULES_KEY = "blocked_ua"
+_PLATFORM_RULES_KEY = "social_platform_rules"
+_PLATFORM_NOTICE_KEY = "social_block_notice"
 
 
 def _rows(db: Session, key: str) -> list[str]:
@@ -65,6 +67,62 @@ def is_ua_blocked(ua: str | None, rules: list[str]) -> str | None:
 
 def blocked_ua_rules(db: Session) -> list[str]:
     return _ua_rules(db)
+
+
+# ---------- 社交平台防洪（微信 / QQ / 微博 …）----------
+
+
+def _set_row(db: Session, key: str, value: str) -> None:
+    row = db.execute(select(Setting).where(Setting.key == key)).scalar_one_or_none()
+    if row is None:
+        db.add(Setting(key=key, value=value))
+    else:
+        row.value = value
+
+
+def platform_rules(db: Session) -> dict[str, str]:
+    """当前平台策略：{平台: allow|silent|block}，未列出的平台走默认放行。"""
+    from app.core.social import normalize_strategy
+
+    raw = _rows(db, _PLATFORM_RULES_KEY)
+    rules: dict[str, str] = {}
+    for item in raw:
+        if "=" not in item:
+            continue
+        key, _, value = item.partition("=")
+        rules[key.strip().lower()] = normalize_strategy(value)
+    return rules
+
+
+def save_platform_rules(db: Session, rules: dict[str, str]) -> None:
+    from app.core.social import known, normalize_strategy
+
+    clean = {k: normalize_strategy(v) for k, v in rules.items() if known(k)}
+    _set_row(db, _PLATFORM_RULES_KEY, serialize_list([f"{k}={v}" for k, v in clean.items()]))
+    db.flush()
+    logger.info("社交平台防洪策略已更新：%s", clean or "全部放行")
+
+
+def platform_notice(db: Session) -> str:
+    """拦截页上的提示语。"""
+    from app.core.settings_store import effective
+
+    rows = _rows(db, _PLATFORM_NOTICE_KEY)
+    if rows:
+        return rows[0]
+    return str(effective(db, "social_block_hint") or "")
+
+
+def save_platform_notice(db: Session, text: str) -> None:
+    _set_row(db, _PLATFORM_NOTICE_KEY, " ".join(str(text or "").split())[:200])
+    db.flush()
+
+
+def platform_hit(platform: str | None, rules: dict[str, str]) -> str | None:
+    """命中拦截策略时返回平台键，否则 None。silent 不算拦截。"""
+    if not platform:
+        return None
+    return platform if rules.get(platform) == "block" else None
 
 
 def check_redirect_quota(db: Session, ip: str | None) -> tuple[bool, str | None]:

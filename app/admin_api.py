@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core import access, guard
+from app.core import access, guard, social
 from app.core.admin import (
     COOKIE_NAME,
     check_credentials,
@@ -34,6 +34,7 @@ from app.schemas import (
     MigrationIn,
     MigrationOut,
     MessageOut,
+    PlatformRuleOut,
     SettingsOut,
     SettingsUpdate,
     UaRuleOut,
@@ -196,6 +197,10 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
         access_mode=access.current_mode(db),
         access_mode_label=access.LABELS.get(access.current_mode(db), ""),
         access_locked=access.is_admin_mode(db),
+        social_guard=bool(values.get("social_guard", True)),
+        social_block_hint=str(values.get("social_block_hint") or ""),
+        social_tag_qq=bool(values.get("social_tag_qq", True)),
+        social_tag_wechat=bool(values.get("social_tag_wechat", True)),
     )
 
 
@@ -239,6 +244,59 @@ def api_save_ua_rules(payload: dict, request: Request, db: Session = Depends(get
     guard.save_ua_rules(db, rules)
     db.commit()
     return UaRuleOut(rules=guard.blocked_ua_rules(db))
+
+
+@router.get("/social-rules", response_model=PlatformRuleOut, summary="社交平台防洪策略")
+def api_get_social_rules(request: Request, db: Session = Depends(get_db)):
+    require_admin(request)
+    rules = guard.platform_rules(db)
+    return PlatformRuleOut(
+        rules=rules,
+        hint=guard.platform_notice(db),
+        platforms=[
+            {"key": key, "label": name, "strategy": rules.get(key, social.DEFAULT_STRATEGY)}
+            for key, (name, _) in social.PLATFORMS.items()
+        ],
+    )
+
+
+@router.post("/social-rules", response_model=PlatformRuleOut, summary="保存社交平台防洪策略")
+def api_save_social_rules(payload: dict, request: Request, db: Session = Depends(get_db)):
+    require_admin(request)
+    raw_rules = payload.get("rules")
+    if isinstance(raw_rules, str):
+        rules = social.strategies_from_text(raw_rules)
+    elif isinstance(raw_rules, dict):
+        rules = {k: social.normalize_strategy(v) for k, v in raw_rules.items() if social.known(k)}
+    else:
+        rules = {}
+    guard.save_platform_rules(db, rules)
+    if "hint" in payload:
+        guard.save_platform_notice(db, str(payload.get("hint") or ""))
+    db.commit()
+    return api_get_social_rules(request, db)
+
+
+@router.get("/platform-stats", summary="社交平台访问分布")
+def api_platform_stats(request: Request, days: int = Query(14, ge=1, le=365), db: Session = Depends(get_db)):
+    require_admin(request)
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days - 1)
+    rows = db.execute(
+        select(ClickEvent.platform, ClickEvent.blocked, func.count(ClickEvent.id))
+        .where(ClickEvent.ts >= since)
+        .group_by(ClickEvent.platform, ClickEvent.blocked)
+    ).all()
+    agg: dict[str, dict] = {}
+    for key, blocked, count in rows:
+        item = agg.setdefault(key or "other", {"key": key or "other", "count": 0, "blocked": 0})
+        if blocked:
+            item["blocked"] += int(count)
+        else:
+            item["count"] += int(count)
+    items = sorted(agg.values(), key=lambda i: i["count"] + i["blocked"], reverse=True)
+    for item in items:
+        item["label"] = social.label(None if item["key"] == "other" else item["key"])
+    return {"days": days, "items": items, "total": sum(i["count"] + i["blocked"] for i in items)}
 
 
 @router.get("/api-keys", response_model=list[ApiKeyOut], summary="API 密钥列表")

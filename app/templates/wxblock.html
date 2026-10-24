@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} · 请在浏览器中打开{% endblock %}
+{% block content %}
+<section class="gone wxblock" data-platform="{{ platform }}">
+  <div class="wxblock-icon" aria-hidden="true">
+    <img src="/static/logo/icon.svg" alt="" width="56" height="56" />
+  </div>
+  <p class="kicker">{{ platform }}内置浏览器</p>
+  <h1>请在浏览器中打开</h1>
+  <p class="lede">{{ notice }}</p>
+  <div class="wxblock-actions">
+    <a class="btn primary" href="{{ target }}" rel="noopener">继续访问 ↗</a>
+    <button class="btn ghost" id="wx-copy" type="button" data-url="{{ target }}">复制链接</button>
+  </div>
+  <ol class="wxblock-steps">
+    <li>点击右上角 <b>···</b></li>
+    <li>选择「<b>在浏览器打开</b>」</li>
+    <li>或复制链接后粘贴到浏览器</li>
+  </ol>
+  <p class="hint">短码 <span class="mono">/{{ code }}</span> · 由 {{ site_name }} 提供防洪保护</p>
+</section>
+<script nonce="{{ csp_nonce(request) }}">
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('wx-copy');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const text = btn.dataset.url || '';
+    try { await navigator.clipboard.writeText(text); }
+    catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.textContent = '已复制 ✓';
+    setTimeout(() => { btn.textContent = '复制链接'; }, 1600);
+  });
+});
+</script>
+{% endblock %}

@@ -86,8 +86,10 @@ class ClickEvent(Base):
     device: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     ip_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     country: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
-    # 是否被 UA 屏蔽规则拦下（拦下也记一条，方便后台看战果）
+    # 是否被 UA / 社交平台防洪规则拦下（拦下也记一条，方便后台看战果）
     blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default='0')
+    # 访问来源平台：wechat / wecom / qq / weibo ...，认不出为空
+    platform: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
 
     link: Mapped[Link] = relationship(back_populates="events")
 
