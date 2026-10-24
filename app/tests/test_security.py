@@ -104,7 +104,7 @@ class TestCSRF:
         assert "HttpOnly" not in cookie
         assert "SameSite=lax" in cookie
 
-    def test_cross_site_forgery_simulation(self, client):
+    def test_cross_site_forgery_simulation(self, client, anon_client):
         """模拟跨站提交：浏览器会自动带上 cookie，但攻击者读不到它的值。
 
         所以请求里只有 cookie、没有 X-CSRF-Token 头 —— 这正是双重提交
@@ -112,6 +112,7 @@ class TestCSRF:
         """
         victim_token = _csrf(client)
         assert victim_token
+        # 受害者是已登录管理员，所以这里用带管理 cookie 的 client 发请求
         forged = client.post(
             "/api/admin/ua-rules",
             json={"rules": ["evil"]},
@@ -119,7 +120,9 @@ class TestCSRF:
         )
         assert forged.status_code == 403
         # 规则确实没被写进去
-        assert client.get("/api/admin/ua-rules").status_code in (401, 403)
+        written = client.get("/api/admin/ua-rules").json()
+        rules = written.get("rules") if isinstance(written, dict) else written
+        assert "evil" not in rules
 
 
 class TestTrustedProxies:
@@ -169,6 +172,10 @@ class TestTrustedProxies:
 
     def test_spoofed_ip_cannot_bypass_rate_limit(self, client, monkeypatch):
         """限速按 IP 计，伪造转发头不该让人人都有一个干净配额。"""
+        from app.core.guard import reset_guard
+
+        # client fixture 起手会登录一次，先把配额清零再数次数
+        reset_guard()
         monkeypatch.setattr(settings, "login_rate_limit", 3)
         for _ in range(3):
             r = client.post(

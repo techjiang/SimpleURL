@@ -20,6 +20,7 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "require_api_key": (False, "要求 API 请求携带密钥"),
     "create_daily_limit": (200, "单 IP 每日创建上限，0 不限制"),
     "access_mode": ("open", "访问模式：open 开放外部可使用，admin 仅管理员可使用"),
+    "code_length": (4, "自动生成短码的长度（3~16）"),
     # ---------- 社交平台防洪 ----------
     "social_guard": (True, "社交平台防洪总开关（微信 / QQ 等）"),
     "social_block_hint": (
@@ -36,6 +37,15 @@ def _to_str(value: object) -> str:
     if isinstance(value, bool):
         return "1" if value else "0"
     return str(value)
+
+
+def code_length_value(db: Session) -> int:
+    """生效的自动短码长度，顺手收紧到合法区间。"""
+    try:
+        raw = int(effective(db, "code_length"))
+    except (TypeError, ValueError):
+        raw = 4
+    return max(3, min(16, raw))
 
 
 def _cast(key: str, raw: str, default: object) -> object:

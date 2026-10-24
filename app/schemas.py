@@ -115,6 +115,9 @@ class LinkOut(BaseModel):
     updated_at: Optional[dt.datetime] = None
     short_url: str = ""
     expired: bool = False
+    # 创建者手里的一次性回执：凭它回看这一条（仅创建响应里返回一次）
+    claim_token: Optional[str] = None
+    stats_url: Optional[str] = None
 
 
 class LinkListOut(BaseModel):
@@ -151,6 +154,7 @@ class SettingsOut(BaseModel):
     fetch_title: bool
     require_api_key: bool
     create_daily_limit: int
+    code_length: int = 4
     click_flush_interval: int
     pending_clicks: int
     admin_enabled: bool
@@ -172,6 +176,7 @@ class SettingsUpdate(BaseModel):
     fetch_title: Optional[bool] = None
     require_api_key: Optional[bool] = None
     create_daily_limit: Optional[int] = None
+    code_length: Optional[int] = None
     access_mode: Optional[str] = None
     social_guard: Optional[bool] = None
     social_block_hint: Optional[str] = None

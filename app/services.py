@@ -17,7 +17,7 @@ from app.core.codes import generate_unique_code, normalize_code, validate_custom
 from app.core.config import settings
 from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
-from app.core.settings_store import effective
+from app.core.settings_store import code_length_value, effective
 from app.core.titles import guess_title
 from app.core.timeutil import ensure_aware, utcnow
 from app.models import ClickEvent, Link
@@ -73,7 +73,7 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         if exists:
             raise ServiceError("该短码已被占用，换一个试试", 409)
 
-    code = custom or generate_unique_code(settings.code_length)
+    code = custom or generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
     link = Link(
         code=code,
         target=target,
@@ -434,9 +434,9 @@ def import_yourls(db: Session, rows: list[dict]) -> dict:
             continue
         ok, _msg = validate_custom_code(code, settings.code_min_length, settings.code_max_length)
         if not ok:
-            code = generate_unique_code(settings.code_length)
+            code = generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
         if _code_taken(db, code):
-            code = generate_unique_code(settings.code_length)
+            code = generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
             skipped += 1
         link = Link(
             code=code,

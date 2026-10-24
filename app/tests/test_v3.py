@@ -180,8 +180,8 @@ class TestMigration:
         r = client.post("/api/admin/migrate/yourls", json={"payload": "乱码内容"})
         assert r.status_code == 422
 
-    def test_migrate_requires_login(self, client):
-        r = client.post("/api/admin/migrate/yourls", json={"payload": "{}"})
+    def test_migrate_requires_login(self, client, anon_client):
+        r = anon_client.post("/api/admin/migrate/yourls", json={"payload": "{}"})
         assert r.status_code == 401
 
 
@@ -225,8 +225,8 @@ class TestAdminDashboard:
         assert len(body["daily"]) == 14
         assert body["top_links"][0]["code"] == "db1"
 
-    def test_dashboard_requires_login(self, client):
-        assert client.get("/api/admin/dashboard").status_code == 401
+    def test_dashboard_requires_login(self, client, anon_client):
+        assert anon_client.get("/api/admin/dashboard").status_code == 401
 
 
 class TestAdminSettings:

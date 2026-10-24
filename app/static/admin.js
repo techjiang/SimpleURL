@@ -119,7 +119,9 @@
             const plat = c.platform
               ? `<i class="plat-dot" data-plat="${escapeHtml(c.platform)}" title="${escapeHtml(c.platform_label || '')}"></i>`
               : '';
-            return `<li><span class="mono">/${escapeHtml(c.code)}</span><span>${plat}${escapeHtml(c.device)}${mark}</span></li>`;
+            const dev = c.device === 'mobile' ? '移动端' : c.device === 'desktop' ? '桌面端' : c.device === 'bot' ? '机器人' : '未知';
+            const platName = c.platform ? `<span class="hint">${escapeHtml(c.platform_label || c.platform)}</span>` : '';
+            return `<li><span class="mono">/${escapeHtml(c.code)}</span><span class="recent-meta">${platName}${plat}<span>${dev}</span>${mark}</span></li>`;
           }).join('')
         : '<li><span>暂无访问</span><b>—</b></li>';
     } catch (err) { toast(err.message); }
@@ -386,12 +388,13 @@
       const s = await api('/api/admin/settings');
       $('#set-site').value = s.site_name;
       $('#set-create').value = s.create_daily_limit;
+      $('#set-code-length').value = s.code_length;
       $('#set-fetch').checked = !!s.fetch_title;
       $('#set-require-key').checked = !!s.require_api_key;
       $('#set-access-mode').value = s.access_mode || 'open';
       $('#access-mode-hint').textContent = (s.access_mode || 'open') === 'admin'
         ? '当前：访客仅能跳转短链接，创建、链接库与统计页均需登录后台。'
-        : '当前：访客可创建与查看链接库，改、删仍需要登录后台。';
+        : '当前：访客可创建短链接；链接库与统计仅管理员可见，创建者凭回执链接查看自己那条。';
       $('#flush-interval').textContent = s.click_flush_interval;
       $('#pending-count').textContent = s.pending_clicks;
     } catch (err) { toast(err.message); }
@@ -403,7 +406,7 @@
       modeSel.addEventListener('change', () => {
         $('#access-mode-hint').textContent = modeSel.value === 'admin'
           ? '保存后：访客仅能跳转短链接，创建、链接库与统计页均需登录后台。'
-          : '保存后：访客可创建与查看链接库，改、删仍需要登录后台。';
+          : '保存后：访客可创建短链接；链接库与统计仅管理员可见，创建者凭回执链接查看自己那条。';
       });
     }
     const form = $('#settings-form');
@@ -415,6 +418,7 @@
         await post('/api/admin/settings', {
           site_name: ($('#set-site').value || '').trim() || 'SimpleURL',
           create_daily_limit: parseInt($('#set-create').value, 10) || 0,
+          code_length: Math.min(16, Math.max(3, parseInt($('#set-code-length').value, 10) || 4)),
           fetch_title: $('#set-fetch').checked,
           require_api_key: $('#set-require-key').checked,
           access_mode: $('#set-access-mode').value,

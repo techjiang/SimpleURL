@@ -24,7 +24,7 @@ from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip, rate_limiter
-from app.core.settings_store import EDITABLE, effective, get_all, set_value
+from app.core.settings_store import EDITABLE, code_length_value, effective, get_all, set_value
 from app.core.yourls import parse as parse_yourls
 from app.models import ApiKey, ClickEvent, Link, Setting
 from app.schemas import (
@@ -195,6 +195,7 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
         fetch_title=bool(values.get("fetch_title", True)),
         require_api_key=bool(values.get("require_api_key", False)),
         create_daily_limit=int(values.get("create_daily_limit") or 0),
+        code_length=code_length_value(db),
         click_flush_interval=settings.click_flush_interval,
         pending_clicks=click_buffer.pending(),
         admin_enabled=is_admin_enabled(),
@@ -218,6 +219,8 @@ def api_save_settings(payload: SettingsUpdate, request: Request, db: Session = D
             continue
         if key in {"redirect_rate_limit", "click_daily_limit", "create_daily_limit"}:
             value = max(0, int(value))
+        if key == "code_length":
+            value = max(3, min(16, int(value)))
         if key == "access_mode":
             value = access.normalize_mode(value)
         set_value(db, key, value)

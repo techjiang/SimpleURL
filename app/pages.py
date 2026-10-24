@@ -44,7 +44,10 @@ def _check_access(request: Request) -> bool:
 def _access_denied(request: Request, code: str) -> HTMLResponse:
     return HTMLResponse(
         templates.get_template("gone.html").render(
-            request=request, code=code, message="访问受限：请携带正确的访问令牌"
+            request=request,
+            code=code,
+            message="访问受限：请携带正确的访问令牌",
+            detail="这个站点开了访问令牌保护，链接里带上 ?token=你的令牌 就能打开。",
         ),
         status_code=403,
     )
@@ -88,7 +91,10 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         # 未收录 / 已停用 / 已过期：给一个友好页面，而不是裸 JSON
         return HTMLResponse(
             templates.get_template("gone.html").render(
-                request=request, code=code, message=exc.message
+                request=request,
+                code=code,
+                message=exc.message,
+                detail="这个短链接已经不能用了。它可能被删除、被停用，或者到了过期时间。",
             ),
             status_code=exc.status if exc.status in (404, 410) else 404,
         )
@@ -118,7 +124,12 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     allowed, reason = guard.check_redirect_quota(db, ip)
     if not allowed:
         return HTMLResponse(
-            templates.get_template("gone.html").render(request=request, code=code, message=reason),
+            templates.get_template("gone.html").render(
+                request=request,
+                code=code,
+                message=reason,
+                detail="这是防洪限速在起作用，不是链接本身出了问题，稍等一会儿再试就好。",
+            ),
             status_code=429,
         )
 
@@ -133,14 +144,25 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
 def stats_page(code: str, request: Request, db: Session = Depends(get_db)):
     if not _check_access(request):
         return _access_denied(request, code)
-    # admin 模式下统计页也要登录，避免链接库数据外泄
-    if access.is_admin_mode(db) and not access.is_admin(request, db):
+    link = get_link_by_code(db, code)
+    # 统计页只对管理员开放；创建者手里的一次性回执（?t=）放行自己那一条
+    if not access.may_see(link, request, db):
+        if access.is_admin_mode(db):
+            message = "站点已设为仅管理员可使用，请先登录后台"
+            detail = "这个站点只允许管理员使用，登录后即可查看统计。"
+        else:
+            message = "统计页仅管理员可见"
+            detail = "创建链接时会给你一条带领取码的回执链接，凭它查看自己那条的统计。"
         return HTMLResponse(
             templates.get_template("gone.html").render(
-                request=request, code=code, message="站点已设为仅管理员可使用，请先登录后台"
+                request=request,
+                code=code,
+                message=message,
+                detail=detail,
+                action_url="/admin",
+                action_label="去后台登录",
             ),
             status_code=401,
         )
-    link = get_link_by_code(db, code)
     data = get_stats(db, code, days=30)
     return HTMLResponse(render_stats(request, link, data))

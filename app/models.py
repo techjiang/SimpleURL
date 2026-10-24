@@ -30,6 +30,9 @@ class Link(Base):
     # 可选过期时间（UTC）
     expires_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # 一次性领取码的哈希：开放模式下访客凭它回看自己建的那条链接
+    claim_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False

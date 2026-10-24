@@ -98,6 +98,10 @@ def get_db():
 # 新加的列：老库靠这里补上，否则升级后一写就报 no such column。
 # create_all 只建表不改表，加字段必须手工登记。
 _ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "links": {
+        # 开放模式下访客回看自己那条链接用的一次性领取码
+        "claim_hash": "VARCHAR(64)",
+    },
     "click_events": {
         "device": "VARCHAR(16)",
         "blocked": "BOOLEAN NOT NULL DEFAULT 0",

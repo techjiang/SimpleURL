@@ -37,6 +37,10 @@ def client():
 
     先 GET 一次首页让中间件把 su_csrf cookie 发下来，后续写请求都从 cookie
     里取值回带到 X-CSRF-Token 头。这样测试覆盖的是同一条校验链路。
+
+    默认按「管理员已登录」起：链接库、导出、统计都只对管理员开放，
+    绝大多数用例要验的是业务本身而不是准入。想验访客视角就用 `anon_client`
+    或自己发一个不带 cookie 的请求。
     """
     from fastapi.testclient import TestClient
 
@@ -49,7 +53,10 @@ def client():
     click_buffer.reset()
     with TestClient(app) as c:
         c.get("/")
-        yield _WithCsrf(c)
+        wrapper = _WithCsrf(c)
+        r = wrapper.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        assert r.status_code == 200, f"测试管理员登录失败：{r.text}"
+        yield wrapper
     click_buffer.reset()
     db_module._engine = None
     db_module._SessionLocal = None
@@ -97,6 +104,26 @@ class _WithCsrf:
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+
+@pytest.fixture()
+def anon_client():
+    """未登录访客视角：不带任何管理会话，用来验准入边界。"""
+    from fastapi.testclient import TestClient
+
+    from app.core import db as db_module
+    from app.core.clicks import click_buffer
+    from app.main import app
+
+    db_module._engine = None
+    db_module._SessionLocal = None
+    click_buffer.reset()
+    with TestClient(app) as c:
+        c.get("/")
+        yield _WithCsrf(c)
+    click_buffer.reset()
+    db_module._engine = None
+    db_module._SessionLocal = None
 
 
 @pytest.fixture()

@@ -184,7 +184,20 @@
     const a = $('#result-link');
     a.href = link.short_url;
     a.textContent = link.short_url;
-    $('#result-qr').src = '/api/qr/' + encodeURIComponent(link.code) + tokenQuery();
+    // 创建者拿到的是带领取码的统计地址，未登录也能看自己这一条
+    const claim = link.claim_token ? `t=${encodeURIComponent(link.claim_token)}` : '';
+    const qs = [tokenQuery().slice(1), claim].filter(Boolean).join('&');
+    $('#result-qr').src = '/api/qr/' + encodeURIComponent(link.code) + (qs ? '?' + qs : '');
+    const receipt = $('#receipt');
+    if (receipt) {
+      const hasClaim = Boolean(link.claim_token);
+      receipt.hidden = !hasClaim;
+      if (hasClaim) {
+        const rl = $('#receipt-link');
+        rl.href = link.stats_url;
+        rl.textContent = link.stats_url;
+      }
+    }
     $('#result-tags').innerHTML = (link.tags || [])
       .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
     box.hidden = false;
@@ -204,7 +217,27 @@
     }
   }
 
+  /* 复制按钮的通用行为：从某个元素取文本，复制后给 1.6 秒反馈 */
+  async function copyFrom(btn, selector) {
+    const el = $(selector);
+    const text = (el && (el.textContent || '').trim()) || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (_) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    const original = btn.textContent;
+    btn.textContent = '已复制 ✓';
+    toast('已复制到剪贴板');
+    setTimeout(() => { btn.textContent = original; }, 1600);
+  }
+
   function bindCopy() {
+    const receiptBtn = $('#receipt-copy');
+    if (receiptBtn) receiptBtn.addEventListener('click', () => copyFrom(receiptBtn, '#receipt-link'));
     const btn = $('#copy-btn');
     if (!btn) return;
     btn.addEventListener('click', async () => {
@@ -240,18 +273,42 @@
         <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(link.code)}">编辑</button>
         <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(link.code)}">${link.enabled ? '停用' : '启用'}</button>
         <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(link.code)}">删除</button>`;
+    // data-label 供窄屏卡片式布局定位，桌面端不显示
     return `<tr>
-      <td><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}</td>
-      <td class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
-      <td class="clicks-cell">${link.clicks}</td>
-      <td>${tags || '<span class="hint">—</span>'}</td>
-      <td>${badgeOf(link)}</td>
-      <td class="created-cell">${fmtDate(link.created_at)}</td>
-      <td>${actions}</td>
+      <td data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}</td>
+      <td data-label="目标" class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
+      <td data-label="点击" class="clicks-cell">${link.clicks}</td>
+      <td data-label="标签">${tags || '<span class="hint">—</span>'}</td>
+      <td data-label="状态">${badgeOf(link)}</td>
+      <td data-label="创建" class="created-cell">${fmtDate(link.created_at)}</td>
+      <td data-label="操作">${actions}</td>
     </tr>`;
   }
 
+  /* 链接库只给管理员。访客看到的是「创建后凭回执看自己那条」的说明板 */
+  function renderGuestBoard() {
+    const body = $('#links-body');
+    if (body) body.innerHTML = '';
+    const empty = $('#empty');
+    if (empty) {
+      empty.hidden = false;
+      empty.querySelector('p').textContent = access.admin_mode
+        ? '站点仅管理员可使用，登录后台后查看链接库'
+        : '链接库仅管理员可见。你刚创建的链接，凭回执链接即可查看统计。';
+    }
+    ['#summary', '#page-info'].forEach((sel) => { const el = $(sel); if (el) el.innerHTML = ''; });
+    ['#prev-btn', '#next-btn', '#export-btn', '#search-input', '#status-filter', '#sort-select', '#page-size'].forEach((sel) => {
+      const el = $(sel); if (el) el.disabled = true;
+    });
+    // 访客没有链接库，翻页控件留着只是给人点着玩
+    const pager = document.querySelector('.pager');
+    if (pager) pager.hidden = true;
+  }
+
   async function loadLinks() {
+    const pager = document.querySelector('.pager');
+    if (!access.is_admin) { renderGuestBoard(); return; }
+    if (pager) pager.hidden = false;
     const body = $('#links-body');
     if (!body) return;
     const params = new URLSearchParams({ page: state.page, page_size: state.pageSize, sort: state.sort });

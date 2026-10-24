@@ -204,6 +204,10 @@
             <label for="set-create">单 IP 每日创建上限 <span class="hint">0 不限制</span></label>
             <input id="set-create" type="number" min="0" step="1" />
           </div>
+          <div class="field">
+            <label for="set-code-length">自动短码长度 <span class="hint">3~16，大小写字母 + 数字</span></label>
+            <input id="set-code-length" type="number" min="3" max="16" step="1" />
+          </div>
         </div>
         <label class="check">
           <input id="set-fetch" type="checkbox" />
@@ -216,7 +220,7 @@
         <div class="field">
           <label for="set-access-mode">访问模式</label>
           <select id="set-access-mode">
-            <option value="open">开放外部可使用 — 任何人都能创建与管理</option>
+            <option value="open">开放外部可使用 — 任何人都能创建，链接库与统计仍归管理员</option>
             <option value="admin">仅管理员可使用 — 访客只能打开短链接</option>
           </select>
           <p class="hint" id="access-mode-hint"></p>

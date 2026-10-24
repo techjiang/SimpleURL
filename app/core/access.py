@@ -1,7 +1,8 @@
 """站点访问模式：区分「开放外部可使用」与「仅管理员可使用」。
 
-- open  ：默认。访客可创建、可查看链接库，管理操作（改/删/后台）仍需管理员
-- admin ：访客只能跳转与看统计页，创建、链接库、二维码一律要求管理员会话
+- open  ：默认。访客可创建；但链接库 / 详情 / 统计 / 导出仍只给管理员，
+          刚建的那一条凭一次性回执（领取码）可以看
+- admin ：访客只能跳转，创建与所有浏览操作都要求管理员会话
 
 模式本身是运行参数（见 settings_store.EDITABLE），后台可随时改；
 未配置 ADMIN_TOKEN 时自动退回 open，避免把站点锁死在门外。
@@ -51,10 +52,29 @@ def can_create(db=None, request: Request | None = None) -> bool:
 
 
 def can_browse(db=None, request: Request | None = None) -> bool:
-    """访客是否可以查看链接库 / 详情 / 二维码。"""
-    if not is_admin_mode(db):
-        return True
+    """是否可以查看链接库 / 详情 / 统计 / 导出。
+
+    注意：开放模式也**不**放开这一项。链接库是一份完整的清单，
+    公开出去等于把所有人建的短链都摊在阳光下。
+    """
     return bool(request) and is_admin(request, db)
+
+
+def may_see(link, request: Request | None, db=None) -> bool:
+    """单条链接的可见性：管理员，或持有该链接一次性领取码的创建者。"""
+    if is_admin(request, db):
+        return True
+    if request is None or link is None:
+        return False
+    from app.core.db import session_scope
+
+    token = request.query_params.get("t") or ""
+    if not token:
+        return False
+    from app.core.claim import verify
+
+    with session_scope() as session:
+        return verify(session, link, token)
 
 
 def snapshot(db, request: Request | None = None) -> dict:

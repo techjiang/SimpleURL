@@ -191,8 +191,9 @@ class RateLimiter:
             return True
         now = self._clock()
         with self._lock:
-            if daily and self._hits.get(key) and self._day_of(self._hits[key][-1]) != self._day_of(now):
-                # 跨自然日：昨天的配额一笔勾销
+            existing = self._hits.get(key)
+            if daily and existing and self._day_of(existing[-1]) != self._day_of(now):
+                # 跨自然日：昨天的配额一笔勾销（空 bucket 也一起清掉，别留垃圾）
                 self._hits.pop(key, None)
             since = self._day_start(now) if daily else now - window_seconds
             bucket = [t for t in self._hits.get(key, []) if t >= since]

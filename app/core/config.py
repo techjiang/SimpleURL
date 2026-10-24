@@ -37,10 +37,12 @@ class Settings:
         self.port: int = _as_int("PORT", 8000)
         self.debug: bool = _as_bool("DEBUG", False)
 
-        # 短码规则：默认 6 位，最短 3 位，最长 16 位
-        self.code_length: int = max(3, min(16, _as_int("CODE_LENGTH", 6)))
+        # 短码规则：默认 4 位（大小写字母 + 数字），最短 3 位，最长 16 位
+        self.code_length: int = max(3, min(16, _as_int("CODE_LENGTH", 4)))
         self.code_min_length: int = max(3, min(16, _as_int("CODE_MIN_LENGTH", 3)))
         self.code_max_length: int = max(8, min(32, _as_int("CODE_MAX_LENGTH", 16)))
+        # 默认短码是否排除易混字符（0 O 1 l I）；自定义短码不受影响
+        self.code_no_ambiguous: bool = _as_bool("CODE_NO_AMBIGUOUS", True)
 
         # 每个 IP 每天最多创建的链接数，防止滥用
         self.create_daily_limit: int = _as_int("CREATE_DAILY_LIMIT", 200)

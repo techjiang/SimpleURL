@@ -36,12 +36,20 @@ def _local_input(value) -> str:
 
 
 def render_stats(request: Request, link, data: dict) -> str:
+    base = str(request.base_url).rstrip("/")
+    # 二维码也要带同一张通行证，否则统计页上那张图会 401
+    claim = request.query_params.get("t") or ""
+    qr_src = f"{base}/api/qr/{link.code}" + (f"?t={claim}" if claim else "")
     return templates.get_template("stats.html").render(
         request=request,
         link=link,
         data=data,
-        short_url=str(request.base_url).rstrip("/") + "/" + link.code,
+        short_url=base + "/" + link.code,
+        qr_src=qr_src,
+        claim=claim,
     )
 
 
-templates.env.filters.update(fmt=_fmt, local_input=_local_input, iso=iso, aware=ensure_aware)
+templates.env.filters.update(
+    fmt=_fmt, fmt_local=fmt_local, local_input=_local_input, iso=iso, aware=ensure_aware
+)

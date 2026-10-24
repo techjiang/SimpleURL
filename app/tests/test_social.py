@@ -119,9 +119,9 @@ class TestBlock:
         assert admin.get("/blk4", headers={"User-Agent": WECHAT_UA}, follow_redirects=False).status_code == 307
         admin.post("/api/admin/settings", json={"social_guard": True})
 
-    def test_rules_need_admin(self, client):
-        assert client.get("/api/admin/social-rules").status_code == 401
-        assert client.post("/api/admin/social-rules", json={"rules": {}}).status_code == 401
+    def test_rules_need_admin(self, client, anon_client):
+        assert anon_client.get("/api/admin/social-rules").status_code == 401
+        assert anon_client.post("/api/admin/social-rules", json={"rules": {}}).status_code == 401
 
 
 class TestRulesApi:
@@ -214,8 +214,8 @@ class TestHardening:
         keys = {p["key"] for p in admin.get("/api/links/wecom1/stats").json()["platforms"]}
         assert "wecom" in keys
 
-    def test_blocked_events_needs_login(self, client):
-        assert client.get("/api/admin/blocked-events").status_code == 401
+    def test_blocked_events_needs_login(self, client, anon_client):
+        assert anon_client.get("/api/admin/blocked-events").status_code == 401
 
     def test_url_shortener_referer(self):
         from app.core import social
