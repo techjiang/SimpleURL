@@ -16,7 +16,7 @@ from app.core.security import client_ip
 from app.core.settings_store import effective
 from app.core.apikey import extract_key, touch, verify as verify_api_key
 from app.models import ClickEvent, Link
-from app.qr import make_qr_png
+from app.qr import make_qr_png, make_qr_svg
 from app.web import branding
 from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
 from app.services import (
@@ -173,21 +173,45 @@ def api_export(
 def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
     require_create(request, db)
-    link = create_link(db, payload, ip=client_ip(request))
-    # 开放模式下创建者拿不到链接库，给一张一次性回执，凭它回看自己这条
+
+    # 同一地址已经收录过时，先问一句「要不要复用」。
+    # 默认行为没变（照样新建一条），但要了 reuse 就直接把现成那条还回去，
+    # 排队场景里少一堆 a1B2 / a1B3 这种只差一位的重复短码。
+    reused = None
+    if payload.reuse:
+        for item in find_similar(db, payload.target, limit=1):
+            reused = db.execute(select(Link).where(Link.code == item["code"])).scalar_one_or_none()
+            if reused is not None:
+                break
+
+    if reused is not None:
+        link = reused
+        existed = True
+    else:
+        link = create_link(db, payload, ip=client_ip(request))
+        existed = False
+
     is_admin = access.is_admin(request, db)
-    token = None if is_admin else claim.issue(db, link)
+    token = None
+    if not is_admin:
+        # 线索只在开放模式下有意义：管理员不需要靠它找回任何东西
+        if payload.clue and settings.claim_lookup:
+            claim.register_clue(db, link, payload.clue)
+        token = claim.reissue(db, link) if existed else claim.issue(db, link)
+        request.state.claim_token = token
     report.record(
         db,
         "create",
         actor="admin" if is_admin else "访客",
         code=link.code,
-        detail=f"target={link.target[:200]}",
+        detail=("复用已有短码 target=" if existed else "target=") + link.target[:200],
         request=request,
     )
     db.commit()
     db.refresh(link)
-    return _serialize(link, request, token)
+    out = _serialize(link, request, token)
+    out.reused = existed
+    return out
 
 
 @router.get("/links/{code}", response_model=LinkOut, summary="短链接详情")
@@ -277,17 +301,38 @@ def api_link_stats(
     return StatsOut(**get_stats(db, code, days=days))
 
 
-@router.get("/qr/{code}", summary="二维码 PNG")
-def api_qr(code: str, request: Request, db: Session = Depends(get_db)):
+@router.get("/qr/{code}", summary="二维码图片")
+def api_qr(
+    code: str,
+    request: Request,
+    size: int = Query(240, description="边长像素，会就近取一档"),
+    fmt: str = Query("png", pattern="^(png|svg)$", description="png 或 svg"),
+    logo: int = Query(0, ge=0, le=1, description="1 表示中间带品牌图标"),
+    download: int = Query(0, ge=0, le=1, description="1 表示按附件下载"),
+    db: Session = Depends(get_db),
+):
+    """二维码：尺寸、格式、中间图标都能挑。
+
+    以前固定 240px PNG，贴海报就得自己放大到模糊。SVG 给印刷和深色底用，
+    矢量放大不糊；带 logo 的版本错误纠正开到 H，挖掉 20% 照样扫得出来。
+    """
     check_api_key(request, db)
     link = get_link_by_code(db, code)
     if not access.may_see(link, request, db):
         require_manage(request, db)
     url = str(request.base_url).rstrip("/") + "/" + link.code
+    from app.qr import nearest_size
+
+    target_size = nearest_size(size)
+    headers = {"Cache-Control": "public, max-age=3600"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="simpleurl-{link.code}.{fmt}"'
+    if fmt == "svg":
+        return Response(content=make_qr_svg(url, logo=bool(logo)), media_type="image/svg+xml", headers=headers)
     return Response(
-        content=make_qr_png(url),
+        content=make_qr_png(url, pixel_size=target_size, logo=bool(logo)),
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=3600"},
+        headers=headers,
     )
 
 
@@ -349,4 +394,49 @@ def api_summary(request: Request, db: Session = Depends(get_db)):
         "site_name": branding(db)["site_name"],
         "access_required": bool(settings.access_token),
         **access.snapshot(db, request),
+    }
+
+
+# ---------- 找回回执 ----------
+
+
+@router.post("/claim/recover", summary="凭线索找回回执")
+def api_claim_recover(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """丢了回执？留过线索就还能捞回来。
+
+    三道闸门，缺一不可：
+    1. 线索必须与登记时一致（存的是哈希，比对不泄露原文）
+    2. 同一 IP 1 小时只有 3 次机会
+    3. 只重签**最近一条**链接的回执，不是「你名下全部」
+
+    换句话说：知道你的邮箱，最多碰运气看到你最近建的那一条。
+    这比「丢了就彻底没救」好，也比「凭邮箱列出全部短链」安全得多。
+    """
+    if not settings.claim_lookup:
+        raise ServiceError("站点未开放回执找回", 403)
+    clue = str(payload.get("clue") or "").strip()
+    if not clue:
+        raise ServiceError("请填写你创建链接时留下的线索", 422)
+    ip = client_ip(request)
+    if not claim.lookup_allowed(ip):
+        raise ServiceError("找回次数过多，请 1 小时后再试", 429)
+    link = claim.lookup(db, clue)
+    if link is None:
+        # 不区分「线索不存在」和「线索对但链接没了」：后者等于确认了这条线索在用
+        raise ServiceError("没有找到对应的链接", 404)
+    if link.is_expired:
+        raise ServiceError("这条链接已经过期，回执也一并失效了", 410)
+    token = claim.reissue(db, link)
+    request.state.claim_token = token
+    report.record(db, "claim", actor="访客", code=link.code, detail="凭线索找回回执", request=request)
+    db.commit()
+    base = str(request.base_url).rstrip("/")
+    return {
+        "ok": True,
+        "code": link.code,
+        "title": link.title,
+        "short_url": f"{base}/{link.code}",
+        "claim_token": token,
+        "stats_url": f"{base}/s/{link.code}?t={token}",
+        "message": "找到了，这是新的回执链接",
     }

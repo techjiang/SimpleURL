@@ -37,6 +37,10 @@ class LinkCreate(BaseModel):
     expires_at: Optional[dt.datetime] = None
     # 传 false 表示这次跳过自动取标题（批量导入、脚本里不想等出网时用）
     fetch_title: Optional[bool] = Field(None, description="本次是否自动获取标题，留空按站点设置")
+    # 找回线索（邮箱或一句自述）：只存哈希，丢了回执时凭它反查最近一条
+    clue: Optional[str] = Field(None, max_length=120, description="找回线索，可选")
+    # 同一地址重复收录时：true 直接复用已有短码，不再新建一条
+    reuse: Optional[bool] = Field(None, description="目标已存在时复用，不新建")
 
     @field_validator("target")
     @classmethod
@@ -47,6 +51,14 @@ class LinkCreate(BaseModel):
         if not v:
             raise ValueError("目标地址不能为空")
         return v
+
+    @field_validator("clue", mode="before")
+    @classmethod
+    def _v_clue(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()[:120]
+        return v or None
 
     @field_validator("title", "note", mode="before")
     @classmethod
@@ -122,6 +134,8 @@ class LinkOut(BaseModel):
     # 创建者手里的一次性回执：凭它回看这一条（仅创建响应里返回一次）
     claim_token: Optional[str] = None
     stats_url: Optional[str] = None
+    # 这个短码是不是「目标已存在，直接复用」来的
+    reused: bool = False
 
 
 class LinkListOut(BaseModel):

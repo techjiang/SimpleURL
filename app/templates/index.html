@@ -46,8 +46,21 @@
         <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
       </div>
     </div>
+    <div class="row">
+      <div class="field">
+        <label for="clue">找回线索 <span class="hint">可选 · 丢了回执凭它捞回来</span></label>
+        <input id="clue" name="clue" type="text" placeholder="邮箱或一句只有你记得的自述" maxlength="120" />
+      </div>
+      <div class="field toggles">
+        <label class="check" for="reuse">
+          <input type="checkbox" id="reuse" name="reuse" />
+          <span>地址已收录时直接复用短码</span>
+        </label>
+      </div>
+    </div>
     <div class="composer-actions">
       <button type="submit" class="btn primary" id="submit-btn">生成短链接</button>
+      <button type="button" class="btn ghost" id="recover-btn">回执丢了？</button>
       <span class="status" id="create-status" role="status" aria-live="polite"></span>
     </div>
   </form>
@@ -75,6 +88,22 @@
         </div>
       </div>
     </div>
+  </div>
+  <div class="recover" id="recover" hidden>
+    <form id="recover-form" autocomplete="off">
+      <p class="dup-title">输入创建链接时留下的线索，找回最近一条的回执</p>
+      <div class="row">
+        <div class="field main">
+          <label for="recover-clue">找回线索</label>
+          <input id="recover-clue" type="text" placeholder="邮箱或那句自述" maxlength="120" required />
+        </div>
+        <div class="field">
+          <label>&nbsp;</label>
+          <button class="btn primary" type="submit" id="recover-submit">找回</button>
+        </div>
+      </div>
+      <p class="status" id="recover-status" role="status" aria-live="polite"></p>
+    </form>
   </div>
 </section>
 

@@ -24,6 +24,10 @@
 - **到期提醒** — 列表与仪表盘都标出「还剩几天」，7 天内到期可一键筛出
 - **运行状态** — 后台一屏看库体积 / 待结算 / 丢了多少点击 / 部署自检告警
 - **点击对账** — 没计入点击的访问按原因分账：UA 屏蔽 / 平台拦截 / 放行不计数 / 超出配额，配额用尽会亮告警
+- **二维码工坊** — 160~1024px 六档尺寸、PNG / SVG 双格式、可带品牌图标（错误纠正提到 H），矢量印刷不糊
+- **回执找回** — 创建时留一个线索（邮箱或自述），丢了回执凭它换一张新的；只重签最近一条，1 小时 3 次
+- **CSV 导入** — 把自己导出的表格、Excel 另存的 CSV 直接灌进来，中英文表头都认，没表头按「哪列像链接」猜
+- **告警外推** — Webhook / 邮件 / Bark 三通道，部署自检与配额告警出现时自动推一条，同类 1 小时内不重复
 - **精致界面** — 深色玻璃质感、响应式、无框架依赖、极光动效
 - **无背景 Logo** — 提供 SVG 矢量与 16~512px PNG，深浅底色通用
 
@@ -67,7 +71,8 @@ docker compose up -d         # 首次需构建
 | `GET` | `/api/links/{code}/stats` | 访问统计（管理员，或创建者带 `?t=` 回执）；含 `no_click` 未计入明细 |
 | `GET` | `/api/codes/{code}/available` | 自定义短码可用性预检（无创建权时一律回「可以用」） |
 | `GET` | `/api/duplicate?target=` | 按目标地址查已有短码（管理员） |
-| `GET` | `/api/qr/{code}` | 二维码 PNG（管理员，或创建者带 `?t=` 回执） |
+| `GET` | `/api/qr/{code}` | 二维码，支持 `size`（160~1024）/ `fmt=png\|svg` / `logo=1` / `download=1`（管理员，或创建者带 `?t=` 回执） |
+| `POST` | `/api/claim/recover` | 凭找回线索重签最近一条的回执，`clue` 必填，1 小时 3 次 |
 | `GET` | `/api/links/export` | 导出 CSV（沿用列表的筛选参数） |
 | `POST` | `/api/links/bulk` | 批量操作，`action` 取 `enable`/`disable`/`delete`，`codes` 为短码数组 |
 | `GET` | `/api/stats/summary` | 总览（含站点公告与访问令牌状态） |
@@ -78,6 +83,10 @@ docker compose up -d         # 首次需构建
 | `GET/POST` | `/api/admin/ua-rules` | UA 屏蔽规则 |
 | `GET/POST/DELETE` | `/api/admin/api-keys` | API 密钥管理 |
 | `POST` | `/api/admin/migrate/yourls` | 从 YOURLS 迁移 |
+| `POST` | `/api/admin/import/csv` | 从 CSV 清单导入 |
+| `GET/POST` | `/api/admin/notify` | 通知通道配置与最近投递结果 |
+| `POST` | `/api/admin/notify/test` | 给某个通道发一条测试消息 |
+| `POST` | `/api/admin/notify/send-digest` | 立即推送当前告警摘要 |
 | `GET` | `/api/admin/audit` | 操作留痕，支持 `limit` / `action` |
 | `POST` | `/api/admin/flush-clicks` | 立即结算延迟计数 |
 | `GET` | `/api/admin/runtime` | 运行状态：库体积、待结算、丢弃数、到期数、部署自检 |
@@ -135,6 +144,12 @@ curl -X POST http://localhost:8000/api/links \
 | `CLICK_EVENT_RETENTION_DAYS` | `365` | 点击明细保留天数，`0` 不清理（累计点击数不受影响） |
 | `ANNOUNCEMENT` | 空 | 首页顶部公告，后台「设置 → 站点公告」可改 |
 | `SITE_TAGLINE` | `数据可自托管，隐私尽在掌握` | 页脚那句自述 |
+| `CLAIM_LOOKUP` | `true` | 是否开放「凭线索找回回执」入口 |
+| `NOTIFY_ENABLED` | `false` | 告警是否推送到通知通道（后台也可改） |
+| `NOTIFY_COOLDOWN` | `3600` | 同类告警的投递冷却秒数 |
+| `NOTIFY_WEBHOOK_URL` / `NOTIFY_WEBHOOK_SECRET` | 空 | Webhook 通道的环境变量兜底 |
+| `NOTIFY_EMAIL_HOST` / `_USER` / `_PASSWORD` / `_TO` / `_STARTTLS` / `_FROM` | 空 | 邮件通道的环境变量兜底 |
+| `NOTIFY_BARK_URL` | 空 | Bark 通道的环境变量兜底 |
 
 ## 访问模式
 
@@ -297,6 +312,82 @@ sessionStorage 里的明文，靠拼 query 跳转——服务端不认它，门�
 存储上只加了一列 `block_reason`（老库启动时自动补，见 `core/db.py`），
 升级前的历史记录归到「历史未分类」，不会因为升级被算丢。
 
+## 二维码工坊
+
+短码是给人点的，二维码是给机器扫的——贴海报、印名片、放 PPT，需求完全不同。
+
+| 参数 | 取值 | 说明 |
+| --- | --- | --- |
+| `size` | 160 / 240 / 320 / 480 / 640 / 800 / 1024 | 就近取档，按目标边长反推每格像素，不会糊 |
+| `fmt` | `png` / `svg` | SVG 是矢量，放多大都不糊，适合印刷 |
+| `logo` | `0` / `1` | 带品牌图标时错误纠正开到 H，中间挖掉 20% 照样扫得出来 |
+| `download` | `0` / `1` | 1 时按附件下载，文件名带短码 |
+
+后台「二维码 → 二维码工坊」是同一套参数的界面版，预览和下载走同一个 URL
+——省得「预览是一个、下下来是另一个」这种经典错位。
+
+```bash
+curl -b cookie.txt 'http://localhost:8000/api/qr/docs?size=800&fmt=svg&logo=1' -o docs.svg
+```
+
+## 回执找回：线索机制
+
+回执（领取码）服务端只存哈希，丢了就真没了，而开放模式下又没有管理员可问。
+以前只能「拿旧回执换新回执」，可也常常连旧的都不在手上了。
+
+现在创建时可以顺手留一个**线索**（邮箱，或一句只有你记得的自述），它做成的是
+「弱恢复」而不是「账号」：
+
+- 线索本身也存哈希，不落明文
+- 反查必须重新提供同一个线索，且同一 IP 1 小时只有 3 次机会
+- **只重签最近一条**链接的回执，不是「你名下全部」
+
+也就是说：知道你的邮箱，最多碰运气看到你最近建的那一条。这比「丢了彻底没救」
+好，也比「凭邮箱列出全部短链」安全得多。线索默认保留 30 天，每个线索只留最近 5 条。
+
+管理员创建的链接不发回执（用不着），「找回」入口只在首页，访客点「回执丢了？」展开。
+
+## 导入：YOURLS 与 CSV
+
+两条路，一条认转储、一条认表格：
+
+| 来源 | 入口 | 认什么 |
+| --- | --- | --- |
+| YOURLS | 后台「数据迁移」 | `INSERT INTO yourls_url ...` 的 SQL 转储、JSON 导出 |
+| CSV | 后台「数据迁移 → 从 CSV 清单导入」 | 本系统导出的 CSV、Excel 另存的 CSV |
+
+CSV 的表头中英文都认（`短码`/`code`、`目标地址`/`url`/`target`、`标题`/`title`、
+`标签`/`tags`、`点击`/`clicks`、`过期时间`/`expires_at`）；一个都不认识时就按
+「哪一列以 http 开头」猜，纯文本清单也能灌。分隔符自动识别逗号 / 制表符 / 分号。
+
+共同行为：短码冲突自动换一个可用码（`renamed` 计数），同一份文件里重复的目标地址
+跳过（`skipped` 计数），其余计数在 `imported` / `failed` 里。CSV 额外把标题、标签、
+点击数、过期时间一起带进来。
+
+## 通知：告警别再等人点开
+
+部署自检、配额告警、到期提醒这些以前只写在后台「运行状态」页里——得有人主动点开
+才看得见。真出事那天，通常谁都没在看。
+
+| 通道 | 需要填 | 说明 |
+| --- | --- | --- |
+| Webhook | 接收地址、（可选）校验密钥 | JSON POST，`{title, text, level, site, time}`；密钥走 `X-SimpleURL-Secret` 头 |
+| 邮件 | SMTP 服务器、账号、授权码、收件人 | 465 端口填 `starttls=0` 走 SSL，587 保持 `1` 走 STARTTLS |
+| Bark | `https://api.day.app/你的Key` | iOS 推送，`warn` 级用 timeSensitive |
+
+规则：
+
+- 总开关在后台「通知」页，也可以 `NOTIFY_ENABLED=true` 起手打开
+- 后台每 5 分钟看一次告警，出现新的就推；**同类告警 1 小时内不重复**
+  （冷却键取告警文本本身，换了内容就值得再发一次）
+- webhook 地址走与创建短链同一套 SSRF 校验，不能被用来探内网
+- 发送在后台线程里跑，一个 8 秒超时的 webhook 不会拖住保存设置
+- 每次投递留一条结果（成功 / 失败原因）在通道卡片上，不靠翻日志
+
+```bash
+NOTIFY_ENABLED=true NOTIFY_WEBHOOK_URL=https://example.com/hook ./run.sh
+```
+
 ## Logo
 
 位于 `app/static/logo/`，全部**无背景透明**：
@@ -324,7 +415,11 @@ pytest
 以及 v6 的域名解析级 SSRF 拦截（含 DNS 缓存与取标题侧）、延迟计数队列上限、
 根级图标与 HEAD 请求路由、访问令牌 Cookie 落盘、到期提醒筛选、运行状态与点击明细清理、弱口令收权、站点公告，
 以及 v11 的「未计入点击」按原因分账（`block_reason`：UA 屏蔽 / 平台拦截 / 放行不计数 / 超出配额）、
-配额用尽告警、趋势窗口按本地自然日切、图表纵轴刻度。
+配额用尽告警、趋势窗口按本地自然日切、图表纵轴刻度，
+以及 v12 的二维码尺寸 / 格式 / 带图标与就近取档、复用已有短码（含地址归一化）、
+回执凭线索找回（含错线索、限速、只取最近一条）、CSV 解析（中英文表头 / 无表头 / 制表符）
+与导入（换码、跳过重复、保留点击数标签）、通知通道（保存隐藏密钥、留空不改、
+内网地址拦截、投递结果留痕）。全套 380 个用例。
 
 ## 项目结构
 
@@ -341,7 +436,7 @@ app/
 ├── core/              config / db / codes / security / crypto / csrf
 │                       middleware / access / admin / apikey / guard
 │                       clicks / settings_store / titles / yourls / timeutil
-│                       policy（跳转策略快照）/ report（操作留痕）
+│                       policy（跳转策略快照）/ report（操作留痕）/ notify（告警外推）
 │                       social（微信 / QQ 等来源识别与策略）
 ├── templates/         Jinja2 模板
 ├── static/            CSS / JS / Logo
@@ -353,7 +448,8 @@ app/
 │   ├── test_social.py       社交平台防洪
 │   ├── test_v4.py           回执链接 / 准入边界 / 短码长度
 │   ├── test_v5.py           批量操作 / 操作留痕 / 额度 / 策略快照
-│   └── test_security.py     安全加固
+│   ├── test_security.py     安全加固
+│   └── test_v12.py          二维码 / 回执找回 / 复用 / CSV / 通知
 └── scripts/           Logo 生成脚本
 ```
 

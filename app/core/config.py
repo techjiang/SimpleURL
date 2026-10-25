@@ -140,6 +140,29 @@ class Settings:
         # 开启后 /api/* 必须携带 X-Api-Key 或 ?key=
         self.require_api_key: bool = _as_bool("REQUIRE_API_KEY", False)
 
+        # ---------- 通知通道 ----------
+        # 渠道与界面都在后台配（settings 表），这里只给环境变量兜底。
+        # 形如 NOTIFY_WEBHOOK_URL / NOTIFY_EMAIL_HOST / NOTIFY_BARK_URL
+        for _channel, _names in {
+            "webhook": ("url", "secret"),
+            "email": ("host", "user", "password", "to", "starttls", "from"),
+            "bark": ("url",),
+        }.items():
+            for _name in _names:
+                setattr(
+                    self,
+                    f"notify_{_channel}_{_name}",
+                    os.getenv(f"NOTIFY_{_channel.upper()}_{_name.upper()}", "").strip(),
+                )
+        # 通知通道是否在后台开着（关掉就一条都不发）
+        self.notify_enabled: bool = _as_bool("NOTIFY_ENABLED", False)
+        # 告警投递冷却：同一批告警多久内不重复轰炸（秒）
+        self.notify_cooldown: int = max(60, min(86400, _as_int("NOTIFY_COOLDOWN", 3600)))
+
+        # 访客凭回执登记反查自己建过的链接：留一条邮箱 / 备注即可
+        # 关掉后「找回回执」入口消失，其余功能不受影响
+        self.claim_lookup: bool = _as_bool("CLAIM_LOOKUP", True)
+
         # YOURLS 兼容接口的签名令牌：只有显式配置才校验，不默认继承管理令牌，
         # 否则配了后台密码就等于把兼容接口也锁了，违背"开箱即用"
         self.yourls_token: str = os.getenv("YOURLS_TOKEN", "").strip()

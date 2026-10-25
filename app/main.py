@@ -77,16 +77,81 @@ def _start_retention_job() -> threading.Timer | None:
     return timer
 
 
+def _notify_warnings_once(seen: dict) -> None:
+    """把运行状态里的告警推出去，同类告警冷却期内不重复发。
+
+    以前这些黄灯只在后台页面上亮着，得有人主动点开才看得见。
+    冷却键用告警文本本身：换了内容就值得再发一次，
+    同一句挂一天则发一次就够——告警通道最怕变成噪音。
+    """
+    import time
+
+    from app.core import notify
+    from app.core.db import session_scope
+    from app.services import runtime_status
+
+    try:
+        with session_scope() as db:
+            if not notify.enabled(db):
+                return
+            from app.core.settings_store import effective
+
+            if not bool(effective(db, "notify_enabled")):
+                return
+            warnings = runtime_status(db)["warnings"]
+            if not warnings:
+                return
+            now = time.time()
+            fresh = []
+            for item in warnings:
+                key = str(item.get("text") or "")[:200]
+                if now - seen.get(key, 0) < settings.notify_cooldown:
+                    continue
+                seen[key] = now
+                fresh.append(item)
+            if not fresh:
+                return
+            title = f"{settings.site_name} 有 {len(fresh)} 条告警"
+            body = notify.digest_body(fresh, db)
+            for channel in notify.enabled(db):
+                notify.send(db, channel, title, body, level="warn")
+            # 状态留痕要落库，别跟着 session_scope 一起回滚
+    except Exception:  # noqa: BLE001 - 通知失败绝不能影响主进程
+        logger.exception("推送告警失败")
+
+
+def _start_notify_job():
+    """每 5 分钟看一眼告警，配了通道就推。"""
+    seen: dict[str, float] = {}
+
+    def _tick() -> None:
+        _notify_warnings_once(seen)
+        _reschedule()
+
+    timer: threading.Timer | None = None
+
+    def _reschedule() -> None:
+        nonlocal timer
+        timer = threading.Timer(300, _tick)
+        timer.daemon = True
+        timer.start()
+
+    _reschedule()
+    return lambda: timer and timer.cancel()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
     click_buffer.start(settings.click_flush_interval)
     retention_timer = _start_retention_job()
+    stop_notify = _start_notify_job()
     _startup_audit()
     logger.info("SimpleURL v%s 已启动", __version__)
     yield
     if retention_timer is not None:
         retention_timer.cancel()
+    stop_notify()
     # 退出前把缓冲里的点击结算掉，别丢数据
     try:
         written = click_buffer.flush_all()

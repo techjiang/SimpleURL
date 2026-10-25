@@ -113,6 +113,31 @@ class ClickEvent(Base):
     )
 
 
+class ClaimRecord(Base):
+    """回执登记：让丢了一次性回执的访客还能找回来。
+
+    回执（领取码）服务端只存哈希，丢了就真没了——开放模式下又没有管理员可问。
+    以前的办法是「拿旧回执换新回执」，可也常常连旧的都不在手上了。
+
+    折中方案：创建时可以让访客留一个 **线索**（邮箱或一句自述），线索不加密
+    但也救不了任何人的链接——反查时必须同时提供线索，而且同一线索 1 小时
+    内只为最近的一条链接重签回执，且只有 3 次机会。这样即便有人知道你的邮箱，
+    他也拿不到「所有」链接，只能碰运气看到最新那条有没有人动过。
+    """
+
+    __tablename__ = "claim_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    link_id: Mapped[int] = mapped_column(ForeignKey("links.id", ondelete="CASCADE"), index=True, nullable=False)
+    # 线索的哈希：邮箱本身不落库，只存归一化后的 SHA-256
+    clue_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    __table_args__ = (
+        Index("ix_claim_records_link", "link_id"),
+    )
+
+
 class AuditLog(Base):
     """操作留痕：谁在什么时候对哪条链接做了什么。"""
 

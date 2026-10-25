@@ -56,3 +56,95 @@ def _hash(token: str) -> str:
 
 def param_name() -> str:
     return "t"
+
+
+# ---------- 线索登记：丢了回执怎么找回来 ----------
+#
+# 回执丢了就是丢了（服务端只存哈希）。留一个「线索」作为找回的凭据，
+# 但刻意做成「弱恢复」而不是「账号」：
+#   · 线索本身也存哈希，不落明文
+#   · 反查必须重新提供同一个线索
+#   · 每次反查只为**最近一条**链接重签，且 1 小时内最多 3 次
+# 这样最坏情况是「知道邮箱的人碰运气看到你最新那条」，而不是整份清单被端走。
+
+CLAIM_LOOKUP_WINDOW = 3600
+CLAIM_LOOKUP_MAX = 3
+CLAIM_LOOKUP_DAYS = 30
+
+
+def normalize_clue(raw: str) -> str:
+    return " ".join(str(raw or "").strip().lower().split())
+
+
+def clue_hash(raw: str) -> str:
+    salt = settings.session_secret or "simpleurl"
+    return hashlib.sha256(f"clue:{salt}:{normalize_clue(raw)}".encode()).hexdigest()
+
+
+def register_clue(db: Session, link, raw: str) -> None:
+    """登记一条找回线索。同一线索重复登记只留最新的那几行，不无限长。"""
+    from sqlalchemy import delete, select
+
+    from app.models import ClaimRecord
+
+    clue = normalize_clue(raw)
+    if not clue:
+        return
+    db.add(ClaimRecord(link_id=link.id, clue_hash=clue_hash(clue)))
+    db.flush()
+    # 每个线索只留最近 5 条：留太多等于把一个人的链接清单攒起来
+    rows = (
+        db.execute(
+            select(ClaimRecord.id)
+            .where(ClaimRecord.clue_hash == clue_hash(clue))
+            .order_by(ClaimRecord.id.desc())
+            .offset(5)
+        )
+        .scalars()
+        .all()
+    )
+    if rows:
+        db.execute(delete(ClaimRecord).where(ClaimRecord.id.in_(list(rows))))
+        db.flush()
+
+
+def lookup(db: Session, raw: str) -> object | None:
+    """按线索找回最近一条还有回执的链接。
+
+    先查线索命中，再排除已删 / 已过期 / 租期外的，最后取最新的一条。
+    """
+    import datetime as dt
+
+    from sqlalchemy import select
+
+    from app.core.timeutil import utcnow
+    from app.models import ClaimRecord, Link
+
+    clue = normalize_clue(raw)
+    if not clue:
+        return None
+    since = utcnow() - dt.timedelta(days=CLAIM_LOOKUP_DAYS)
+    stmt = (
+        select(Link)
+        .join(ClaimRecord, ClaimRecord.link_id == Link.id)
+        .where(
+            ClaimRecord.clue_hash == clue_hash(clue),
+            ClaimRecord.created_at >= since,
+            Link.claim_hash.is_not(None),
+            Link.enabled.is_(True),
+        )
+        .order_by(ClaimRecord.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalars().first()
+
+
+def lookup_allowed(ip: str | None) -> bool:
+    """反查限速：同一 IP 1 小时内 3 次。
+
+    不加限速的话，这个接口就是一台「拿邮箱试短码」的机器，
+    线索再弱也白搭。
+    """
+    from app.core.security import rate_limiter
+
+    return rate_limiter.allow(f"claim-lookup:{ip or 'unknown'}", CLAIM_LOOKUP_MAX, CLAIM_LOOKUP_WINDOW)

@@ -513,3 +513,125 @@ def api_migrate(payload: MigrationIn, request: Request, db: Session = Depends(ge
     )
     db.commit()
     return MigrationOut(**result)
+
+
+# ---------- 通知通道 ----------
+#
+# 告警一直只写在页面上：部署自检、配额告警、到期提醒都得有人主动点开
+# 「运行状态」才看得见。真出事那天，通常谁都没在看。
+
+
+@router.get("/notify", summary="通知通道配置与最近结果")
+def api_notify_get(request: Request, db: Session = Depends(get_db)):
+    require_settings_admin(request)
+    from app.core import notify
+
+    return {
+        "enabled": notify_enabled(db),
+        "channels": notify.state(db),
+        "sources": notify_sources(db),
+        "cooldown": settings.notify_cooldown,
+    }
+
+
+@router.post("/notify", summary="保存通知通道配置")
+def api_notify_save(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """按键保存：空串表示清空（而不是「没填就保留旧值」）。
+
+    密码 / 密钥类字段留空视为不改——回显是脱敏的，前端不可能把原值带回来。
+    """
+    require_settings_admin(request)
+    from app.core import notify
+
+    channel = str(payload.get("channel") or "").strip()
+    if channel not in notify.CHANNELS:
+        raise ServiceError("未知的通知通道", 422)
+    values = dict(payload.get("options") or {})
+    if payload.get("enabled") is not None:
+        from app.core.settings_store import set_value
+
+        set_value(db, "notify_enabled", bool(payload.get("enabled")))
+    current = notify.options(db, channel)
+    for secret_name in ("password", "secret"):
+        if secret_name in values and not str(values[secret_name] or "").strip():
+            values.pop(secret_name)
+            if current.get(secret_name):
+                values[secret_name] = current[secret_name]
+    notify.save_options(db, channel, values)
+    report.record(db, "settings", actor=require_settings_admin(request), detail=f"通知通道 {channel}", request=request)
+    db.commit()
+    return api_notify_get(request, db)
+
+
+@router.post("/notify/test", summary="发一条测试消息")
+def api_notify_test(payload: dict, request: Request, db: Session = Depends(get_db)):
+    require_settings_admin(request)
+    from app.core import notify
+
+    channel = str(payload.get("channel") or "").strip()
+    if channel not in notify.CHANNELS:
+        raise ServiceError("未知的通知通道", 422)
+    result = notify.send(
+        db,
+        channel,
+        f"{settings.site_name} 测试消息",
+        "收到这条说明通知通道是通的。\n时间：" + dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        level="info",
+    )
+    report.record(db, "settings", actor=require_settings_admin(request), detail=f"通知测试 {channel}", request=request)
+    db.commit()
+    return {**result, "message": result["message"]}
+
+
+@router.post("/notify/send-digest", summary="立即推送一次告警摘要")
+def api_notify_digest(request: Request, db: Session = Depends(get_db)):
+    require_settings_admin(request)
+    from app.core import notify
+
+    warnings = runtime_status(db)["warnings"]
+    results = notify.broadcast(db, f"{settings.site_name} 运行摘要", notify.digest_body(warnings, db), level="info")
+    db.commit()
+    if not results:
+        raise ServiceError("还没有任何通道配置完整，先在「通知」里填一个", 422)
+    sent = sum(1 for r in results if r["ok"])
+    return {"ok": sent > 0, "message": f"{sent}/{len(results)} 个通道投递成功", "results": results}
+
+
+def notify_enabled(db: Session) -> bool:
+    """通知总开关：后台 > 环境变量。"""
+    from app.core.settings_store import effective
+
+    return bool(effective(db, "notify_enabled"))
+
+
+def notify_sources(db: Session) -> list[dict]:
+    """哪些事会触发通知。现在只有告警，将来加投放统计也在这里登记。"""
+    return [
+        {"key": "warnings", "label": "部署自检与配额告警", "desc": "运行状态里亮黄灯的那些，出现时推一条"},
+        {"key": "digest", "label": "手动摘要", "desc": "随时把当前告警打包发一次"},
+    ]
+
+
+@router.post("/import/csv", summary="从 CSV 清单导入")
+def api_import_csv(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """导入一张表格就建一批短链。
+
+    表头认中文也认英文，认不出来就按「哪一列像链接」猜；
+    短码冲突自动换一个，不会覆盖已有链接。
+    """
+    require_admin(request)
+    from app.services import import_links_csv
+
+    text = str(payload.get("payload") or "")
+    if not text.strip():
+        raise ServiceError("粘贴内容为空", 422)
+    result = import_links_csv(db, text)
+    report.record(
+        db,
+        "import",
+        actor=require_admin(request),
+        detail=f"CSV 导入 {result['imported']} 条，换码 {result['renamed']} 条，失败 {result['failed']} 条",
+        request=request,
+    )
+    db.commit()
+    return result

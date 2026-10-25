@@ -105,6 +105,8 @@
       if (btn.dataset.tab === 'audit') loadAudit();
       if (btn.dataset.tab === 'settings') loadSettings();
       if (btn.dataset.tab === 'status') loadStatus();
+      if (btn.dataset.tab === 'qr') renderQr();
+      if (btn.dataset.tab === 'notify') loadNotify();
     });
   }
 
@@ -694,6 +696,38 @@
         setStatus('#migrate-status', err.message, 'err');
       } finally { btn.disabled = false; }
     });
+
+    // CSV 清单导入：和 YOURLS 迁移是两条路，一条认转储，一条认表格
+    const csvForm = $('#csv-form');
+    if (!csvForm) return;
+    const pick = $('#csv-pick');
+    const file = $('#csv-file');
+    if (pick && file) {
+      pick.addEventListener('click', () => file.click());
+      file.addEventListener('change', () => {
+        const f = file.files && file.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => { $('#csv-payload').value = String(reader.result || ''); };
+        reader.readAsText(f, 'utf-8');
+      });
+    }
+    csvForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = $('#csv-payload').value;
+      if (!payload.trim()) { setStatus('#csv-status', '先粘贴或选一个 CSV 文件', 'err'); return; }
+      const btn = $('#csv-btn');
+      btn.disabled = true;
+      setStatus('#csv-status', '解析并导入中…');
+      try {
+        const r = await post('/api/admin/import/csv', { payload });
+        setStatus('#csv-status', `导入 ${r.imported} 条，换码 ${r.renamed}，跳过 ${r.skipped}，失败 ${r.failed}`, 'ok');
+        toast(`已导入 ${r.imported} 条`);
+        loadAdminLinks();
+      } catch (err) {
+        setStatus('#csv-status', err.message, 'err');
+      } finally { btn.disabled = false; }
+    });
   }
 
   /* ---------- 设置 ---------- */
@@ -835,11 +869,162 @@
     if (sel) sel.addEventListener('change', loadAudit);
   }
 
+  /* ---------- 二维码工坊 ----------
+     以前只有 240px PNG，贴海报得自己放大到模糊。这里把后端已经支持的
+     尺寸 / 格式 / 带图标三个参数摊出来，预览与下载走同一个 URL，
+     避免「预览是一个、下载是另一个」的经典错位。 */
+  function qrUrl() {
+    const code = ($('#qr-code').value || '').trim();
+    if (!code) return '';
+    const qs = new URLSearchParams({
+      size: $('#qr-size').value,
+      fmt: $('#qr-fmt').value,
+      logo: $('#qr-logo').value,
+    });
+    return `/api/qr/${encodeURIComponent(code)}?${qs.toString()}`;
+  }
+
+  function renderQr() {
+    const img = $('#qr-img');
+    const note = $('#qr-note');
+    if (!img) return;
+    const url = qrUrl();
+    if (!url) {
+      note.textContent = '填短码后点「刷新预览」。SVG 放多大都不糊，适合印刷；带图标的版本把错误纠正开到 H，中间挖掉 20% 照样扫得出来。';
+      note.className = 'qr-note';
+      return;
+    }
+    img.src = url;
+    const link = $('#qr-download');
+    if (link) {
+      link.href = url + '&download=1';
+      link.setAttribute('download', `simpleurl-${($('#qr-code').value || '').trim()}.${$('#qr-fmt').value}`);
+    }
+    const code = ($('#qr-code').value || '').trim();
+    note.textContent = `预览：/${code} · ${$('#qr-size').value}px · ${$('#qr-fmt').value.toUpperCase()}`;
+    note.className = 'qr-note';
+  }
+
+  function bindQr() {
+    ['#qr-size', '#qr-fmt', '#qr-logo'].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.addEventListener('change', renderQr);
+    });
+    const code = $('#qr-code');
+    if (code) code.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); renderQr(); } });
+    const btn = $('#qr-refresh');
+    if (btn) btn.addEventListener('click', renderQr);
+  }
+
+  /* ---------- 通知通道 ---------- */
+  const NOTIFY_FIELDS = {
+    webhook: [['url', '接收地址', 'https://example.com/hook'], ['secret', '校验密钥（可选）', '']],
+    email: [
+      ['host', 'SMTP 服务器', 'smtp.example.com:587'],
+      ['user', '账号', ''],
+      ['password', '密码 / 授权码', ''],
+      ['to', '收件人', 'a@example.com, b@example.com'],
+      ['from', '发件人（留空用账号）', ''],
+      ['starttls', 'STARTTLS（1 开 / 0 用 465 SSL）', '1'],
+    ],
+    bark: [['url', 'Bark 地址', 'https://api.day.app/你的Key']],
+  };
+
+  function notifyCard(ch) {
+    const fields = NOTIFY_FIELDS[ch.key] || [];
+    const state = ch.last_ok === '1' ? 'ok' : ch.last_ok === '0' ? 'err' : 'idle';
+    const stateText = ch.last_ok === '1' ? '上次成功' : ch.last_ok === '0' ? '上次失败' : '未发送过';
+    const inputs = fields.map(([name, label, ph]) => {
+      const value = ch.options && ch.options[name] ? ch.options[name] : '';
+      const isSecret = name === 'password' || name === 'secret';
+      const placeholder = isSecret && (ch.has_password || ch.has_secret) ? '已保存，留空表示不改' : ph;
+      return `<label>${escapeHtml(label)}
+        <input data-ch="${ch.key}" data-name="${name}" type="${isSecret ? 'password' : 'text'}"
+               value="${isSecret ? '' : escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="off" />
+      </label>`;
+    }).join('');
+    return `<div class="chart-card notify-card" data-chcard="${ch.key}">
+      <div class="chart-head notify-head">
+        <h2>${escapeHtml(ch.label)}</h2>
+        <span class="notify-state ${state}">${ch.configured ? '已配置' : '未配置'} · ${stateText}</span>
+      </div>
+      <div class="notify-grid">${inputs}</div>
+      <div class="dash-actions">
+        <button class="btn primary" type="button" data-nsave="${ch.key}">保存</button>
+        <button class="btn ghost" type="button" data-ntest="${ch.key}">发一条测试</button>
+        <span class="status" data-nstatus="${ch.key}" role="status"></span>
+      </div>
+      <p class="notify-last">${ch.last_at ? `上次投递：${escapeHtml(ch.last_at)} · ${escapeHtml(ch.last_title || '')} · ${escapeHtml(ch.last_message || '')}` : '还没有投递记录。'}</p>
+    </div>`;
+  }
+
+  async function loadNotify() {
+    const box = $('#notify-cards');
+    if (!box) return;
+    try {
+      const data = await api('/api/admin/notify');
+      const toggle = $('#notify-enabled');
+      if (toggle) toggle.checked = Boolean(data.enabled);
+      box.innerHTML = Object.values(data.channels || {}).map(notifyCard).join('');
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindNotify() {
+    const toggle = $('#notify-enabled');
+    if (toggle) toggle.addEventListener('change', async () => {
+      try {
+        await post('/api/admin/notify', { enabled: toggle.checked });
+        toast(toggle.checked ? '告警推送已开启' : '告警推送已关闭');
+      } catch (err) { toast(err.message); }
+    });
+    const box = $('#notify-cards');
+    if (!box) return;
+    box.addEventListener('click', async (e) => {
+      const save = e.target.closest('[data-nsave]');
+      const test = e.target.closest('[data-ntest]');
+      if (!save && !test) return;
+      const channel = (save || test).dataset.nsave || (save || test).dataset.ntest;
+      const status = box.querySelector(`[data-nstatus="${channel}"]`);
+      const setMsg = (msg, kind) => {
+        if (!status) return;
+        status.textContent = msg || '';
+        status.className = 'status' + (kind ? ' ' + kind : '');
+      };
+      if (save) {
+        const options = {};
+        box.querySelectorAll(`[data-ch="${channel}"]`).forEach((input) => {
+          options[input.dataset.name] = input.value;
+        });
+        setMsg('保存中…');
+        try {
+          await post('/api/admin/notify', { channel, options });
+          setMsg('已保存', 'ok');
+          loadNotify();
+        } catch (err) { setMsg(err.message, 'err'); }
+        return;
+      }
+      setMsg('发送中…');
+      try {
+        const r = await post('/api/admin/notify/test', { channel });
+        setMsg(r.message || '已发送', r.ok ? 'ok' : 'err');
+        loadNotify();
+      } catch (err) { setMsg(err.message, 'err'); }
+    });
+    const digest = $('#notify-digest');
+    if (digest) digest.addEventListener('click', async () => {
+      try {
+        const r = await post('/api/admin/notify/send-digest', {});
+        toast(r.message);
+        loadNotify();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
   /* ---------- 启动 ---------- */
   async function boot() {
     bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
     bindBlockedFilter();
-    bindMigrate(); bindSettings(); bindStatus();
+    bindMigrate(); bindSettings(); bindStatus(); bindQr(); bindNotify();
     await loadDashboard();
   }
 

@@ -32,6 +32,8 @@ EDITABLE: dict[str, tuple[object, str]] = {
     # 标记档：照常跳转、照常计数，只是把来源平台记下来（默认开）
     "social_tag_qq": (True, "标记 QQ 来源（照常放行计数）"),
     "social_tag_wechat": (True, "标记微信来源（照常放行计数）"),
+    # ---------- 通知 ----------
+    "notify_enabled": (False, "告警是否推送到 webhook / 邮件 / Bark"),
 }
 
 

@@ -842,3 +842,151 @@ def _parse_iso(value: str):
         return ensure_aware(dt.datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except (ValueError, TypeError):
         return None
+
+
+# ---------- CSV 导入 ----------
+#
+# import_yourls 认的是 YOURLS 的 SQL 转储和 JSON 导出，可人手上真正流通的
+# 是「我自己导出的那张表」——本系统导出的 CSV、Excel 里攒的一张清单。
+# 这里复用同一套入库逻辑，只把解析这层换成表头模糊匹配：
+# 中文表头（短码 / 目标地址）、英文表头（code / url / target）、
+# 甚至只有两列没表头，都能猜出来。
+
+CSV_CODE_ALIASES = ("短码", "短链接", "code", "keyword", "slug", "key")
+CSV_TARGET_ALIASES = ("目标地址", "目标", "原链接", "长链接", "url", "target", "longurl", "long_url", "destination")
+CSV_TITLE_ALIASES = ("标题", "title", "name")
+CSV_TAG_ALIASES = ("标签", "tags", "tag")
+CSV_CLICKS_ALIASES = ("点击", "clicks", "hits")
+CSV_EXPIRE_ALIASES = ("过期时间", "expires_at", "expire", "expires")
+
+
+def _match_header(name: str, aliases: tuple[str, ...]) -> bool:
+    low = str(name or "").strip().lower()
+    return any(low == a.lower() or (a.isascii() and a.lower() in low) for a in aliases)
+
+
+def parse_links_csv(text: str) -> list[dict]:
+    """把 CSV 文本解析成入库用的行。猜不出目标地址列就整体报错。"""
+    raw = (text or "").lstrip("\ufeff").strip()
+    if not raw:
+        return []
+    # 先按分隔符猜一次：逗号、制表符、分号都常见
+    sample = raw.splitlines()[0]
+    delimiter = ","
+    for candidate in ("\t", ";", ","):
+        if sample.count(candidate) > sample.count(delimiter):
+            delimiter = candidate
+    reader = csv.DictReader(io.StringIO(raw), delimiter=delimiter)
+    if not reader.fieldnames:
+        return []
+
+    mapping: dict[str, str] = {}
+    for field in reader.fieldnames:
+        if not field:
+            continue
+        for key, aliases in (
+            ("code", CSV_CODE_ALIASES),
+            ("target", CSV_TARGET_ALIASES),
+            ("title", CSV_TITLE_ALIASES),
+            ("tags", CSV_TAG_ALIASES),
+            ("clicks", CSV_CLICKS_ALIASES),
+            ("expires_at", CSV_EXPIRE_ALIASES),
+        ):
+            if key in mapping:
+                continue
+            if _match_header(field, aliases):
+                mapping[key] = field
+                break
+
+    rows: list[dict] = []
+    if "target" not in mapping:
+        # 没有表头（或者表头一个都不认识）：按位置猜。第二列像链接就取第二列，
+        # 否则第一列。只有一列且像链接时，那一列就是目标地址。
+        for line in raw.splitlines():
+            cells = next(csv.reader([line], delimiter=delimiter), [])
+            cells = [c.strip() for c in cells if c is not None]
+            if not cells:
+                continue
+            guess = next((c for c in reversed(cells) if c.lower().startswith(("http://", "https://"))), None)
+            if not guess:
+                continue
+            code_guess = cells[0] if cells[0] != guess else ""
+            if code_guess and code_guess.lower().startswith(("http://", "https://")):
+                code_guess = ""
+            rows.append({"code": code_guess, "target": guess})
+        return rows
+
+    for item in reader:
+        target = str(item.get(mapping["target"]) or "").strip()
+        if not target:
+            continue
+        rows.append(
+            {
+                "code": str(item.get(mapping.get("code", ""), "") or "").strip(),
+                "target": target,
+                "title": str(item.get(mapping.get("title", ""), "") or "").strip(),
+                "tags": str(item.get(mapping.get("tags", ""), "") or "").strip(),
+                "clicks": str(item.get(mapping.get("clicks", ""), "") or "").strip(),
+                "expires_at": str(item.get(mapping.get("expires_at", ""), "") or "").strip(),
+            }
+        )
+    return rows
+
+
+def import_links_csv(db: Session, text: str) -> dict:
+    """导入 CSV 清单。
+
+    和 YOURLS 迁移共用「冲突自动换码」的策略，但多做两件事：
+    · 标题、标签、点击数、过期时间一起带进来（用户导出的表里本来就有）
+    · 同一份文件里自己重复也拦，不然第二条会撞上刚建好的那条
+    """
+    rows = parse_links_csv(text)
+    if not rows:
+        raise ServiceError("没解析出任何记录：至少要有一列目标地址（表头写「目标地址」或 url）", 422)
+
+    imported = renamed = skipped = failed = 0
+    seen: set[str] = set()
+    for row in rows:
+        try:
+            target = _ensure_target(row.get("target", ""))
+        except ServiceError:
+            failed += 1
+            continue
+        if target.lower() in seen:
+            skipped += 1
+            continue
+        seen.add(target.lower())
+
+        raw_code = normalize_code(row.get("code") or "")
+        code = raw_code
+        if code:
+            ok, _msg = validate_custom_code(code, settings.code_min_length, settings.code_max_length)
+            if not ok or _code_taken(db, code):
+                code = ""
+        if not code:
+            code = generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
+            if raw_code:
+                renamed += 1
+
+        clicks_raw = str(row.get("clicks") or "").strip().replace(",", "")
+        clicks = int(clicks_raw) if clicks_raw.isdigit() else 0
+        tags = [t.strip() for t in str(row.get("tags") or "").replace("，", ",").split(",") if t.strip()]
+        link = Link(
+            code=code,
+            target=target,
+            title=str(row.get("title") or "").strip()[:255] or None,
+            tags=json.dumps(tags[:10], ensure_ascii=False) if tags else None,
+            clicks=clicks,
+            expires_at=_parse_iso(row.get("expires_at") or ""),
+            title_source="manual" if row.get("title") else None,
+        )
+        db.add(link)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            failed += 1
+            continue
+        imported += 1
+    logger.info("CSV 导入：成功 %d，换码 %d，跳过 %d，失败 %d", imported, renamed, skipped, failed)
+    return {"imported": imported, "renamed": renamed, "skipped": skipped, "failed": failed}

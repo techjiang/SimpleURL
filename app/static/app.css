@@ -751,3 +751,37 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .dup-list li a { font-weight: 600; }
 .dup-list li .hint { flex: 1 1 auto; font-size: 0.76rem; }
 .dup-list li .btn { padding: 3px 8px; font-size: 0.72rem; }
+
+/* ---------- 找回回执 / 复用开关 ---------- */
+.toggles { align-content: end; padding-bottom: 4px; }
+.recover {
+  margin-top: 14px; padding: 14px 16px; border-radius: var(--radius-sm);
+  background: rgba(124, 92, 255, .07); border: 1px solid rgba(124, 92, 255, .24);
+}
+.recover .row { align-items: end; }
+.recover .dup-title { color: #cfc2ff; margin-bottom: 10px; }
+.recover .status { display: block; min-height: 1.2em; margin-top: 8px; font-size: 0.78rem; }
+.recover .status.ok { color: var(--accent); }
+.recover .status.err { color: var(--danger); }
+
+/* ---------- 二维码面板 ---------- */
+.qr-panel .qr-preview {
+  display: grid; place-items: center; padding: 18px; margin: 4px 0 14px;
+  border-radius: var(--radius-sm); background: #fff;
+}
+.qr-panel .qr-preview img { width: 100%; max-width: 260px; height: auto; display: block; }
+.qr-row { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.qr-row label { font-size: 0.78rem; color: var(--text-dim); display: grid; gap: 6px; }
+.qr-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.qr-note { font-size: 0.76rem; color: var(--text-faint); margin: 10px 0 0; line-height: 1.6; }
+
+/* ---------- 通知通道 ---------- */
+.notify-card { margin-bottom: 18px; }
+.notify-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.notify-state { font-size: 0.78rem; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); }
+.notify-state.ok { color: var(--accent); border-color: rgba(74, 222, 128, .4); background: rgba(74, 222, 128, .08); }
+.notify-state.err { color: var(--danger); border-color: rgba(248, 113, 113, .4); background: rgba(248, 113, 113, .08); }
+.notify-state.idle { color: var(--text-faint); }
+.notify-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: 12px; }
+.notify-grid label { font-size: 0.78rem; color: var(--text-dim); display: grid; gap: 6px; }
+.notify-last { margin-top: 10px; font-size: 0.76rem; color: var(--text-faint); line-height: 1.6; }

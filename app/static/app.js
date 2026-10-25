@@ -232,6 +232,59 @@
     });
   }
 
+  /* ---------- 找回回执 ----------
+     回执服务端只存哈希，丢了就真没了。留过线索的人凭线索换一张新的：
+     只重签最近一条，且 1 小时 3 次，够丢的人捞回来，不够拿来扫别人的库。 */
+  function bindRecover() {
+    const open = $('#recover-btn');
+    const box = $('#recover');
+    if (open && box) {
+      open.addEventListener('click', () => {
+        box.hidden = !box.hidden;
+        if (!box.hidden) $('#recover-clue').focus();
+      });
+    }
+    const form = $('#recover-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const clue = $('#recover-clue').value.trim();
+      if (!clue) return;
+      const btn = $('#recover-submit');
+      btn.disabled = true;
+      setRecoverStatus('正在查找…');
+      try {
+        const data = await withToken('/api/claim/recover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clue }),
+        });
+        setRecoverStatus('找到了：' + data.code + '，回执已换新', 'ok');
+        showResult({
+          code: data.code,
+          short_url: data.short_url,
+          stats_url: data.stats_url,
+          claim_token: data.claim_token,
+          title: data.title,
+          tags: [],
+          title_source: null,
+          reused: true,
+        });
+      } catch (err) {
+        setRecoverStatus(err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function setRecoverStatus(msg, kind) {
+    const el = $('#recover-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
   /* ---------- 创建 ---------- */
   function bindCreate() {
     const form = $('#create-form');
@@ -245,6 +298,8 @@
         title: $('#title').value.trim() || undefined,
         tags: $('#tags').value.trim() || undefined,
         expires_at: $('#expires_at').value || undefined,
+        clue: (($('#clue') || {}).value || '').trim() || undefined,
+        reuse: Boolean(($('#reuse') || {}).checked) || undefined,
       };
       if (!payload.target) { setStatus('请先粘贴一个链接', 'err'); return; }
       btn.disabled = true;
@@ -256,7 +311,7 @@
           body: JSON.stringify(payload),
         });
         showResult(link);
-        setStatus('创建成功', 'ok');
+        setStatus(link.reused ? '已复用现成的短码' : '创建成功', 'ok');
         form.reset();
         setCodeStatus('');
         const dup = $('#dup-hint');
@@ -761,7 +816,7 @@
   /* ---------- 启动 ---------- */
   // 从后台（新标签页）切回来时刷新一次：那边删了/改了链接，这边还是旧的会误导人
   document.addEventListener('DOMContentLoaded', async () => {
-    bindCreate(); bindCopy(); bindBoard(); bindEdit(); bindGate();
+    bindCreate(); bindCopy(); bindBoard(); bindEdit(); bindGate(); bindRecover();
     bindCodeCheck(); bindDupCheck();
     await loadAccess();
     // 本站开了访问令牌而这位还没过门禁：先把门摆出来，别先拉一屏空数据再弹窗

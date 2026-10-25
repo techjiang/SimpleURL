@@ -18,8 +18,10 @@
     <button class="admin-tab active" data-tab="dash" type="button">仪表盘</button>
     <button class="admin-tab" data-tab="links" type="button">链接管理</button>
     <button class="admin-tab" data-tab="guard" type="button">防洪 / UA 屏蔽</button>
+    <button class="admin-tab" data-tab="qr" type="button">二维码</button>
     <button class="admin-tab" data-tab="keys" type="button">API 密钥</button>
     <button class="admin-tab" data-tab="migrate" type="button">数据迁移</button>
+    <button class="admin-tab" data-tab="notify" type="button">通知</button>
     <button class="admin-tab" data-tab="audit" type="button">操作留痕</button>
     <button class="admin-tab" data-tab="status" type="button">运行状态</button>
     <button class="admin-tab" data-tab="settings" type="button">设置</button>
@@ -228,6 +230,47 @@
     </div>
   </div>
 
+  <!-- 二维码 -->
+  <div class="admin-panel" data-panel="qr">
+    <div class="chart-card qr-panel">
+      <div class="chart-head"><h2>二维码工坊</h2><span class="hint">尺寸、格式、中间图标都能挑</span></div>
+      <div class="qr-row">
+        <label>短码
+          <input id="qr-code" type="text" placeholder="填一个已有短码，如 docs" />
+        </label>
+        <label>尺寸
+          <select id="qr-size">
+            <option value="160">160 px</option>
+            <option value="240" selected>240 px</option>
+            <option value="320">320 px</option>
+            <option value="480">480 px</option>
+            <option value="640">640 px</option>
+            <option value="800">800 px</option>
+            <option value="1024">1024 px</option>
+          </select>
+        </label>
+        <label>格式
+          <select id="qr-fmt">
+            <option value="png">PNG（位图）</option>
+            <option value="svg">SVG（矢量，可印刷）</option>
+          </select>
+        </label>
+        <label>中间图标
+          <select id="qr-logo">
+            <option value="0">不带</option>
+            <option value="1">带品牌图标</option>
+          </select>
+        </label>
+      </div>
+      <div class="qr-preview"><img id="qr-img" alt="二维码预览" src="/static/logo/icon.svg" /></div>
+      <div class="qr-actions">
+        <button class="btn primary" id="qr-refresh" type="button">刷新预览</button>
+        <a class="btn ghost" id="qr-download" href="#" download>下载图片</a>
+      </div>
+      <p class="qr-note" id="qr-note">填短码后点「刷新预览」。SVG 放多大都不糊，适合印刷；带图标的版本把错误纠正开到 H，中间挖掉 20% 照样扫得出来。</p>
+    </div>
+  </div>
+
   <div class="admin-panel" data-panel="keys">
     <div class="chart-card">
       <div class="chart-head">
@@ -260,6 +303,44 @@
         </div>
       </form>
       <p class="hint">短码冲突时会自动换一个可用短码，不会覆盖你已有的链接。</p>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-head"><h2>从 CSV 清单导入</h2><span class="hint">导出的表格、Excel 另存的 CSV 都行</span></div>
+      <form class="composer-form" id="csv-form" autocomplete="off">
+        <div class="field">
+          <label for="csv-payload">粘贴 CSV 内容</label>
+          <textarea id="csv-payload" rows="8" placeholder="短码,目标地址,标题,标签,点击,过期时间&#10;docs,https://example.com/docs,使用文档,文档,12,2026-12-31 23:59&#10;&#10;# 没表头也能认：只要有一列是 http/https 开头的地址即可"></textarea>
+        </div>
+        <div class="composer-actions">
+          <button type="submit" class="btn primary" id="csv-btn">开始导入</button>
+          <input type="file" id="csv-file" accept=".csv,.txt" hidden />
+          <button type="button" class="btn ghost" id="csv-pick">选文件</button>
+          <span class="status" id="csv-status" role="status"></span>
+        </div>
+      </form>
+      <p class="hint">表头认中文也认英文（短码 / code、目标地址 / url），认不出来就按「哪一列像链接」猜。同一份文件里重复的地址会跳过。</p>
+    </div>
+  </div>
+
+  <!-- 通知 -->
+  <div class="admin-panel" data-panel="notify">
+    <div class="chart-card">
+      <div class="chart-head notify-head">
+        <h2>通知通道</h2>
+        <label class="check" for="notify-enabled">
+          <input type="checkbox" id="notify-enabled" />
+          <span>运行状态里的告警自动推出去</span>
+        </label>
+      </div>
+      <p class="hint">部署自检、配额告警这些以前只写在「运行状态」页里，得有人主动点开才看得见。填好下面任意一个通道，出现新告警时自动推一条，同类告警 1 小时内不重复。</p>
+    </div>
+    <div id="notify-cards"></div>
+    <div class="chart-card">
+      <div class="chart-head"><h2>马上发一次</h2><span class="hint">不想等告警，现在就把当前摘要推出去</span></div>
+      <div class="dash-actions">
+        <button class="btn ghost" id="notify-digest" type="button">推送当前告警摘要</button>
+      </div>
     </div>
   </div>
 
