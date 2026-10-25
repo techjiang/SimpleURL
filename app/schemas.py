@@ -162,6 +162,7 @@ class SettingsOut(BaseModel):
     access_mode: str = "open"
     access_mode_label: str = "开放外部可使用"
     access_locked: bool = False
+    announcement: str = ""
     # 社交平台防洪
     social_guard: bool = True
     social_block_hint: str = ""
@@ -178,6 +179,7 @@ class SettingsUpdate(BaseModel):
     create_daily_limit: Optional[int] = None
     code_length: Optional[int] = None
     access_mode: Optional[str] = None
+    announcement: Optional[str] = Field(None, max_length=280)
     social_guard: Optional[bool] = None
     social_block_hint: Optional[str] = None
     social_tag_qq: Optional[bool] = None
@@ -249,6 +251,9 @@ class DashboardOut(BaseModel):
     enabled_links: int
     disabled_links: int
     expired_links: int
+    # 7 天内到期：到点了才发现链接失效，那叫事故
+    expiring_links: int = 0
+    expiring: list[dict] = Field(default_factory=list)
     pending_clicks: int
     blocked_events: int
     clicks_today: int

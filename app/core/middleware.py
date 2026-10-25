@@ -113,6 +113,44 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+ACCESS_COOKIE = "su_access"
+
+
+class AccessTokenCookieMiddleware(BaseHTTPMiddleware):
+    """`?token=xxx` 打开过之后写进 cookie。
+
+    前端门禁是拿着令牌拼 query 再跳转的，不落 cookie 的话每次刷新都得重输，
+    二维码、统计页里那几张图也会各丢一次令牌。写进 HttpOnly cookie 之后，
+    页面判定只看 cookie，但 ?token= 依然可用（脚本、书签、外部集成靠它）。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        from app.core.config import settings
+
+        expected = settings.access_token
+        if expected:
+            provided = request.query_params.get("token")
+            if provided and hmac.compare_digest(provided, expected):
+                request.cookies  # noqa: B018 - 确保 cookies 已解析
+                # 把令牌挂到 request.state，后面的页面判定统一从这里取
+                request.state.access_token_ok = True
+
+        response = await call_next(request)
+
+        if expected:
+            provided = request.query_params.get("token")
+            if provided and hmac.compare_digest(provided, expected):
+                response.set_cookie(
+                    ACCESS_COOKIE,
+                    expected,
+                    max_age=30 * 24 * 3600,
+                    httponly=True,
+                    samesite="lax",
+                    path="/",
+                )
+        return response
+
+
 class CSRFProtectMiddleware(BaseHTTPMiddleware):
     """写请求必须回带 CSRF 令牌，且与 cookie 一致。"""
 

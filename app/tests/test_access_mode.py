@@ -7,7 +7,7 @@ from app.core.db import session_scope
 from app.core.settings_store import set_value
 
 
-def login(client, username="admin", password="test-token"):
+def login(client, username="admin", password="test-token-please-rotate"):
     r = client.post("/api/admin/login", json={"username": username, "password": password})
     assert r.status_code == 200, r.text
     return r

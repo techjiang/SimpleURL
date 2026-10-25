@@ -148,7 +148,7 @@ class TestYourlsParse:
 
 class TestMigration:
     def _login(self, client):
-        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         assert r.status_code == 200, r.text
 
     def test_migrate_json(self, client):
@@ -187,7 +187,7 @@ class TestMigration:
 
 class TestAdminAuth:
     def test_login_logout(self, client):
-        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         assert r.status_code == 200
         assert client.get("/api/admin/session").json()["admin"] == "admin"
         client.post("/api/admin/logout")
@@ -198,7 +198,7 @@ class TestAdminAuth:
         assert r.status_code == 401
 
     def test_token_tamper_rejected(self, client):
-        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         assert r.status_code == 200
         token = client.cookies.get("su_admin")
         assert token
@@ -211,7 +211,7 @@ class TestAdminAuth:
 
 class TestAdminDashboard:
     def test_dashboard(self, client, flush_clicks):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/links", json={"target": "https://example.com/a", "code": "db1"})
         client.post("/api/links", json={"target": "https://example.com/b", "code": "db2"})
         client.get("/db1")
@@ -231,7 +231,7 @@ class TestAdminDashboard:
 
 class TestAdminSettings:
     def test_save_and_read(self, client, db):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         r = client.post(
             "/api/admin/settings",
             json={"redirect_rate_limit": 30, "fetch_title": False, "site_name": "我的短链"},
@@ -243,19 +243,19 @@ class TestAdminSettings:
         assert body["site_name"] == "我的短链"
 
     def test_reset(self, client):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/admin/settings", json={"redirect_rate_limit": 5})
         client.post("/api/admin/settings/reset")
         assert client.get("/api/admin/settings").json()["redirect_rate_limit"] == 120
 
     def test_ua_rules_roundtrip(self, client):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         r = client.post("/api/admin/ua-rules", json={"rules": "curl/\nBadBot\n"})
         assert r.json()["rules"] == ["curl/", "BadBot"]
         assert client.get("/api/admin/ua-rules").json()["rules"] == ["curl/", "BadBot"]
 
     def test_flush_endpoint(self, client):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/links", json={"target": "https://example.com/a", "code": "fc1"})
         client.get("/fc1")
         r = client.post("/api/admin/flush-clicks")
@@ -265,7 +265,7 @@ class TestAdminSettings:
 
 class TestApiKeys:
     def test_key_lifecycle(self, client, db):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         r = client.post("/api/admin/api-keys", json={"name": "测试"})
         assert r.status_code == 201, r.text
         key = r.json()["key"]
@@ -276,7 +276,7 @@ class TestApiKeys:
         assert client.get("/api/admin/api-keys").json() == []
 
     def test_require_key_blocks_then_allows(self, client, db, monkeypatch):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/admin/settings", json={"require_api_key": True})
         assert client.get("/api/links").status_code == 401
         key = client.post("/api/admin/api-keys", json={}).json()["key"]
@@ -363,7 +363,7 @@ class TestAutoTitle:
         assert r.json()["title"] == "我指定的标题"
 
     def test_fetch_disabled_keeps_empty(self, client):
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/admin/settings", json={"fetch_title": False})
         r = client.post("/api/links", json={"target": "https://example.com/x/y/z"})
         assert r.json()["title"] is None
@@ -382,7 +382,7 @@ class TestAutoTitle:
 class TestSummaryExcludesBlocked:
     def test_total_clicks_matches_links(self, client, flush_clicks):
         client.post("/api/links", json={"target": "https://example.com/a", "code": "sm1"})
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/admin/ua-rules", json={"rules": "curl/"})
         client.get("/sm1", headers={"user-agent": "Mozilla/5.0 Chrome/131"})
         client.get("/sm1", headers={"user-agent": "curl/8.4.0"})
@@ -394,7 +394,7 @@ class TestSummaryExcludesBlocked:
 
     def test_blocked_events_still_recorded(self, client, flush_clicks):
         client.post("/api/links", json={"target": "https://example.com/a", "code": "sm2"})
-        client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         client.post("/api/admin/ua-rules", json={"rules": "curl/"})
         client.get("/sm2", headers={"user-agent": "curl/8.4.0"})
         flush_clicks()

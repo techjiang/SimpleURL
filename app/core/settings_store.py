@@ -20,6 +20,7 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "require_api_key": (False, "要求 API 请求携带密钥"),
     "create_daily_limit": (200, "单 IP 每日创建上限，0 不限制"),
     "access_mode": ("open", "访问模式：open 开放外部可使用，admin 仅管理员可使用"),
+    "announcement": ("", "站点公告，显示在首页顶部；留空不显示"),
     "code_length": (4, "自动生成短码的长度（3~16）"),
     # ---------- 社交平台防洪 ----------
     "social_guard": (True, "社交平台防洪总开关（微信 / QQ 等）"),
@@ -61,6 +62,9 @@ def _cast(key: str, raw: str, default: object) -> object:
         from app.core.access import normalize_mode
 
         return normalize_mode(raw)
+    if key == "announcement":
+        # 空串是合法值（表示不显示公告），不能像别的字符串那样回落默认
+        return raw.strip()
     return raw.strip() or default
 
 

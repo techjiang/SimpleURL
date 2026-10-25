@@ -15,8 +15,8 @@
     <div class="stat-card"><span class="stat-label">总点击</span><strong>{{ data.clicks }}</strong></div>
     <div class="stat-card"><span class="stat-label">独立访客</span><strong>{{ data.unique_visitors }}</strong></div>
     <div class="stat-card"><span class="stat-label">近 30 天</span><strong>{{ data.daily | sum(attribute='count') }}</strong></div>
-    <div class="stat-card"><span class="stat-label">最近点击</span><strong>{{ data.last_click_at | fmt_local('%m-%d %H:%M') if data.last_click_at else '—' }}</strong></div>
-    <div class="stat-card"><span class="stat-label">创建时间</span><strong>{{ link.created_at | fmt_local }}</strong></div>
+    <div class="stat-card"><span class="stat-label">最近点击</span><strong class="wide">{{ data.last_click_at | fmt_local('%m-%d %H:%M') if data.last_click_at else '—' }}</strong></div>
+    <div class="stat-card"><span class="stat-label">创建时间</span><strong class="wide">{{ link.created_at | fmt_local }}</strong></div>
   </div>
   <div class="chart-card">
     <div class="chart-head"><h2>每日点击趋势</h2><span class="hint">最近 30 天</span></div>

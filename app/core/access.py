@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import Request
 
 from app.core.admin import current_admin, is_admin_enabled
+from app.core.config import settings
 from app.core.settings_store import effective
 
 OPEN = "open"
@@ -26,11 +27,28 @@ def normalize_mode(raw: object) -> str:
     return mode if mode in MODES else OPEN
 
 
+# 令牌多长才算能上生产：低于这个长度等于门没锁
+WEAK_TOKEN_LENGTH = 12
+
+
 def current_mode(db=None) -> str:
-    """当前生效模式。没配管理令牌时永远开放，防止配错锁死站点。"""
+    """当前生效模式。没配管理令牌时永远开放，防止配错锁死站点。
+
+    口令过短（见 locked_by_weak_token）不在这里降级：模式照实报，
+    但访客能力一律收回——界面得说真话，权限得按最坏情况给。
+    """
     if not is_admin_enabled():
         return OPEN
     return normalize_mode(effective(db, "access_mode"))
+
+
+def token_is_weak() -> bool:
+    token = settings.admin_token
+    if not token:
+        return False
+    # `admin:password` 形式只看口令部分，别被用户名凑了长度
+    secret = token.partition(":")[2] if ":" in token else token
+    return len(secret) < WEAK_TOKEN_LENGTH
 
 
 def is_admin_mode(db=None) -> bool:
@@ -38,14 +56,25 @@ def is_admin_mode(db=None) -> bool:
 
 
 def is_admin(request: Request, db=None) -> bool:
-    """当前请求是否已通过管理员登录。"""
+    """当前请求是否已通过管理员登录。
+
+    弱口令时顺手把创建与浏览一并关掉：登录框留着给人用，
+    但别让「密码能猜到」变成「别人能拿它当管理员」。
+    """
     if not is_admin_enabled():
         return False
     return current_admin(request) is not None
 
 
+def locked_by_weak_token() -> bool:
+    """口令太弱：访客能做的事一律收回，只保留跳转。"""
+    return is_admin_enabled() and token_is_weak()
+
+
 def can_create(db=None, request: Request | None = None) -> bool:
     """访客是否可以创建短链接。"""
+    if locked_by_weak_token():
+        return bool(request) and is_admin(request, db)
     if not is_admin_mode(db):
         return True
     return bool(request) and is_admin(request, db)
@@ -77,6 +106,33 @@ def may_see(link, request: Request | None, db=None) -> bool:
         return verify(session, link, token)
 
 
+def warnings() -> list[dict]:
+    """部署自检：把「看着配了、其实没生效」的地方说清楚。
+
+    这行信息在后台首页挂着比写进 README 有用——README 没人反复读。
+    """
+    out: list[dict] = []
+    if not is_admin_enabled():
+        out.append(
+            {
+                "level": "info",
+                "text": "未配置 ADMIN_TOKEN，管理后台处于关闭状态，站点对所有访客开放创建。",
+            }
+        )
+        return out
+    if token_is_weak():
+        out.append(
+            {
+                "level": "warn",
+                "text": f"ADMIN_TOKEN 短于 {WEAK_TOKEN_LENGTH} 位：访客创建已关闭，访问模式按「仅管理员」执行。"
+                "建议用 openssl rand -hex 24 重新生成后再上生产。",
+            }
+        )
+    if settings.access_token and len(settings.access_token) < 8:
+        out.append({"level": "warn", "text": "ACCESS_TOKEN 偏短，建议至少 8 位随机串。"})
+    return out
+
+
 def snapshot(db, request: Request | None = None) -> dict:
     mode = current_mode(db)
     admin = bool(request) and is_admin(request, db)
@@ -84,6 +140,8 @@ def snapshot(db, request: Request | None = None) -> dict:
         "mode": mode,
         "mode_label": LABELS.get(mode, mode),
         "admin_mode": mode == ADMIN,
+        "locked": locked_by_weak_token(),
+        "warnings": warnings(),
         "is_admin": admin,
         "can_create": can_create(db, request),
         "can_browse": can_browse(db, request),

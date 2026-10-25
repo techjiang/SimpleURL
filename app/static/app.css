@@ -84,9 +84,15 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 .composer { padding: 22px; }
 .composer-form { display: grid; gap: 14px; }
 .row { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
-.field { display: grid; gap: 6px; }
-.field label { font-size: 0.78rem; color: var(--text-dim); font-weight: 500; }
+/* 同一行里两个 field：一个带说明文字、一个不带，输入框就会错开一格。
+   对齐到 start 让每个 field 自己从顶部排，不再互相拉扯 */
+.field { display: grid; gap: 6px; align-content: start; }
+.field > label { font-size: 0.78rem; color: var(--text-dim); font-weight: 500; }
 .hint { color: var(--text-faint); font-weight: 400; }
+/* 快到期的链接：给一点颜色，但别红得像报错 */
+.exp-soon { color: var(--warn); font-weight: 600; white-space: nowrap; }
+.exp-date { display: block; font-size: 0.72rem; white-space: nowrap; }
+.exp-none { display: block; font-size: 0.72rem; }
 
 input, select {
   width: 100%; font: inherit; color: var(--text);
@@ -102,6 +108,7 @@ select { cursor: pointer; appearance: none; background-image: linear-gradient(45
 select option { background: var(--bg-soft); color: var(--text); }
 
 .composer-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.dash-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 
 /* ============ 按钮 ============ */
 .btn {
@@ -171,7 +178,9 @@ select option { background: var(--bg-soft); color: var(--text); }
 .table tbody tr:hover { background: rgba(255,255,255,0.035); }
 .col-clicks { text-align: right; }
 .table td:last-child { text-align: right; white-space: nowrap; }
-.code-cell { font-family: var(--mono); font-weight: 600; color: #fff; }
+/* 短码不许折行：`/api-ref` 断成 `/api-` + `ref` 会看着像两条链接 */
+.code-cell { font-family: var(--mono); font-weight: 600; color: #fff; white-space: nowrap; }
+.table td[data-label="短码"] { white-space: nowrap; }
 .code-cell:hover { color: var(--brand); }
 .target-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .clicks-cell { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
@@ -205,7 +214,10 @@ select option { background: var(--bg-soft); color: var(--text); }
 .stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 22px; }
 .stat-card { padding: 18px; display: grid; gap: 6px; }
 .stat-label { font-size: 0.76rem; color: var(--text-faint); letter-spacing: 0.1em; text-transform: uppercase; }
+/* 数字默认不换行；日期这种长值在窄卡片里会撑破 170px 的格子，
+   给它一个更小的起点 + 允许在空格处折行 */
 .stat-card strong { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.stat-card strong.wide { font-size: 1.18rem; line-height: 1.35; overflow-wrap: anywhere; }
 .chart-card { padding: 20px; margin-bottom: 18px; }
 .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
 /* 标题不许被右侧控件挤成竖排：给个最小宽度并禁止换行 */
@@ -370,6 +382,21 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .mode-banner #mode-action { margin-left: auto; }
 .mode-banner[hidden] { display: none; }
 
+/* ============ 站点公告 ============ */
+.notice-bar {
+  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  padding: 11px 16px; margin-bottom: 18px;
+  border: 1px solid rgba(79,140,255,0.28); border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(79,140,255,0.12), rgba(79,140,255,0.05));
+  font-size: 0.84rem; color: var(--text-dim); line-height: 1.5;
+}
+.notice-bar[hidden] { display: none; }
+.notice-bar .notice-dot {
+  width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; flex: none;
+  background: var(--accent); box-shadow: 0 0 10px var(--accent);
+}
+.notice-bar #notice-text { overflow-wrap: anywhere; }
+
 /* ============ 社交平台防洪 ============ */
 .social-grid { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin: 4px 0 12px; }
 .social-row {
@@ -448,9 +475,14 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   }
   .table td { padding: 0; border: 0; width: auto; }
   .table td:last-child { text-align: left; white-space: normal; }
-  /* 一行：短码 · 状态；目标独占一行；操作按钮铺满最后一行 */
+  /* 一行：短码 · 状态；过期紧随其后；目标独占一行；操作按钮铺满最后一行 */
   .table td[data-label="短码"] { order: 1; flex: 1 1 auto; min-width: 0; font-size: 1rem; }
   .table td[data-label="状态"] { order: 2; flex: none; text-align: right; }
+  /* 过期信息挂在标题下滑一行：窄屏没有表头，光一个「永久」「还剩 5 天」
+     读起来不知道在说哪件事 */
+  .table td[data-label="过期"] { order: 1; flex: 1 1 100%; min-width: 0; font-size: 0.76rem; line-height: 1.4; }
+  .table td[data-label="过期"] .exp-soon, .table td[data-label="过期"] .hint { display: inline; }
+  .table td[data-label="过期"] .exp-date { display: inline; margin-left: 6px; }
   .table td[data-label="目标"] { order: 3; flex: 1 1 100%; min-width: 0; }
   .target-cell { max-width: none; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
   .table td[data-label="标签"] { order: 4; flex: 1 1 100%; }

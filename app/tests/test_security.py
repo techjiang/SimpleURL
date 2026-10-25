@@ -248,14 +248,14 @@ class TestLoginRateLimit:
         monkeypatch.setattr(settings, "login_rate_limit", 2)
         for _ in range(2):
             client.post("/api/admin/login", json={"username": "admin", "password": "nope"})
-        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         assert r.status_code == 429
 
     def test_limit_disabled_when_zero(self, client, monkeypatch):
         monkeypatch.setattr(settings, "login_rate_limit", 0)
         for _ in range(15):
             client.post("/api/admin/login", json={"username": "admin", "password": "nope"})
-        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        r = client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         assert r.status_code == 200
 
 

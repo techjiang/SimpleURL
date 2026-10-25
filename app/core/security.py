@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import ipaddress
 import re
+import socket
 import threading
 import time
 from urllib.parse import urlparse
@@ -61,13 +62,74 @@ def is_public_url(url: str) -> bool:
     except ValueError:
         ip = None
     if ip is not None:
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-            return False
-        # IPv4 映射的 IPv6 地址（::ffff:127.0.0.1）等畸形写法
-        mapped = getattr(ip, "ipv4_mapped", None)
-        if mapped is not None and (mapped.is_private or mapped.is_loopback or mapped.is_link_local):
-            return False
+        return is_public_ip(ip)
+    # 域名也得看一眼解析结果：只校验字面 IP 的话，
+    # `http://10.0.0.1.nip.io` 这种自带解析的域名能直接绕过整道 SSRF 防线
+    if not settings.ssrf_resolve_check:
+        return True
+    return not resolves_to_internal(host)
+
+
+def is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """公网地址才算安全。内网 / 回环 / 链路本地 / 保留段一律不收。"""
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        return False
+    if ip.is_unspecified:
+        return False
+    # IPv4 映射的 IPv6 地址（::ffff:127.0.0.1）等畸形写法
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None and not is_public_ip(mapped):
+        return False
     return True
+
+
+_dns_cache: dict[str, tuple[float, bool]] = {}
+_dns_lock = threading.Lock()
+
+
+def resolves_to_internal(host: str) -> bool:
+    """域名解析出的任一地址落在内网就判不安全（失败时按不安全处理）。
+
+    结果缓存几十秒：同一域名被反复贴进来时不用每次都问 DNS，
+    但也不能长效缓存——DNS 重绑定攻击要的正是「第一次解析是公网」。
+    """
+    from app.core.config import settings
+
+    ttl = getattr(settings, "dns_cache_ttl", 60)
+    now = time.monotonic()
+    if ttl > 0:
+        with _dns_lock:
+            hit = _dns_cache.get(host)
+            if hit and now - hit[0] < ttl:
+                return hit[1]
+    result = _resolve_internal_uncached(host)
+    if ttl > 0:
+        with _dns_lock:
+            if len(_dns_cache) > 4096:
+                _dns_cache.clear()
+            _dns_cache[host] = (now, result)
+    return result
+
+
+def _resolve_internal_uncached(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return True
+    seen = False
+    for info in infos:
+        addr = info[4][0] if len(info) > 4 else None
+        if not addr:
+            continue
+        try:
+            ip = ipaddress.ip_address(addr.split("%", 1)[0])
+        except ValueError:
+            continue
+        seen = True
+        if not is_public_ip(ip):
+            return True
+    # 一条地址都没解析出来：按不安全处理，别把「解析失败」当「公网」放过去
+    return not seen
 
 
 def ip_hash(ip: str | None) -> str:

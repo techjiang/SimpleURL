@@ -6,6 +6,11 @@
   <a class="btn tiny ghost" href="/admin" id="mode-action">后台</a>
 </div>
 
+<div class="notice-bar" id="notice-bar" hidden role="status">
+  <span class="notice-dot" aria-hidden="true"></span>
+  <span id="notice-text"></span>
+</div>
+
 <section class="hero">
   <div class="hero-copy">
     <p class="kicker">轻量 · 流畅 · 好用</p>
@@ -80,6 +85,7 @@
         <option value="enabled">已启用</option>
         <option value="disabled">已停用</option>
         <option value="expired">已过期</option>
+        <option value="expiring">即将过期（7 天内）</option>
       </select>
       <select id="sort-select" aria-label="排序方式">
         <option value="created_desc">最近创建</option>
@@ -102,7 +108,7 @@
     <table class="table">
       <thead>
         <tr>
-          <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>标签</th><th>状态</th><th>创建</th><th>操作</th>
+          <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>标签</th><th>状态</th><th>过期</th><th>创建</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="links-body"></tbody>

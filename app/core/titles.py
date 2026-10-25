@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 import re
 from urllib.parse import urlparse
@@ -30,21 +29,14 @@ def _clean(raw: str) -> str:
 
 
 def _is_safe_host(url: str) -> bool:
-    """防 SSRF：只允许公网 http/https，挡掉内网地址。"""
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    if parsed.scheme.lower() not in {"http", "https"}:
-        return False
-    host = (parsed.hostname or "").lower()
-    if not host or "." not in host:
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return True
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved)
+    """防 SSRF：只允许公网 http/https，挡掉内网地址。
+
+    这里复用 security.is_public_url，和创建链接时走同一道判定——
+    两套规则各写一遍，早晚会有一边漏。
+    """
+    from app.core.security import is_public_url
+
+    return is_public_url(url)
 
 
 async def fetch_title(url: str, timeout: int = 5) -> str | None:

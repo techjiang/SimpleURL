@@ -13,6 +13,7 @@ from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
+from app.core.settings_store import effective
 from app.core.apikey import extract_key, touch, verify as verify_api_key
 from app.models import ClickEvent, Link
 from app.qr import make_qr_png
@@ -63,9 +64,11 @@ def access_actor(request: Request) -> str:
 
 def require_create(request: Request, db: Session) -> None:
     """创建准入：开放模式人人可建，admin 模式只给管理员。"""
-    if not access.is_admin_mode(db):
-        return
     if access.is_admin(request, db):
+        return
+    if access.locked_by_weak_token():
+        raise ServiceError("站点口令过弱，创建功能已锁定，请管理员更换 ADMIN_TOKEN", 403)
+    if not access.is_admin_mode(db):
         return
     raise ServiceError("站点已设为仅管理员可使用，请先登录后台", 401)
 
@@ -88,7 +91,7 @@ def api_list_links(
     request: Request,
     q: str | None = Query(None, description="搜索短码/目标/标题/标签"),
     tag: str | None = None,
-    status: str | None = Query(None, pattern="^(enabled|disabled|expired)$"),
+    status: str | None = Query(None, pattern="^(enabled|disabled|expired|expiring)$"),
     sort: str = Query("created_desc", pattern="^(created_desc|created_asc|clicks_desc|clicks_asc|code_asc)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -107,7 +110,7 @@ def api_export(
     request: Request,
     q: str | None = None,
     tag: str | None = None,
-    status: str | None = Query(None, pattern="^(enabled|disabled|expired)$"),
+    status: str | None = Query(None, pattern="^(enabled|disabled|expired|expiring)$"),
     sort: str = Query("created_desc", pattern="^(created_desc|created_asc|clicks_desc|clicks_asc|code_asc)$"),
     db: Session = Depends(get_db),
 ):
@@ -222,12 +225,29 @@ def api_qr(code: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/access", summary="当前访问模式")
 def api_access(request: Request, db: Session = Depends(get_db)):
-    return access.snapshot(db, request)
+    # 顺带把「本站是否开了访问令牌、当前这位有没有过门禁」告诉前端，
+    # 否则前端只能靠撞一次 403 才知道门在哪儿，加载时会闪一下空列表
+    snapshot = access.snapshot(db, request)
+    snapshot["access_required"] = bool(settings.access_token)
+    snapshot["access_granted"] = _access_granted(request)
+    snapshot["site_name"] = settings.site_name
+    snapshot["announcement"] = str(effective(db, "announcement") or "")
+    # 公告与自述都归运行配置，后台可改，前端每次加载都会拿到最新值
+    return snapshot
+
+
+def _access_granted(request: Request) -> bool:
+    from app.pages import _check_access
+
+    return _check_access(request)
 
 
 @router.get("/stats/summary", summary="总览统计")
 def api_summary(request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
+    # 开了访问令牌时先过门禁：门口拦人、屋里却把概况随便读，这门就是摆设
+    if not _access_granted(request):
+        raise ServiceError("访问受限：请先输入访问令牌", 403)
     if not access.is_admin(request, db):
         # 访客只看站点概况，别把库里有多少条链接当公开情报
         snapshot = access.snapshot(db, request)

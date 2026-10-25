@@ -11,7 +11,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
-os.environ["ADMIN_TOKEN"] = "test-token"
+os.environ["ADMIN_TOKEN"] = "test-token-please-rotate"
+# 测试不联外网：域名一律按「解析到公网」处理，否则断网环境或被墙的域名
+# 会让一堆和 DNS 无关的用例随机失败。SSRF 那个用例自己打桩。
+os.environ.setdefault("SSRF_RESOLVE_CHECK", "false")
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +57,7 @@ def client():
     with TestClient(app) as c:
         c.get("/")
         wrapper = _WithCsrf(c)
-        r = wrapper.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+        r = wrapper.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
         assert r.status_code == 200, f"测试管理员登录失败：{r.text}"
         yield wrapper
     click_buffer.reset()

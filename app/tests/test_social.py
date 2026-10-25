@@ -78,7 +78,7 @@ class TestDefaultAllow:
 
 @pytest.fixture()
 def admin(client):
-    client.post("/api/admin/login", json={"username": "admin", "password": "test-token"})
+    client.post("/api/admin/login", json={"username": "admin", "password": "test-token-please-rotate"})
     return client
 
 

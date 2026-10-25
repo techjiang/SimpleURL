@@ -16,7 +16,10 @@
   let summary = { total_links: 0, total_clicks: 0, access_required: false };
   let editing = null;
   // 站点访问模式快照，来自 /api/access
-  const access = { mode: 'open', admin_mode: false, is_admin: false, can_create: true, can_browse: true };
+  const access = {
+    mode: 'open', admin_mode: false, is_admin: false, can_create: true, can_browse: true,
+    access_required: false, access_granted: true,
+  };
 
   /* ---------- 工具 ---------- */
   const escapeHtml = (str) =>
@@ -95,7 +98,8 @@
   }
 
   function applyAccess() {
-    const locked = access.admin_mode && !access.is_admin;
+    // locked = 访客不能建（仅管理员模式，或口令太弱被收权）
+    const locked = !access.can_create;
     document.body.dataset.mode = access.admin_mode ? 'admin' : 'open';
     document.body.dataset.auth = access.is_admin ? 'true' : 'false';
 
@@ -103,12 +107,22 @@
     if (banner) {
       banner.hidden = false;
       banner.classList.toggle('locked', locked);
-      $('#mode-text').textContent = locked
-        ? '仅管理员可使用：外部访客只能打开已生成的短链接，创建与管理需登录后台。'
-        : (access.admin_mode
-            ? '仅管理员可使用：你已登录，管理功能可用。'
-            : '开放外部可使用：任何人都能创建与管理短链接。');
+      $('#mode-text').textContent = access.locked
+        ? '站点口令过弱，创建已锁定：请管理员更换 ADMIN_TOKEN（≥12 位随机串）后重试。'
+        : (locked
+            ? '仅管理员可使用：外部访客只能打开已生成的短链接，创建与管理需登录后台。'
+            : (access.admin_mode
+                ? '仅管理员可使用：你已登录，管理功能可用。'
+                : '开放外部可使用：任何人都能创建短链接，链接库与统计仅管理员可见。'));
     }
+    // 站点公告：后台「设置 → 站点公告」写什么就显示什么，留空整条不出现
+    const notice = $('#notice-bar');
+    if (notice) {
+      const text = (access.announcement || '').trim();
+      notice.hidden = !text;
+      if (text) $('#notice-text').textContent = text;
+    }
+
     const bar = $('#create');
     if (bar) bar.hidden = locked;
     const board = $('#list');
@@ -136,6 +150,7 @@
       state.token = v;
       sessionStorage.setItem('su_token', v);
       hideGate();
+      loadAccess();
       loadSummary();
       loadLinks();
     });
@@ -262,6 +277,22 @@
     return link.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>';
   }
 
+  const DAY = 86400000;
+
+  /* 过期那一列：能说出「还剩几天」比列一个日期有用得多 */
+  function expiryCell(link) {
+    if (!link.expires_at) return '<span class="hint exp-none">永不过期</span>';
+    const end = new Date(link.expires_at).getTime();
+    if (Number.isNaN(end)) return '<span class="hint">—</span>';
+    const left = end - Date.now();
+    if (left <= 0) return '<span class="exp-soon">已过期</span>';
+    const days = Math.ceil(left / DAY);
+    const text = days <= 1 ? '不到 1 天' : `还剩 ${days} 天`;
+    const cls = days <= 7 ? 'exp-soon' : 'hint';
+    // 「还剩 120 天」说不清什么时候到期，把日期一并给出来
+    return `<span class="${cls}">${text}</span><span class="hint exp-date">${escapeHtml(fmtDate(link.expires_at))}</span>`;
+  }
+
   function rowOf(link) {
     const tags = (link.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
     const title = link.title ? `<span class="title-cell">${escapeHtml(link.title)}</span>` : '';
@@ -280,6 +311,7 @@
       <td data-label="点击" class="clicks-cell">${link.clicks}</td>
       <td data-label="标签">${tags || '<span class="hint">—</span>'}</td>
       <td data-label="状态">${badgeOf(link)}</td>
+      <td data-label="过期">${expiryCell(link)}</td>
       <td data-label="创建" class="created-cell">${fmtDate(link.created_at)}</td>
       <td data-label="操作">${actions}</td>
     </tr>`;
@@ -499,6 +531,11 @@
   document.addEventListener('DOMContentLoaded', async () => {
     bindCreate(); bindCopy(); bindBoard(); bindEdit(); bindGate();
     await loadAccess();
+    // 本站开了访问令牌而这位还没过门禁：先把门摆出来，别先拉一屏空数据再弹窗
+    if (access.access_required && !access.access_granted) {
+      showGate();
+      return;
+    }
     loadSummary(); loadLinks();
   });
 

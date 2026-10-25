@@ -39,7 +39,7 @@ from app.schemas import (
     SettingsUpdate,
     UaRuleOut,
 )
-from app.services import ServiceError, flush_clicks, import_yourls
+from app.services import ServiceError, flush_clicks, import_yourls, runtime_status
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -107,6 +107,24 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         ).scalar_one()
         or 0
     )
+    expiring_horizon = now + dt.timedelta(days=7)
+    expiring_rows = list(
+        db.execute(
+            select(Link.code, Link.target, Link.expires_at)
+            .where(Link.expires_at.is_not(None), Link.expires_at > now, Link.expires_at <= expiring_horizon)
+            .order_by(Link.expires_at.asc())
+            .limit(8)
+        ).all()
+    )
+    expiring_links = (
+        db.execute(
+            select(func.count())
+            .select_from(Link)
+            .where(Link.expires_at.is_not(None), Link.expires_at > now, Link.expires_at <= expiring_horizon)
+        ).scalar_one()
+        or 0
+    )
+
     blocked_events = (
         db.execute(select(func.count()).select_from(ClickEvent).where(ClickEvent.blocked.is_(True))).scalar_one() or 0
     )
@@ -167,6 +185,11 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         enabled_links=int(enabled),
         disabled_links=int(disabled),
         expired_links=int(expired),
+        expiring_links=int(expiring_links),
+        expiring=[
+            {"code": code, "target": target, "expires_at": ensure_iso(expires_at)}
+            for code, target, expires_at in expiring_rows
+        ],
         pending_clicks=click_buffer.pending(),
         blocked_events=int(blocked_events),
         clicks_today=int(clicks_today),
@@ -203,6 +226,7 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
         access_mode=access.current_mode(db),
         access_mode_label=access.LABELS.get(access.current_mode(db), ""),
         access_locked=access.is_admin_mode(db),
+        announcement=str(values.get("announcement") or ""),
         social_guard=bool(values.get("social_guard", True)),
         social_block_hint=str(values.get("social_block_hint") or ""),
         social_tag_qq=bool(values.get("social_tag_qq", True)),
@@ -328,6 +352,28 @@ def api_blocked_events(
         for code, platform_key, ua, ts in db.execute(stmt).all()
     ]
     return {"items": items, "total": len(items)}
+
+
+@router.get("/runtime", summary="运行状态")
+def api_runtime(request: Request, db: Session = Depends(get_db)):
+    """升级、排障先看这里：库多大、排队多少、丢了什么、哪些链接快到期。"""
+    require_admin(request)
+    return runtime_status(db)
+
+
+@router.post("/prune-events", summary="清理过期点击明细")
+def api_prune_events(
+    request: Request, days: int = Query(0, ge=0, le=3650), db: Session = Depends(get_db)
+):
+    """清掉保留期之前的点击明细。累计点击数不动，统计口径不变。"""
+    require_admin(request)
+    from app.services import CLICK_EVENT_RETENTION_DAYS, prune_click_events
+
+    keep = days or CLICK_EVENT_RETENTION_DAYS
+    deleted = prune_click_events(db, keep)
+    report.record(db, "settings", actor=require_admin(request), detail=f"清理 {keep} 天前点击明细 {deleted} 条", request=request)
+    db.commit()
+    return {"ok": True, "deleted": deleted, "days": keep}
 
 
 @router.get("/audit", summary="操作留痕")

@@ -19,6 +19,8 @@
 - **设备统计** — 桌面端 / 移动端 / 机器人来源一目了然
 - **可选私密** — 配一个 `ACCESS_TOKEN` 就能把整个站点锁起来
 - **安全加固** — CSP、CSRF 防护、Argon2id 口令哈希、登录限速、可信代理
+- **到期提醒** — 列表与仪表盘都标出「还剩几天」，7 天内到期可一键筛出
+- **运行状态** — 后台一屏看库体积 / 待结算 / 丢了多少点击 / 部署自检告警
 - **精致界面** — 深色玻璃质感、响应式、无框架依赖、极光动效
 - **无背景 Logo** — 提供 SVG 矢量与 16~512px PNG，深浅底色通用
 
@@ -63,7 +65,7 @@ docker compose up -d         # 首次需构建
 | `GET` | `/api/qr/{code}` | 二维码 PNG（管理员，或创建者带 `?t=` 回执） |
 | `GET` | `/api/links/export` | 导出 CSV（沿用列表的筛选参数） |
 | `POST` | `/api/links/bulk` | 批量操作，`action` 取 `enable`/`disable`/`delete`，`codes` 为短码数组 |
-| `GET` | `/api/stats/summary` | 总览 |
+| `GET` | `/api/stats/summary` | 总览（含站点公告与访问令牌状态） |
 | `GET` | `/api/access` | 当前访问模式与登录态 |
 | `POST` | `/api/admin/login` | 后台登录 |
 | `GET` | `/api/admin/dashboard` | 仪表盘数据 |
@@ -73,8 +75,11 @@ docker compose up -d         # 首次需构建
 | `POST` | `/api/admin/migrate/yourls` | 从 YOURLS 迁移 |
 | `GET` | `/api/admin/audit` | 操作留痕，支持 `limit` / `action` |
 | `POST` | `/api/admin/flush-clicks` | 立即结算延迟计数 |
+| `GET` | `/api/admin/runtime` | 运行状态：库体积、待结算、丢弃数、到期数、部署自检 |
+| `POST` | `/api/admin/prune-events` | 清理保留期外的点击明细（累计点击数不变） |
 | `POST` | `/yourls-api` | YOURLS 兼容接口（shorturl / expand / url-stats / db-stats） |
 | `GET` | `/{code}` | 跳转（307），延迟记录点击 |
+| `GET` | `/healthz` | 健康检查，带待结算与丢弃计数 |
 
 创建示例：
 
@@ -107,6 +112,12 @@ curl -X POST http://localhost:8000/api/links \
 | `LOGIN_RATE_LIMIT` | `10` | 单 IP 5 分钟内后台登录尝试上限，`0` 不限制 |
 | `SOCIAL_GUARD` | `true` | 社交平台防洪总开关（后台可覆盖） |
 | `SOCIAL_BLOCK_HINT` | 见 `.env.example` | 社交平台拦截页提示语 |
+| `SSRF_RESOLVE_CHECK` | `true` | 创建短链时解析域名核对内网地址；关掉只校验字面 IP |
+| `DNS_CACHE_TTL` | `60` | 解析结果缓存秒数，避免同一域名反复查 DNS |
+| `CLICK_BUFFER_MAX` | `20000` | 延迟计数队列上限，超限丢弃最旧的并计数 |
+| `CLICK_EVENT_RETENTION_DAYS` | `365` | 点击明细保留天数，`0` 不清理（累计点击数不受影响） |
+| `ANNOUNCEMENT` | 空 | 首页顶部公告，后台「设置 → 站点公告」可改 |
+| `SITE_TAGLINE` | `数据可自托管，隐私尽在掌握` | 页脚那句自述 |
 
 ## 访问模式
 
@@ -123,7 +134,8 @@ curl -X POST http://localhost:8000/api/links \
 - **链接库与统计永远只给管理员。** 开放模式开的是「建」，不是「看别人的」——
   一份完整的链接清单摊在公网上，等于把所有人建的短链都曝出来。
 
-未配置 `ADMIN_TOKEN` 时自动按 `open` 运行，避免配错把站点锁死在门外。
+未配置 `ADMIN_TOKEN` 时自动按 `open` 运行，避免配错把站点锁死在门外；
+配了但短于 12 位则按「仅管理员」收权（见下方「口令强度」）。
 
 ### 回执链接：访客也能看自己那条
 
@@ -225,7 +237,27 @@ python -c "from app.core.crypto import hash_secret; print(hash_secret('your-pass
 
 ### URL 校验
 
-创建短链时挡掉带 userinfo 的地址（`https://trusted.com@evil.com` 这类钓鱼伪装）、内网 / 回环 / 链路本地 / IPv4 映射 IPv6 地址，以及非 http/https 协议。自动取标题的请求同样有 SSRF 防护。
+创建短链时挡掉带 userinfo 的地址（`https://trusted.com@evil.com` 这类钓鱼伪装）、内网 / 回环 / 链路本地 / IPv4 映射 IPv6 地址，以及非 http/https 协议。
+
+只校验字面 IP 是不够的：`http://10.0.0.1.nip.io` 这类域名自带解析，前一秒还是「一个普通域名」，
+后端一请求就摸到内网。所以域名会再看一眼解析结果，任一地址落在内网就拒收，
+解析失败也按不安全处理（宁可少收一个域名，不可放行一次内网探测）。
+结果缓存 `DNS_CACHE_TTL` 秒——不能长，DNS 重绑定要的正是「第一次解析是公网」。
+
+自动取标题走的是同一条判定（`titles._is_safe_host` 直接复用 `is_public_url`），
+两套规则各写一遍，早晚会有一边漏。
+
+### 口令强度
+
+`ADMIN_TOKEN` 短于 12 位时，访客能做的事一律收回（创建、链接库、统计全关），
+只保留跳转；后台仍可登录去换口令，但「密码能猜到」不会再顺带变成「别人能当管理员」。
+后台「运行状态 → 部署自检」会把这条和其它配置隐患直接列出来。
+
+### 访问令牌
+
+开了 `ACCESS_TOKEN` 之后，`?token=xxx` 校验通过就写进 HttpOnly Cookie，
+之后刷新、翻页、看统计页里那张二维码都不用再带参数。前端门禁存的是
+sessionStorage 里的明文，靠拼 query 跳转——服务端不认它，门禁就是死循环。
 
 ## Logo
 
@@ -249,8 +281,10 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-237 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计、设备分布、编辑与 CSV 导出、访问模式、管理后台、YOURLS 迁移、社交平台防洪（平台识别含 Referer 兜底、三档策略含 `silent` 落地、拦截页、总开关、来源统计、拦截留痕），以及安全加固（响应头、CSP、CSRF、可信代理、URL 校验、登录限速、口令哈希）与限速器本身（自然日重置、并发不上限、0 视为不限），以及回执链接、访客准入边界、短码长度可调、本地时区显示，以及 v5 的批量操作、
-操作留痕、创建额度按后台配置生效、跳转策略快照（改配置立刻生效）。
+276 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计、设备分布、编辑与 CSV 导出、访问模式、管理后台、YOURLS 迁移、社交平台防洪（平台识别含 Referer 兜底、三档策略含 `silent` 落地、拦截页、总开关、来源统计、拦截留痕），以及安全加固（响应头、CSP、CSRF、可信代理、URL 校验、登录限速、口令哈希）与限速器本身（自然日重置、并发不上限、0 视为不限），以及回执链接、访客准入边界、短码长度可调、本地时区显示，以及 v5 的批量操作、
+操作留痕、创建额度按后台配置生效、跳转策略快照（改配置立刻生效），
+以及 v6 的域名解析级 SSRF 拦截（含 DNS 缓存与取标题侧）、延迟计数队列上限、
+根级图标与 HEAD 请求路由、访问令牌 Cookie 落盘、到期提醒筛选、运行状态与点击明细清理、弱口令收权、站点公告。
 
 ## 项目结构
 

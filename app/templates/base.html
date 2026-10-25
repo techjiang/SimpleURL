@@ -30,7 +30,7 @@
   <footer class="footer">
     <span>Built with ⚡ by <b>{{ site_name }}</b></span>
     <span class="dot">·</span>
-    <span>数据可自托管，隐私尽在掌握</span>
+    <span>{{ site_tagline }}</span>
   </footer>
   {% block scripts %}<script src="/static/app.js" defer nonce="{{ csp_nonce(request) }}"></script>{% endblock %}
 </body>

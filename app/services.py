@@ -25,6 +25,8 @@ from app.schemas import LinkCreate, LinkUpdate
 
 logger = logging.getLogger("simpleurl")
 
+EXPIRING_DAYS = 7
+
 EXPORT_HEADER = ["短码", "短链接", "目标地址", "标题", "标签", "点击", "状态", "过期时间", "创建时间"]
 
 
@@ -134,6 +136,10 @@ def _base_query(
         stmt = stmt.where(Link.enabled.is_(False))
     elif status == "expired":
         stmt = stmt.where(Link.expires_at.is_not(None), Link.expires_at <= utcnow())
+    elif status == "expiring":
+        # 7 天内到期：到期前没人提醒，链接就静静死掉了
+        horizon = utcnow() + dt.timedelta(days=EXPIRING_DAYS)
+        stmt = stmt.where(Link.expires_at.is_not(None), Link.expires_at > utcnow(), Link.expires_at <= horizon)
 
     sort_map = {
         "created_desc": Link.created_at.desc(),
@@ -441,6 +447,73 @@ def _host(referrer: str) -> str | None:
     except ValueError:
         return None
     return h or None
+
+
+# ---------- 运行状态 / 自动清理 ----------
+
+# 点击事件留多久。统计只看 30 天趋势，留一年已经很有余量；
+# 无上限增长的单表迟早把 SQLite 拖垮。可用 CLICK_EVENT_RETENTION_DAYS 覆盖。
+CLICK_EVENT_RETENTION_DAYS = settings.retention_days or 365
+
+
+def runtime_status(db: Session) -> dict:
+    """运行状态：排队多少、丢了什么、库有多大、哪些链接快到期。
+
+    「服务健康吗」不该只回答 200。写库卡住时点击数会堆在内存里、
+    日志表会无限长，这两件事都是静默发生的。
+    """
+    from sqlalchemy import text
+
+    from app.core.access import warnings as access_warnings
+    from app.core.clicks import click_buffer
+
+    link_count = int(db.execute(select(func.count()).select_from(Link)).scalar_one() or 0)
+    event_count = int(db.execute(select(func.count()).select_from(ClickEvent)).scalar_one() or 0)
+    db_size = None
+    try:
+        if settings.database_url.startswith("sqlite"):
+            # page_count * page_size 就是整库字节数，不用去碰文件系统
+            page_count = db.execute(text("PRAGMA page_count")).scalar_one()
+            page_size = db.execute(text("PRAGMA page_size")).scalar_one()
+            db_size = int(page_count or 0) * int(page_size or 0)
+    except Exception:  # noqa: BLE001 - Postgres 或权限不足时不显示即可
+        db_size = None
+
+    horizon = utcnow() + dt.timedelta(days=EXPIRING_DAYS)
+    expiring = int(
+        db.execute(
+            select(func.count())
+            .select_from(Link)
+            .where(Link.expires_at.is_not(None), Link.expires_at > utcnow(), Link.expires_at <= horizon)
+        ).scalar_one()
+        or 0
+    )
+    return {
+        "links": link_count,
+        "click_events": event_count,
+        "db_size": db_size,
+        "pending_clicks": click_buffer.pending(),
+        "dropped_clicks": click_buffer.dropped(),
+        "expiring_links": expiring,
+        "retention_days": CLICK_EVENT_RETENTION_DAYS,
+        "warnings": access_warnings(),
+    }
+
+
+def prune_click_events(db: Session, days: int = CLICK_EVENT_RETENTION_DAYS) -> int:
+    """删掉过期点击明细，返回删除条数。
+
+    只删明细，不动 links.clicks —— 累计点击数是要长期保留的口径，
+    图表看一年，总数看一辈子。
+    """
+    cutoff = utcnow() - dt.timedelta(days=max(1, days))
+    rows = db.execute(select(ClickEvent.id).where(ClickEvent.ts < cutoff).limit(5000)).scalars().all()
+    if not rows:
+        return 0
+    db.execute(ClickEvent.__table__.delete().where(ClickEvent.id.in_(list(rows))))
+    db.flush()
+    logger.info("清理 %d 天前的点击明细：%d 条", days, len(rows))
+    return len(rows)
 
 
 # ---------- 延迟计数辅助 ----------

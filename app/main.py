@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import APIRouter, FastAPI, Request, status
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -16,7 +17,7 @@ from app.api import router as api_router
 from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import init_db
-from app.core.middleware import CSRFProtectMiddleware, SecurityHeadersMiddleware
+from app.core.middleware import AccessTokenCookieMiddleware, CSRFProtectMiddleware, SecurityHeadersMiddleware
 from app.pages import router as pages_router
 from app.services import ServiceError
 from app.web import templates
@@ -43,13 +44,49 @@ def _startup_audit() -> None:
         logger.warning("SECRET_KEY 未单独配置，正在复用 ADMIN_TOKEN；建议单独设置以支持独立轮换")
 
 
+def _start_retention_job() -> threading.Timer | None:
+    """每天清一次过期点击明细。
+
+    只删明细，不动累计点击。挂在后台线程里，不引 APScheduler 这种重依赖。
+    """
+    if not settings.retention_days:
+        return None
+    from app.core.db import session_scope
+    from app.services import prune_click_events
+
+    def _run() -> None:
+        try:
+            with session_scope() as db:
+                prune_click_events(db, settings.retention_days)
+        except Exception:  # noqa: BLE001 - 清理失败不该影响服务
+            logger.exception("清理过期点击明细失败")
+
+    def _tick() -> None:
+        _run()
+        _reschedule()
+
+    timer: threading.Timer | None = None
+
+    def _reschedule() -> None:
+        nonlocal timer
+        timer = threading.Timer(24 * 3600, _tick)
+        timer.daemon = True
+        timer.start()
+
+    _reschedule()
+    return timer
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
     click_buffer.start(settings.click_flush_interval)
+    retention_timer = _start_retention_job()
     _startup_audit()
     logger.info("SimpleURL v%s 已启动", __version__)
     yield
+    if retention_timer is not None:
+        retention_timer.cancel()
     # 退出前把缓冲里的点击结算掉，别丢数据
     try:
         written = click_buffer.flush_all()
@@ -59,6 +96,30 @@ async def lifespan(_: FastAPI):
         logger.exception("退出前结算点击失败")
     click_buffer.stop()
     logger.info("SimpleURL 已关闭")
+
+
+root_router = APIRouter(include_in_schema=False)
+
+
+@root_router.api_route("/", methods=["GET", "HEAD"])
+def index(request: Request):
+    # csrf_token / csp_nonce 由模板全局函数提供，这里不用显式传
+    return templates.TemplateResponse(request, "index.html")
+
+
+@root_router.api_route("/favicon.ico", methods=["GET", "HEAD"])
+def favicon():
+    """浏览器默认会打根路径的 /favicon.ico，别再让它落到 404。"""
+    path = settings.static_dir / "favicon.ico"
+    return FileResponse(path, media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@root_router.api_route("/apple-touch-icon-precomposed.png", methods=["GET", "HEAD"])
+@root_router.api_route("/apple-touch-icon.png", methods=["GET", "HEAD"])
+def apple_touch_icon():
+    """iOS 加书签 / 主屏时会自己来找这张图，模板里的 link 它不看。"""
+    path = settings.static_dir / "logo" / "icon-180.png"
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
 app = FastAPI(
@@ -73,11 +134,15 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(settings.static_dir)), name="static")
 # 安全中间件：外层先补响应头并签发 CSRF 令牌，内层再校验写请求
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(AccessTokenCookieMiddleware)
 app.add_middleware(CSRFProtectMiddleware)
 install_yourls_mw(app)
 app.include_router(api_router)
 app.include_router(admin_router)
 app.include_router(yourls_router)
+# 站点根级资源（/favicon.ico、/apple-touch-icon.png）必须排在 /{code} 之前：
+# 页面路由是通配的，谁先注册谁先吃到请求。
+app.include_router(root_router)
 app.include_router(pages_router)
 
 
@@ -90,13 +155,22 @@ async def service_error_handler(_: Request, exc: ServiceError):
 async def http_error_handler(request: Request, exc: StarletteHTTPException):
     if request.url.path.startswith("/api/"):
         return JSONResponse(status_code=exc.status_code, content={"ok": False, "message": exc.detail})
-    # 页面 404 回首页
-    if exc.status_code == status.HTTP_404_NOT_FOUND:
+    # 静态资源与站点图标 404 就老老实实 404：302 到首页会让浏览器
+    # 把一整页 HTML 当 favicon / png 收下，控制台一路报「资源不是图片」
+    if exc.status_code == status.HTTP_404_NOT_FOUND and not _is_asset_path(request.url.path):
         return RedirectResponse(url="/", status_code=302)
     return JSONResponse(status_code=exc.status_code, content={"ok": False, "message": exc.detail})
 
 
-@app.get("/", include_in_schema=False)
-def index(request: Request):
-    # csrf_token / csp_nonce 由模板全局函数提供，这里不用显式传
-    return templates.TemplateResponse(request, "index.html")
+# 这些路径缺什么就返回 404，别拿 HTML 顶替
+ASSET_PREFIXES = ("/static/",)
+ASSET_SUFFIXES = (
+    ".ico", ".png", ".svg", ".webmanifest", ".css", ".js", ".map", ".txt",
+    ".woff", ".woff2", ".jpg", ".jpeg", ".webp", ".gif", ".xml",
+)
+
+
+def _is_asset_path(path: str) -> bool:
+    return path.startswith(ASSET_PREFIXES) or path.lower().endswith(ASSET_SUFFIXES)
+
+

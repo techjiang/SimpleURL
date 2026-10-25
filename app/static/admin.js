@@ -92,6 +92,7 @@
       if (btn.dataset.tab === 'guard') loadGuard();
       if (btn.dataset.tab === 'audit') loadAudit();
       if (btn.dataset.tab === 'settings') loadSettings();
+      if (btn.dataset.tab === 'status') loadStatus();
     });
   }
 
@@ -102,7 +103,7 @@
       const cards = [
         ['链接总数', d.total_links], ['总点击', d.total_clicks],
         ['已启用', d.enabled_links], ['已停用', d.disabled_links],
-        ['已过期', d.expired_links], ['今日点击', d.clicks_today],
+        ['已过期', d.expired_links], ['7 天内到期', d.expiring_links || 0], ['今日点击', d.clicks_today],
         ['拦截访问', d.blocked_events], ['待结算', d.pending_clicks],
       ];
       $('#dash-cards').innerHTML = cards
@@ -110,6 +111,21 @@
         .join('');
       $('#dash-pending').textContent = d.pending_clicks;
       renderChart($('#dash-chart'), d.daily);
+      // 有快到期的才把这张卡拿出来，没有就别占一屏
+      const expCard = $('#dash-expiring-card');
+      if (expCard) {
+        const rows = d.expiring || [];
+        expCard.hidden = rows.length === 0;
+        if (rows.length) {
+          $('#dash-expiring').innerHTML = rows
+            .map((l) => {
+              const days = Math.max(1, Math.ceil((new Date(l.expires_at).getTime() - Date.now()) / 86400000));
+              return `<li><a class="mono" href="/s/${encodeURIComponent(l.code)}">/${escapeHtml(l.code)}</a>`
+                + `<b class="exp-soon">${days} 天后</b></li>`;
+            })
+            .join('');
+        }
+      }
       $('#dash-top').innerHTML = d.top_links.length
         ? d.top_links.map((l) => `<li><span class="mono">/${escapeHtml(l.code)}</span><b>${l.clicks}</b></li>`).join('')
         : '<li><span>暂无数据</span><b>0</b></li>';
@@ -481,6 +497,8 @@
       $('#set-fetch').checked = !!s.fetch_title;
       $('#set-require-key').checked = !!s.require_api_key;
       $('#set-access-mode').value = s.access_mode || 'open';
+      const ann = $('#set-announcement');
+      if (ann) ann.value = s.announcement || '';
       $('#access-mode-hint').textContent = (s.access_mode || 'open') === 'admin'
         ? '当前：访客仅能跳转短链接，创建、链接库与统计页均需登录后台。'
         : '当前：访客可创建短链接；链接库与统计仅管理员可见，创建者凭回执链接查看自己那条。';
@@ -511,6 +529,7 @@
           fetch_title: $('#set-fetch').checked,
           require_api_key: $('#set-require-key').checked,
           access_mode: $('#set-access-mode').value,
+          announcement: ($('#set-announcement').value || '').trim(),
         });
         setStatus('#settings-status', '已保存', 'ok');
         toast('设置已保存');
@@ -533,6 +552,59 @@
     });
   }
 
+  /* ---------- 运行状态 ---------- */
+  function humanSize(bytes) {
+    if (!bytes && bytes !== 0) return '—';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let n = bytes;
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+    return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
+  async function loadStatus() {
+    try {
+      const s = await api('/api/admin/runtime');
+      const rows = [
+        ['链接总数', s.links],
+        ['点击明细', s.click_events],
+        ['数据库体积', humanSize(s.db_size)],
+        ['待结算点击', s.pending_clicks],
+        ['因超限丢弃', s.dropped_clicks],
+        ['7 天内到期', s.expiring_links],
+      ];
+      $('#status-list').innerHTML = rows
+        .map(([k, v]) => `<li><span>${k}</span><b>${escapeHtml(String(v))}</b></li>`)
+        .join('');
+      $('#status-note').textContent = `点击明细保留 ${s.retention_days} 天，更早的明细可手动清理；累计点击数不受影响。`;
+      // 丢了点击才是真问题：写库卡住时这个数字会往上涨
+      if (s.dropped_clicks > 0) {
+        $('#status-msg').textContent = '有点击因队列超限被丢弃，检查数据库写入是否卡住';
+        $('#status-msg').className = 'status err';
+      }
+      const card = $('#status-warn-card');
+      const warns = s.warnings || [];
+      card.hidden = warns.length === 0;
+      $('#status-warn').innerHTML = warns
+        .map((w) => `<li><span>${escapeHtml(w.text)}</span><b>${w.level === 'warn' ? '⚠︎' : 'ⓘ'}</b></li>`)
+        .join('');
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindStatus() {
+    const btn = $('#status-refresh');
+    if (btn) btn.addEventListener('click', loadStatus);
+    const prune = $('#prune-events');
+    if (prune) prune.addEventListener('click', async () => {
+      if (!confirm('删除保留期之外的点击明细？累计点击数不会变。')) return;
+      try {
+        const r = await post('/api/admin/prune-events', {});
+        setStatus('#status-msg', `已清理 ${r.deleted} 条`, 'ok');
+        loadStatus();
+      } catch (err) { setStatus('#status-msg', err.message, 'err'); }
+    });
+  }
+
   function bindAudit() {
     const sel = $('#audit-action');
     if (sel) sel.addEventListener('change', loadAudit);
@@ -540,7 +612,8 @@
 
   /* ---------- 启动 ---------- */
   async function boot() {
-    bindTabs(); bindAdminLinks(); bindGuard(); bindAudit(); bindSocial(); bindKeys(); bindMigrate(); bindSettings();
+    bindTabs(); bindAdminLinks(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
+    bindMigrate(); bindSettings(); bindStatus();
     await loadDashboard();
   }
 

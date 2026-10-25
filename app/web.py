@@ -10,7 +10,7 @@ from app.core.csrf import current_token
 from app.core.timeutil import ensure_aware, fmt_local, iso, local_naive
 
 templates = Jinja2Templates(directory=str(settings.templates_dir))
-templates.env.globals.update(site_name=settings.site_name)
+templates.env.globals.update(site_name=settings.site_name, site_tagline=settings.site_tagline)
 
 
 def _csrf_token(request) -> str:

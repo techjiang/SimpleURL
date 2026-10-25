@@ -21,6 +21,7 @@
     <button class="admin-tab" data-tab="keys" type="button">API 密钥</button>
     <button class="admin-tab" data-tab="migrate" type="button">数据迁移</button>
     <button class="admin-tab" data-tab="audit" type="button">操作留痕</button>
+    <button class="admin-tab" data-tab="status" type="button">运行状态</button>
     <button class="admin-tab" data-tab="settings" type="button">设置</button>
   </nav>
 
@@ -33,6 +34,13 @@
         <span class="hint">延迟计数待结算 <b id="dash-pending">0</b> 条</span>
       </div>
       <div class="chart-scroll"><div class="chart" id="dash-chart"></div></div>
+    </div>
+    <div class="chart-card" id="dash-expiring-card" hidden>
+      <div class="chart-head">
+        <h2>即将过期</h2>
+        <span class="hint">7 天内到期，趁早续上</span>
+      </div>
+      <ul class="ref-list" id="dash-expiring"></ul>
     </div>
     <div class="admin-cols">
       <div class="chart-card">
@@ -180,6 +188,24 @@
   </div>
 
   <!-- API 密钥 -->
+  <!-- 运行状态 -->
+  <div class="admin-panel" data-panel="status">
+    <div class="chart-card">
+      <div class="chart-head"><h2>运行状态</h2><span class="hint">升级、排障时先看这里</span></div>
+      <ul class="ref-list" id="status-list"></ul>
+      <div class="dash-actions">
+        <button class="btn ghost" id="status-refresh" type="button">刷新</button>
+        <button class="btn ghost" id="prune-events" type="button">清理过期点击明细</button>
+        <span class="status" id="status-msg" role="status"></span>
+      </div>
+      <p class="hint" id="status-note"></p>
+    </div>
+    <div class="chart-card" id="status-warn-card" hidden>
+      <div class="chart-head"><h2>部署自检</h2><span class="hint">看着配了、其实没生效的地方</span></div>
+      <ul class="ref-list" id="status-warn"></ul>
+    </div>
+  </div>
+
   <div class="admin-panel" data-panel="keys">
     <div class="chart-card">
       <div class="chart-head">
@@ -242,6 +268,10 @@
           <input id="set-require-key" type="checkbox" />
           <span>要求 API 请求携带密钥</span>
         </label>
+        <div class="field">
+          <label for="set-announcement">站点公告 <span class="hint">显示在首页顶部，留空不显示</span></label>
+          <input id="set-announcement" type="text" maxlength="280" placeholder="比如：本周六 02:00 例行维护" />
+        </div>
         <div class="field">
           <label for="set-access-mode">访问模式</label>
           <select id="set-access-mode">

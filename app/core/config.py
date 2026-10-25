@@ -67,6 +67,21 @@ class Settings:
         # 统计数据的采样间隔（秒），用于做简单的请求限速保护
         self.stats_rate_limit: int = _as_int("STATS_RATE_LIMIT", 1)
 
+        # 创建链接时是否解析域名核对内网地址（见 security.is_public_url）。
+        # 关掉就只校验字面 IP，适合离线 / 内网 DNS 不可信的部署
+        self.ssrf_resolve_check: bool = _as_bool("SSRF_RESOLVE_CHECK", True)
+        # 解析结果缓存秒数：创建链接是低频操作，但同一个域名常被反复贴
+        self.dns_cache_ttl: int = max(0, min(3600, _as_int("DNS_CACHE_TTL", 60)))
+
+        # 置顶公告：留空则首页不显示。后台「设置 → 站点公告」可改
+        self.announcement: str = os.getenv("ANNOUNCEMENT", "").strip()[:280]
+
+        # 站点徽章：页脚那句自述，也是给自建站主换掉默认文案的口子
+        self.site_tagline: str = os.getenv("SITE_TAGLINE", "数据可自托管，隐私尽在掌握").strip()[:120]
+
+        # 部署版本号：用于升级后第一眼确认「跑的是哪一版」
+        self.build_info: str = os.getenv("BUILD_INFO", "").strip()[:60]
+
         # ---------- 反向代理 ----------
         # 信任哪些代理的 X-Forwarded-For / X-Real-IP。默认只信任回环地址，
         # 直连部署时等于不信任任何转发头；填 * 表示无条件信任（仅限内网可信环境）。
@@ -107,6 +122,9 @@ class Settings:
         self.click_flush_interval: int = max(1, min(600, _as_int("CLICK_FLUSH_INTERVAL", 5)))
         # 缓冲队列上限，超出后直接丢弃最旧的保护策略由 drop 计数体现
         self.click_buffer_max: int = max(100, min(1000000, _as_int("CLICK_BUFFER_MAX", 20000)))
+
+        # 点击明细保留天数：只控明细，累计点击数不动。0 表示永不清理
+        self.retention_days: int = max(0, min(3650, _as_int("CLICK_EVENT_RETENTION_DAYS", 365)))
 
         # ---------- 自动获取标题 ----------
         self.fetch_title: bool = _as_bool("FETCH_TITLE", True)

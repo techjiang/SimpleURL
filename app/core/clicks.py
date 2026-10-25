@@ -14,6 +14,7 @@ import threading
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import get_engine, get_sessionmaker
 from app.core.security import ip_hash
 from app.core.timeutil import utcnow
@@ -59,7 +60,8 @@ class ClickBuffer:
         ip: str | None,
         blocked: bool = False,
         platform: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """入队一条点击；队列满时丢弃并返回 False。"""
         from app.core.security import parse_user_agent
 
         _, device = parse_user_agent(ua)
@@ -74,10 +76,16 @@ class ClickBuffer:
             ts=utcnow(),
         )
         with self._lock:
+            # 队列上限：数据库长时间写不进去时，内存不能跟着请求数一起涨。
+            # 满了就丢最旧的（那些最可能已经过期了），丢多少记在 _dropped 上。
+            if len(self._queue) >= settings.click_buffer_max:
+                self._queue.pop(0)
+                self._dropped += 1
             self._queue.append(item)
             # 被 UA 屏蔽的事件只留痕、不算点击
             if not blocked:
                 self._counts[link_id] = self._counts.get(link_id, 0) + 1
+        return True
 
     # ---------- 观测 ----------
     def pending(self) -> int:
@@ -129,6 +137,9 @@ class ClickBuffer:
                     .values(clicks=func.coalesce(Link.clicks, 0) + delta)
                 )
             session.commit()
+            if self._dropped:
+                logger.warning("延迟计数期间因队列超限丢弃 %d 条点击", self._dropped)
+                self._dropped = 0
             logger.info("延迟计数 flush：写入 %d 条点击", len(batch))
             return len(batch)
         except Exception:
