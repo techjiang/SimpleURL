@@ -38,6 +38,11 @@ def verify(db: Session, link: Link, token: str) -> bool:
     return hmac.compare_digest(link.claim_hash, _hash(token))
 
 
+def reissue(db: Session, link: Link) -> str:
+    """用旧回执换一张新的：旧的立刻作废，新的只出现这一次。"""
+    return issue(db, link)
+
+
 def revoke(db: Session, link: Link) -> None:
     link.claim_hash = None
     db.flush()

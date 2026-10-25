@@ -9,7 +9,10 @@
       <h1><span class="mono">/{{ link.code }}</span></h1>
       <p class="lede"><a href="{{ link.target }}" target="_blank" rel="noopener">{{ link.target }}</a></p>
     </div>
-    <img src="{{ qr_src }}" alt="二维码" width="120" height="120" class="qr" />
+    <div class="qr-block">
+      <img src="{{ qr_src }}" alt="二维码" width="120" height="120" class="qr" />
+      <a class="qr-download" href="{{ qr_src }}" download="simpleurl-{{ link.code }}.png" title="保存二维码 PNG">下载二维码</a>
+    </div>
   </div>
   <div class="stat-grid">
     <div class="stat-card"><span class="stat-label">总点击</span><strong>{{ data.clicks }}</strong></div>
@@ -18,9 +21,26 @@
     <div class="stat-card"><span class="stat-label">最近点击</span><strong class="wide">{{ data.last_click_at | fmt_local('%m-%d %H:%M') if data.last_click_at else '—' }}</strong></div>
     <div class="stat-card"><span class="stat-label">创建时间</span><strong class="wide">{{ link.created_at | fmt_local }}</strong></div>
   </div>
+  {% set daily_counts = data.daily | map(attribute='count') | list %}
+  {% set peak = daily_counts | max if daily_counts else 0 %}
   <div class="chart-card">
-    <div class="chart-head"><h2>每日点击趋势</h2><span class="hint">最近 30 天</span></div>
+    <div class="chart-head">
+      <h2>每日点击趋势</h2>
+      <span class="hint">最近 30 天{% if peak %} · 单日最高 {{ peak }} 次{% endif %}</span>
+    </div>
     <div class="chart-scroll"><div class="chart" id="chart" data-daily='{{ data.daily | tojson }}'></div></div>
+    {# 趋势图是脚本画的，读屏软件和「Ctrl+A 复制出来」都拿不到数字。
+       这里留一份纯文本视图：看清哪天点了多少次，也不用等脚本。 #}
+    <details class="chart-table">
+      <summary>逐日明细</summary>
+      <ul>
+        {% for d in data.daily | reverse %}
+        {% if d.count %}<li><span>{{ d.date }}</span><b>{{ d.count }}</b></li>{% endif %}
+        {% else %}
+        <li><span class="hint">还没有点击</span><b>0</b></li>
+        {% endfor %}
+      </ul>
+    </details>
   </div>
   <div class="chart-card">
     <div class="chart-head"><h2>来源 Top</h2></div>
@@ -64,11 +84,35 @@
     </ul>
   </div>
 </section>
+{% if claim %}
+<div class="receipt-tip">
+  <p>这张页面是凭一次性回执打开的。回执丢了就找不回来，但可以用现在这张换一张新的，旧的立刻作废。</p>
+  <button class="btn ghost" id="rotate-receipt" type="button" data-code="{{ link.code }}" data-claim="{{ claim }}">换一张回执</button>
+  <p class="hint" id="rotate-result" role="status" aria-live="polite"></p>
+</div>
+{% endif %}
 <script nonce="{{ csp_nonce(request) }}">
 document.addEventListener('DOMContentLoaded', () => {
   const el = document.getElementById('chart');
-  if (!el || !window.SimpleURL?.renderChart) return;
-  window.SimpleURL.renderChart(el, JSON.parse(el.dataset.daily || '[]'));
+  if (el && window.SimpleURL?.renderChart) {
+    window.SimpleURL.renderChart(el, JSON.parse(el.dataset.daily || '[]'));
+  }
+  const btn = document.getElementById('rotate-receipt');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const out = document.getElementById('rotate-result');
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/links/${encodeURIComponent(btn.dataset.code)}/receipt?t=${encodeURIComponent(btn.dataset.claim)}`);
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.message || '换新失败');
+      // 换完之后旧链接立刻失效，浏览器地址栏也得跟着换，否则一刷新就 401
+      location.replace(data.stats_url);
+    } catch (err) {
+      btn.disabled = false;
+      out.textContent = err.message || '换新失败，请稍后重试';
+    }
+  });
 });
 </script>
 {% endblock %}

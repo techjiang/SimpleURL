@@ -55,8 +55,12 @@ def render(template: str, request: Request, db=None, **context) -> str:
 
 def render_stats(request: Request, link, data: dict, db=None) -> str:
     base = str(request.base_url).rstrip("/")
-    # 二维码也要带同一张通行证，否则统计页上那张图会 401
-    claim = request.query_params.get("t") or ""
+    # 二维码也要带同一张通行证，否则统计页上那张图会 401。
+    # query 里没有就看 cookie——访问过一次之后地址栏会被收拾干净，
+    # 二维码和「换一张回执」都还得认得这位创建者。
+    from app.core.middleware import CLAIM_COOKIE
+
+    claim = request.query_params.get("t") or request.cookies.get(CLAIM_COOKIE) or ""
     qr_src = f"{base}/api/qr/{link.code}" + (f"?t={claim}" if claim else "")
     return render(
         "stats.html",

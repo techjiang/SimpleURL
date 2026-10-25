@@ -46,10 +46,26 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 def require_admin(request: Request) -> str:
-    admin = current_admin(request)
-    if admin is None:
+    """普通管理员：读数据、改链接、改配置。
+
+    API 密钥在这里**不算数**。原来 `/api/admin/*` 完全不看 `REQUIRE_API_KEY`，
+    反过来也没人校验密钥与会话的边界——一把为了「让脚本建短链」而签发的密钥，
+    能直接读仪表盘、导出全站链接、改设置。密钥泄露的后果不该等于后台失守。
+    """
+    if access.session_tier(request) != access.TIER_ADMIN:
+        admin = current_admin(request)
+        if admin is not None:
+            raise ServiceError("当前会话只有配置权限，请用管理员账号重新登录", 401)
         raise ServiceError("未登录或会话已过期", 401)
-    return admin
+    return current_admin(request) or "admin"
+
+
+def require_settings_admin(request: Request) -> str:
+    """改配置需要哪一级：管理员，或令牌级会话（换口令、撤密钥的救场通道）。"""
+    actor = current_admin(request)
+    if not access.can_manage_settings(request) or actor is None:
+        raise ServiceError("未登录或会话已过期", 401)
+    return actor
 
 
 def _session_cookie(token: str) -> dict:
@@ -209,7 +225,7 @@ def ensure_iso(value) -> str | None:
 
 @router.get("/settings", response_model=SettingsOut, summary="读取设置")
 def api_get_settings(request: Request, db: Session = Depends(get_db)):
-    require_admin(request)
+    require_settings_admin(request)
     values = get_all(db)
     return SettingsOut(
         site_name=str(values.get("site_name") or settings.site_name),
@@ -237,7 +253,7 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
 
 @router.post("/settings", summary="保存设置")
 def api_save_settings(payload: SettingsUpdate, request: Request, db: Session = Depends(get_db)):
-    require_admin(request)
+    require_settings_admin(request)
     data = payload.model_dump(exclude_unset=True)
     for key, value in data.items():
         if key not in EDITABLE:
@@ -250,20 +266,20 @@ def api_save_settings(payload: SettingsUpdate, request: Request, db: Session = D
             value = access.normalize_mode(value)
         set_value(db, key, value)
     policy.invalidate()
-    report.record(db, "settings", actor=require_admin(request), detail=", ".join(sorted(data.keys())), request=request)
+    report.record(db, "settings", actor=require_settings_admin(request), detail=", ".join(sorted(data.keys())), request=request)
     db.commit()
     return {"ok": True, "message": "已保存"}
 
 
 @router.post("/settings/reset", summary="恢复默认设置")
 def api_reset_settings(request: Request, db: Session = Depends(get_db)):
-    require_admin(request)
+    require_settings_admin(request)
     for key in EDITABLE:
         row = db.execute(select(Setting).where(Setting.key == key)).scalar_one_or_none()
         if row is not None:
             db.delete(row)
     policy.invalidate()
-    report.record(db, "settings", actor=require_admin(request), detail="恢复默认设置", request=request)
+    report.record(db, "settings", actor=require_settings_admin(request), detail="恢复默认设置", request=request)
     db.commit()
     return {"ok": True, "message": "已恢复环境变量默认值"}
 
@@ -392,14 +408,14 @@ def api_audit(
 
 @router.get("/api-keys", response_model=list[ApiKeyOut], summary="API 密钥列表")
 def api_list_keys(request: Request, db: Session = Depends(get_db)):
-    require_admin(request)
+    require_settings_admin(request)
     rows = db.execute(select(ApiKey).order_by(ApiKey.id.desc())).scalars().all()
     return [ApiKeyOut(**row.to_dict()) for row in rows]
 
 
 @router.post("/api-keys", response_model=ApiKeyOut, status_code=201, summary="新建 API 密钥")
 def api_create_key(payload: ApiKeyCreate, request: Request, db: Session = Depends(get_db)):
-    require_admin(request)
+    require_settings_admin(request)
     key = ApiKey(name=payload.name or "默认密钥", key="sk-" + secrets.token_urlsafe(24))
     db.add(key)
     db.commit()
@@ -409,7 +425,7 @@ def api_create_key(payload: ApiKeyCreate, request: Request, db: Session = Depend
 
 @router.delete("/api-keys/{key_id}", summary="删除 API 密钥")
 def api_delete_key(key_id: int, request: Request, db: Session = Depends(get_db)):
-    require_admin(request)
+    require_settings_admin(request)
     row = db.get(ApiKey, key_id)
     if row is None:
         raise ServiceError("密钥不存在", 404)

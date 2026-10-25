@@ -26,6 +26,7 @@ ACTIONS = {
     "import": "导入 YOURLS",
     "settings": "修改设置",
     "flush": "结算点击",
+    "claim": "回执换新",
 }
 
 MAX_ROWS = 2000

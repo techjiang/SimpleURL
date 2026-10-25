@@ -80,9 +80,11 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         ok, msg = validate_custom_code(custom, settings.code_min_length, settings.code_max_length)
         if not ok:
             raise ServiceError(msg, 422)
-        exists = db.execute(select(Link.id).where(func.lower(Link.code) == custom.lower())).first()
+        # 库里已有同码时，大小写不同也要拦：域名不区分大小写，`Abc` 和 `abc`
+        # 落到同一个地址上，谁后写谁赢，先建的人凭空被顶掉
+        exists = db.execute(select(Link.code).where(func.lower(Link.code) == custom.lower())).first()
         if exists:
-            raise ServiceError("该短码已被占用，换一个试试", 409)
+            raise ServiceError(f"短码 {custom} 已被占用（不区分大小写），换一个试试", 409)
 
     code = custom or generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
     link = Link(
@@ -483,11 +485,11 @@ def links_to_csv(links: list[Link]) -> str:
         expires = ensure_aware(link.expires_at)
         writer.writerow(
             [
-                link.code,
-                link.code,
-                link.target,
-                link.title or "",
-                _tags(link),
+                _safe_cell(link.code),
+                _safe_cell(link.code),
+                _safe_cell(link.target),
+                _safe_cell(link.title or ""),
+                _safe_cell(_tags(link)),
                 link.clicks or 0,
                 _status(link),
                 expires.strftime("%Y-%m-%d %H:%M") if expires else "",
@@ -495,6 +497,21 @@ def links_to_csv(links: list[Link]) -> str:
             ]
         )
     return buf.getvalue()
+
+
+# CSV 里以这几个字符开头的单元格会被 Excel / WPS / Numbers 当成公式执行。
+# 危险之处在于：标题是任何人（开放模式下是访客）都能填的字段，管理员把导出
+# 结果发给同事、对方双击打开，`=HYPERLINK(...)` 或 `=cmd|...` 就在本地跑起来了。
+_FORMULA_PREFIX = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _safe_cell(value: object) -> object:
+    """中和 CSV 公式注入：前置一个单引号，Excel 会当成纯文本。"""
+    if not isinstance(value, str) or not value:
+        return value
+    if value.startswith(_FORMULA_PREFIX):
+        return "'" + value
+    return value
 
 
 def _host(referrer: str) -> str | None:

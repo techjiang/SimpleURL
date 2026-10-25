@@ -49,10 +49,16 @@ def validate_custom_code(code: str, min_len: int, max_len: int) -> tuple[bool, s
 
 
 def code_exists(code: str) -> bool:
-    from sqlalchemy import select
+    """短码是否已被占用。
+
+    必须**不分大小写**：表上那个 unique 索引是区分大小写的，`CNB` 和 `cnb`
+    在 SQLite / Postgres 眼里是两条不同的记录，可短链域名不区分大小写——
+    这两个短码最终指向同一个地址，谁写进去谁赢。生成时要跟着这个语义走。
+    """
+    from sqlalchemy import func, select
 
     with session_scope() as db:
-        return db.execute(select(Link.id).where(Link.code == code)).first() is not None
+        return db.execute(select(Link.id).where(func.lower(Link.code) == code.lower())).first() is not None
 
 
 def generate_unique_code(length: int | None = None, no_ambiguous: bool = True, max_tries: int = 50) -> str:

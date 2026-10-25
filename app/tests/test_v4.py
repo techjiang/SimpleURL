@@ -44,7 +44,14 @@ class TestReceipt:
         token = data["claim_token"]
         assert anon_client.get(f"/api/links/rcpt1/stats?t={token}").status_code == 200
         assert anon_client.get(f"/api/qr/rcpt1?t={token}").status_code == 200
-        assert anon_client.get("/api/qr/rcpt1").status_code == 401
+        # 出示过一次回执之后，浏览器会记住它（cookie），此后不带 query 也认人。
+        # 换个干净的浏览器（没有这张 cookie）仍然是 401。
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        with TestClient(app) as stranger:
+            assert stranger.get("/api/qr/rcpt1").status_code == 401
 
     def test_wrong_receipt_rejected(self, anon_client):
         make_link(anon_client)

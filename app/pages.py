@@ -17,7 +17,7 @@ from app.core.db import get_db
 from app.core.middleware import ACCESS_COOKIE
 from app.core.security import client_ip
 from app.services import ServiceError, get_link_by_code, get_stats, record_click, resolve_redirect
-from app.web import render, render_stats
+from app.web import branding, render, render_stats
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(tags=["pages"])
@@ -101,12 +101,13 @@ def healthz(db: Session = Depends(get_db)):
         logger.exception("健康检查读库失败")
         return JSONResponse({"status": "degraded", "site": settings.site_name, "error": str(exc)[:200]}, 503)
 
+
     state = "ok"
     if status["pending_clicks"] > settings.click_buffer_max * 0.8:
         state = "degraded"
     return {
         "status": state,
-        "site": settings.site_name,
+        "site": branding(db)["site_name"],
         "version": __version__,
         "pending_clicks": status["pending_clicks"],
         "dropped_clicks": status["dropped_clicks"],

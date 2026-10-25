@@ -236,7 +236,8 @@ select option { background: var(--bg-soft); color: var(--text); }
 /* 右侧控件不许抢满整行：筛选下拉固定宽度，并靠右 */
 .chart-head > select { flex: none; width: auto; min-width: 128px; max-width: 180px; }
 .chart-head .hint { margin-left: auto; }
-.chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; min-width: 100%; }
+.chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; min-width: 100%; width: 100%; }
+.chart .bar { flex: 1 1 0; min-width: 6px; }
 .chart-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; scrollbar-width: thin; }
 .chart-scroll::-webkit-scrollbar { height: 6px; }
 .chart-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
@@ -244,6 +245,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; height: 100%; }
 .bar i { display: block; width: 100%; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
 .bar:hover i { filter: brightness(1.3); }
+.bar.is-zero i { background: transparent; border-top: 1px dashed var(--border-strong); border-radius: 0; }
 .bar b { font-size: 0.6rem; color: var(--text-faint); text-align: center; font-weight: 500; }
 .ref-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .ref-list li { display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.88rem; }
@@ -560,3 +562,48 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   .bulk-bar > span { width: 100%; margin-right: 0; }
   #audit-list li { flex-direction: column; gap: 4px; }
 }
+
+/* ---------- 统计页：二维码下载 / 逐日明细 / 回执换新 ---------- */
+.qr-block { display: grid; gap: 6px; justify-items: center; }
+.qr-download {
+  font-size: .74rem; color: var(--text-dim); text-decoration: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--text-dim) 45%, transparent);
+}
+.qr-download:hover { color: var(--text); border-bottom-color: var(--text); }
+
+.chart-table { margin-top: 14px; font-size: .84rem; }
+.chart-table summary {
+  cursor: pointer; color: var(--text-dim); list-style: none;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chart-table summary::-webkit-details-marker { display: none; }
+.chart-table summary::before { content: "▸"; font-size: .7em; transition: transform .15s ease; }
+.chart-table[open] summary::before { transform: rotate(90deg); }
+.chart-table summary:hover { color: var(--text); }
+.chart-table ul {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 4px 14px;
+}
+.chart-table li {
+  display: flex; justify-content: space-between; gap: 10px;
+  font-variant-numeric: tabular-nums; color: var(--text-dim);
+}
+.chart-table li b { color: var(--text); font-weight: 600; }
+
+.receipt-tip {
+  display: grid; gap: 10px; justify-items: start;
+  padding: 16px 18px; margin: 0 0 18px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  font-size: .86rem; line-height: 1.6;
+}
+.receipt-tip p { margin: 0; color: var(--text-dim); }
+@media (max-width: 560px) {
+  .qr-block { justify-items: start; }
+  .chart-table ul { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+}
+
+/* 访客没有链接库：工具栏和表头整块收起，只留一段说明，避免一排禁用控件像坏了 */
+.board.is-guest .board-tools,
+.board.is-guest .table thead,
+.board.is-guest .pager { display: none; }

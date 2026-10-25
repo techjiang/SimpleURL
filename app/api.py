@@ -17,6 +17,7 @@ from app.core.settings_store import effective
 from app.core.apikey import extract_key, touch, verify as verify_api_key
 from app.models import ClickEvent, Link
 from app.qr import make_qr_png
+from app.web import branding
 from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
 from app.services import (
     ServiceError,
@@ -211,6 +212,31 @@ def api_bulk(request: Request, payload: dict, db: Session = Depends(get_db)):
     return {**result, "message": f"已{label} {result['affected']} 条"}
 
 
+@router.get("/links/{code}/receipt", summary="补发回执链接")
+def api_reissue_receipt(code: str, request: Request, db: Session = Depends(get_db)):
+    """用一次性回执换一张新的回执。
+
+    回执丢了就彻底找不回来（服务端只存哈希），老版本的痛点在这里：管理员
+    在后台建的链接根本不发回执，页面却照样渲染一个空的「复制」框；访客把回执
+    存丢之后，那条链接就只剩「问管理员」一条路。开放模式又压根没有管理员可问。
+
+    补的办法不是发新凭据，而是**用旧换新**：拿着已有一张有效回执，换一张新的、
+    旧的立刻作废。手里没有的那一方永远换不到——安全性不降，可用性回来了。
+    """
+    check_api_key(request, db)
+    link = get_link_by_code(db, code)
+    if not access.may_see(link, request, db):
+        require_manage(request, db)
+        return {"ok": True, "claim_token": None, "message": "管理员无需回执"}
+    token = claim.reissue(db, link)
+    # 中间件看到这个就把浏览器里那张 cookie 一起换掉
+    request.state.claim_token = token
+    report.record(db, "claim", actor="访客", code=link.code, detail="回执换新", request=request)
+    db.commit()
+    base = str(request.base_url).rstrip("/")
+    return {"ok": True, "claim_token": token, "stats_url": f"{base}/s/{link.code}?t={token}"}
+
+
 @router.get("/links/{code}/stats", response_model=StatsOut, summary="访问统计")
 def api_link_stats(
     code: str, days: int = Query(30, ge=1, le=365), request: Request = None, db: Session = Depends(get_db)
@@ -244,7 +270,9 @@ def api_access(request: Request, db: Session = Depends(get_db)):
     snapshot = access.snapshot(db, request)
     snapshot["access_required"] = bool(settings.access_token)
     snapshot["access_granted"] = _access_granted(request)
-    snapshot["site_name"] = settings.site_name
+    # 品牌名同样以库里的值为准：这里写死 settings.site_name 的话，
+    # 后台改了站点名称，页头换了、横幅和提示语还挂着旧名字
+    snapshot["site_name"] = branding(db)["site_name"]
     snapshot["announcement"] = str(effective(db, "announcement") or "")
     # 公告与自述都归运行配置，后台可改，前端每次加载都会拿到最新值
     return snapshot
@@ -265,7 +293,9 @@ def api_summary(request: Request, db: Session = Depends(get_db)):
     if not access.is_admin(request, db):
         # 访客只看站点概况，别把库里有多少条链接当公开情报
         snapshot = access.snapshot(db, request)
-        snapshot.update({"total_links": None, "total_clicks": None, "site_name": settings.site_name})
+        snapshot.update(
+            {"total_links": None, "total_clicks": None, "site_name": branding(db)["site_name"]}
+        )
         return snapshot
     total_links = db.execute(select(func.count()).select_from(Link)).scalar_one()
     # 被 UA 屏蔽的事件只留痕不计点击，总点击要跟链接列表对得上
@@ -275,7 +305,7 @@ def api_summary(request: Request, db: Session = Depends(get_db)):
     return {
         "total_links": int(total_links or 0),
         "total_clicks": int(total_clicks or 0),
-        "site_name": settings.site_name,
+        "site_name": branding(db)["site_name"],
         "access_required": bool(settings.access_token),
         **access.snapshot(db, request),
     }

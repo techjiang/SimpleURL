@@ -30,6 +30,26 @@ def make_token(username: str = "admin", ttl: int | None = None) -> str:
     return f"{payload}.{_sign(payload)}"
 
 
+# 会话里的用户名就是权限标识：`owner` 是令牌级会话，其余一律按普通管理员算
+OWNER = "owner"
+
+
+def current_tier(request: Request) -> str | None:
+    """当前会话的权限层级，未登录返回 None。
+
+    为什么要有这一层：`REQUIRE_API_KEY` 打开后，`/api/*` 只认 API 密钥，
+    而 `/api/admin/*` 压根不校验它——拿一把开出来的密钥就能直接读仪表盘、
+    存储统计、全站数据。API 密钥的定位是「给脚本建短链」，不该等价于
+    「管理员登录」。改成两把钥匙分工：密钥管接口，会话管后台，谁也不替谁。
+    """
+    name = current_admin(request)
+    if name is None:
+        return None
+    from app.core.access import TIER_ADMIN, TIER_OWNER
+
+    return TIER_OWNER if name == OWNER else TIER_ADMIN
+
+
 def verify_token(token: str | None) -> str | None:
     if not token or "." not in token:
         return None

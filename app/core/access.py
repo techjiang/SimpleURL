@@ -21,6 +21,12 @@ ADMIN = "admin"
 MODES = (OPEN, ADMIN)
 LABELS = {OPEN: "开放外部可使用", ADMIN: "仅管理员可使用"}
 
+# 普通管理员会话：能看到链接库、能改配置
+TIER_ADMIN = "admin"
+# 令牌级会话（`admin:<口令>` 形式的账号）：只在极端情况用来救场——
+# 口令泄露后要能登录改口令、清 API 密钥，所以不给它读数据的权限，只给改配置
+TIER_OWNER = "owner"
+
 
 def normalize_mode(raw: object) -> str:
     mode = str(raw or "").strip().lower()
@@ -71,13 +77,22 @@ def locked_by_weak_token() -> bool:
     return is_admin_enabled() and token_is_weak()
 
 
+def session_tier(request: Request | None) -> str | None:
+    """当前会话的权限层级；未登录返回 None。"""
+    if not request or not is_admin_enabled():
+        return None
+    from app.core.admin import current_tier
+
+    return current_tier(request)
+
+
 def can_create(db=None, request: Request | None = None) -> bool:
     """访客是否可以创建短链接。"""
     if locked_by_weak_token():
-        return bool(request) and is_admin(request, db)
+        return session_tier(request) == TIER_ADMIN
     if not is_admin_mode(db):
         return True
-    return bool(request) and is_admin(request, db)
+    return session_tier(request) == TIER_ADMIN
 
 
 def can_browse(db=None, request: Request | None = None) -> bool:
@@ -85,19 +100,35 @@ def can_browse(db=None, request: Request | None = None) -> bool:
 
     注意：开放模式也**不**放开这一项。链接库是一份完整的清单，
     公开出去等于把所有人建的短链都摊在阳光下。
+
+    令牌级会话（TIER_OWNER）同样不给：它的存在意义就是「口令泄露后
+    还能进去改口令」，要是它也能读库，泄露方照样拿走全部数据。
     """
-    return bool(request) and is_admin(request, db)
+    return session_tier(request) == TIER_ADMIN
+
+
+def is_owner(request: Request | None) -> bool:
+    """令牌级会话：可以改配置（换口令、删密钥），但看不到任何数据。"""
+    return session_tier(request) == TIER_OWNER
+
+
+def can_manage_settings(request: Request | None) -> bool:
+    return session_tier(request) in (TIER_ADMIN, TIER_OWNER)
 
 
 def may_see(link, request: Request | None, db=None) -> bool:
     """单条链接的可见性：管理员，或持有该链接一次性领取码的创建者。"""
-    if is_admin(request, db):
+    if session_tier(request) == TIER_ADMIN:
         return True
     if request is None or link is None:
         return False
     from app.core.db import session_scope
 
-    token = request.query_params.get("t") or ""
+    # `?t=` 优先，其次 cookie：二维码图片、换新后的跳转都带不了 query，
+    # 但浏览器一定带 cookie。两者都只是「出示这张回执」，安全性同级。
+    from app.core.middleware import CLAIM_COOKIE
+
+    token = request.query_params.get("t") or request.cookies.get(CLAIM_COOKIE) or ""
     if not token:
         return False
     from app.core.claim import verify
@@ -143,6 +174,7 @@ def snapshot(db, request: Request | None = None) -> dict:
         "locked": locked_by_weak_token(),
         "warnings": warnings(),
         "is_admin": admin,
+        "tier": session_tier(request),
         "can_create": can_create(db, request),
         "can_browse": can_browse(db, request),
         "admin_login_enabled": is_admin_enabled(),

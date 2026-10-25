@@ -140,6 +140,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 ACCESS_COOKIE = "su_access"
+# 领取码（回执）也落一份 cookie：
+#   1. 统计页里的二维码是个 <img>，跨站上下文的图片请求带不了 `?t=`
+#   2. 换一张回执之后浏览器地址要跳到新链接，这一跳同样会丢 `?t=`
+# 只写自己那条回执的哈希对应关系由服务端校验，cookie 里放明文当「出示凭据」，
+# 和 `?t=` 同级——它本来就是一张回执，不是密码。
+CLAIM_COOKIE = "su_claim"
 
 
 class AccessTokenCookieMiddleware(BaseHTTPMiddleware):
@@ -162,6 +168,21 @@ class AccessTokenCookieMiddleware(BaseHTTPMiddleware):
                 request.state.access_token_ok = True
 
         response = await call_next(request)
+
+        # 回执：页面上带着 ?t= 访问过一次，就把它记进 cookie，
+        # 这样同一条链接上的二维码、刷新、换新后的跳转都还认得出这位创建者
+        # 两个来源都要记：页面带 `?t=` 打开一次，或者调用 `/receipt` 换到新的一张。
+        # 只记前者的结果是「换新之后 cookie 里还是旧的」，刷新一次就 401。
+        fresh_claim = getattr(request.state, "claim_token", None) or request.query_params.get("t")
+        if fresh_claim:
+            response.set_cookie(
+                CLAIM_COOKIE,
+                fresh_claim,
+                max_age=30 * 24 * 3600,
+                httponly=True,
+                samesite="lax",
+                path="/",
+            )
 
         if expected:
             provided = request.query_params.get("token")

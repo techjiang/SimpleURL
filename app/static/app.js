@@ -334,12 +334,17 @@
   function renderGuestBoard() {
     const body = $('#links-body');
     if (body) body.innerHTML = '';
+    $('#list').classList.add('is-guest');
+    const head = document.querySelector('#list .board-head h2');
+    if (head) head.textContent = '我的链接';
     const empty = $('#empty');
     if (empty) {
       empty.hidden = false;
+      // 标题还写「链接库」、下面又说「仅管理员可见」，读起来像功能坏了。
+      // 访客这里其实有东西：他刚建的那条，凭回执能看。
       empty.querySelector('p').textContent = access.admin_mode
-        ? '站点仅管理员可使用，登录后台后查看链接库'
-        : '链接库仅管理员可见。你刚创建的链接，凭回执链接即可查看统计。';
+        ? '站点仅管理员可使用，登录后台后查看自己建过的链接'
+        : '这里放的是建过的链接。没登录只能凭回执看刚建的那一条，登录后台可见全部。';
     }
     ['#summary', '#page-info'].forEach((sel) => { const el = $(sel); if (el) el.innerHTML = ''; });
     ['#prev-btn', '#next-btn', '#export-btn', '#search-input', '#status-filter', '#sort-select', '#page-size'].forEach((sel) => {
@@ -353,6 +358,9 @@
   async function loadLinks() {
     const pager = document.querySelector('.pager');
     if (!access.is_admin) { renderGuestBoard(); return; }
+    $('#list').classList.remove('is-guest');
+    const boardTitle = document.querySelector('#list .board-head h2');
+    if (boardTitle) boardTitle.textContent = '链接库';
     if (pager) pager.hidden = false;
     const body = $('#links-body');
     if (!body) return;
@@ -364,8 +372,11 @@
       const data = await withToken('/api/links?' + params.toString());
       state.total = data.total;
       body.innerHTML = data.items.map(rowOf).join('');
-      $('#empty').hidden = data.items.length > 0;
-      $('#empty').querySelector('p').textContent = '还没有链接，先创建一个吧';
+      const empty = $('#empty');
+      empty.hidden = data.items.length > 0;
+      empty.querySelector('p').textContent = '还没有链接，先创建一个吧';
+      // 数据有了，「链接库仅管理员可见」那条说明就不能继续挂着
+      if (data.items.length) empty.hidden = true;
       const pages = Math.max(1, Math.ceil(data.total / state.pageSize));
       $('#summary').innerHTML = [
         `<span class="chip">共 ${data.total} 条</span>`,
@@ -558,7 +569,12 @@
   function renderChart(el, daily) {
     const max = Math.max(1, ...daily.map((d) => d.count));
     el.innerHTML = daily
-      .map((d) => `<div class="bar" title="${d.date}：${d.count} 次点击"><i style="height:${(d.count / max) * 100}%"></i><b>${d.date.slice(5)}</b></div>`)
+      .map((d) => {
+        // 只点了一次的柱子按比例算出来不到 3%，在 140px 高度里就是一条线，
+        // 看着和「完全没有」没区别。给有数据的柱子一个下限高度。
+        const h = d.count ? Math.max(4, (d.count / max) * 100) : 0;
+        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${d.date.slice(5)}</b></div>`;
+      })
       .join('');
   }
 
