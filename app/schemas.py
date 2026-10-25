@@ -113,6 +113,46 @@ class LinkUpdate(BaseModel):
         return _clean_tags(v)
 
 
+class LinkSelfUpdate(BaseModel):
+    """创建者凭回执修改自己那条链接。
+
+    管理员的 PATCH 能改全部字段；这里刻意只留四个：目标、标题、标签、过期时间。
+    短码不让改（改了别人手上的链接就成孤儿），启停和删除另有专门动作。
+    """
+
+    target: Optional[str] = Field(None, max_length=2048)
+    title: Optional[str] = Field(None, max_length=255)
+    tags: Optional[list[str] | str] = None
+    expires_at: Optional[dt.datetime] = None
+
+    @field_validator("target")
+    @classmethod
+    def _v_target(cls, v):
+        from app.core.security import normalize_url
+
+        return normalize_url(v) if v else v
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _v_text(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _v_tags(cls, v):
+        return _clean_tags(v)
+
+
+class LinkRenew(BaseModel):
+    """给一条停用 / 过期 / 即将到期的链接续期。"""
+
+    days: int = Field(30, ge=1, le=3650, description="续期天数，从此刻或原到期时间（取更晚的那个）往后推")
+    enabled: bool = Field(True, description="顺手重新启用")
+
+
 class LinkOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -18,7 +18,7 @@ from app.core.apikey import extract_key, touch, verify as verify_api_key
 from app.models import ClickEvent, Link
 from app.qr import make_qr_png, make_qr_svg
 from app.web import branding
-from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
+from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkRenew, LinkSelfUpdate, LinkUpdate, StatsOut
 from app.services import (
     ServiceError,
     all_links_for_export,
@@ -32,6 +32,7 @@ from app.services import (
     find_similar,
     links_to_csv,
     list_links,
+    renew_link,
     update_link,
 )
 
@@ -88,6 +89,124 @@ def require_manage(request: Request, db: Session) -> None:
     if access.is_admin_mode(db):
         raise ServiceError("站点已设为仅管理员可使用，请先登录后台", 401)
     raise ServiceError("链接库与统计数据仅管理员可见，请先登录后台", 401)
+
+
+def _self_manage(request: Request, db: Session, code: str, need_alive: bool = True):
+    """创建者自助管理的前置校验：管理员直通，否则必须出示这条链接的回执。
+
+    「回执」以前只够看统计，链接过期了想续一天、目标写错了想改一个字母，
+    都得去找管理员——开放模式下压根没人可找。这里让回执变成一把真正的钥匙：
+    能改、能停、能续命，但只开自己那一扇门。
+    """
+    link = get_link_by_code(db, code)
+    if access.session_tier(request) == access.TIER_ADMIN:
+        return link, True
+    if not access.may_see(link, request, db):
+        raise ServiceError("回执无效或已更换，请用最新那条回执访问", 401)
+    if need_alive and link.claim_hash is None:
+        raise ServiceError("这条链接的回执已被收回", 401)
+    return link, False
+
+
+@router.get("/links/{code}/self", response_model=LinkOut, summary="回执自助：读取自己那条")
+def api_self_get(code: str, request: Request, db: Session = Depends(get_db)):
+    """凭回执读自己那条的详情（含是否过期、还剩几天）。"""
+    check_api_key(request, db)
+    link, _ = _self_manage(request, db, code, need_alive=False)
+    out = _serialize(link, request)
+    out.expired = link.is_expired
+    return out
+
+
+@router.patch("/links/{code}/self", response_model=LinkOut, summary="回执自助：改目标 / 标题 / 标签 / 过期时间")
+def api_self_update(code: str, payload: LinkSelfUpdate, request: Request, db: Session = Depends(get_db)):
+    check_api_key(request, db)
+    link, is_admin = _self_manage(request, db, code, need_alive=False)
+    if not is_admin and link.claim_hash is None:
+        raise ServiceError("这条链接的回执已被收回", 401)
+
+    data = payload.model_dump(exclude_unset=True)
+    changed = sorted(data.keys())
+    if not changed:
+        raise ServiceError("没有要修改的字段", 422)
+    update_link(db, code, LinkUpdate(**data))
+    report.record(
+        db,
+        "update",
+        actor=access_actor(request) if is_admin else "访客",
+        code=link.code,
+        detail="回执自助修改：" + ", ".join(changed),
+        request=request,
+    )
+    db.commit()
+    db.refresh(link)
+    out = _serialize(link, request)
+    out.expired = link.is_expired
+    return out
+
+
+@router.post("/links/{code}/self/renew", response_model=LinkOut, summary="回执自助：续期并重新启用")
+def api_self_renew(code: str, payload: LinkRenew | None = None, request: Request = None, db: Session = Depends(get_db)):
+    """过期之后才发现链接死了，是最常见的翻车方式。
+
+    这里给一条「从死里捞回来」的路：过期或停用都能直接续上一段时间，
+    顺带把统计累加进一条 notice 里，让后台看得到这条链接被谁救活过。
+    """
+    check_api_key(request, db)
+    link, is_admin = _self_manage(request, db, code, need_alive=False)
+    days = (payload.days if payload else 30) or 30
+    enabled = payload.enabled if payload else True
+    renew_link(db, link, days=days, enabled=enabled)
+    report.record(
+        db,
+        "update",
+        actor=access_actor(request) if is_admin else "访客",
+        code=link.code,
+        detail=f"续期 {days} 天" + ("，并重新启用" if enabled else ""),
+        request=request,
+    )
+    db.commit()
+    db.refresh(link)
+    out = _serialize(link, request)
+    out.expired = link.is_expired
+    return out
+
+
+@router.post("/links/{code}/self/disable", response_model=LinkOut, summary="回执自助：停用或启用")
+def api_self_toggle(code: str, request: Request, enabled: bool = True, db: Session = Depends(get_db)):
+    check_api_key(request, db)
+    link, is_admin = _self_manage(request, db, code)
+    update_link(db, code, LinkUpdate(enabled=enabled))
+    report.record(
+        db,
+        "update",
+        actor=access_actor(request) if is_admin else "访客",
+        code=link.code,
+        detail="回执自助" + ("启用" if enabled else "停用"),
+        request=request,
+    )
+    db.commit()
+    db.refresh(link)
+    out = _serialize(link, request)
+    out.expired = link.is_expired
+    return out
+
+
+@router.delete("/links/{code}/self", summary="回执自助：删除自己那条")
+def api_self_delete(code: str, request: Request, db: Session = Depends(get_db)):
+    """访客删自己建的那条。
+
+    以前访客建错一条就永久留在库里的——既没有回执删除，也找不到管理员。
+    这里凭回执照删，助手库里立刻消失；回执本身也随链接一起作废。
+    """
+    check_api_key(request, db)
+    link, is_admin = _self_manage(request, db, code)
+    delete_link(db, code)
+    report.record(
+        db, "delete", actor=access_actor(request) if is_admin else "访客", code=code, detail="回执自助删除", request=request
+    )
+    db.commit()
+    return {"ok": True, "message": f"已删除 /{code}"}
 
 
 @router.get("/links", response_model=LinkListOut, summary="短链接列表")

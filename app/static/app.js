@@ -270,6 +270,8 @@
           title_source: null,
           reused: true,
         });
+        rememberClaimCode(data.code);
+        loadGuestLinks();
       } catch (err) {
         setRecoverStatus(err.message, 'err');
       } finally {
@@ -311,6 +313,8 @@
           body: JSON.stringify(payload),
         });
         showResult(link);
+        rememberClaimCode(link.code);
+        loadGuestLinks();
         setStatus(link.reused ? '已复用现成的短码' : '创建成功', 'ok');
         form.reset();
         setCodeStatus('');
@@ -328,7 +332,7 @@
     });
   }
 
-  function showResult(link) {
+  function showResult(link, showResultFresh = true) {
     const box = $('#result');
     if (!box) return;
     const a = $('#result-link');
@@ -362,8 +366,114 @@
     }
     $('#result-tags').innerHTML = (link.tags || [])
       .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
+    renderSelfTools(link, showResultFresh);
     box.hidden = false;
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  /* 刚建完的那条，创建者能当场续期 / 停用 / 删除。
+     以前这块只有「复制」和「二维码」：填错一个字就得重新建一条，
+     过两天链接自己到期了也只能干看着。 */
+  let currentClaim = { code: '', token: '' };
+  // 回执只对「刚建出来的那一条」有效。列表里那几行走 cookie 里的回执，
+  // 这里不能拿旧 token 去拼——拼错了服务端就当成别人的链接，一口回绝。
+  let showingFresh = false;
+
+  function renderSelfTools(link, fresh) {
+    const box = $('#result-self');
+    if (!box) return;
+    const hasClaim = fresh && Boolean(link.claim_token);
+    currentClaim = hasClaim ? { code: link.code, token: link.claim_token } : { code: link.code, token: '' };
+    showingFresh = hasClaim;
+    box.hidden = !hasClaim;
+    box.hidden = !hasClaim;
+    if (!hasClaim) return;
+    $('#result-target').textContent = link.target || '—';
+    $('#result-expiry').textContent = link.expires_at
+      ? '到 ' + fmtDate(link.expires_at)
+      : '永不过期';
+    const toggle = $('#result-toggle');
+    toggle.dataset.enabled = link.enabled ? '1' : '0';
+    toggle.textContent = link.enabled ? '停用' : '重新启用';
+    setSelfStatus('');
+  }
+
+  function setSelfStatus(msg, kind) {
+    const el = $('#result-self-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  async function selfCall(path, method, body) {
+    // path 里可能自带 query（`/disable?enabled=false`），回执参数得接着往后拼
+    const t = currentClaim.token ? `t=${encodeURIComponent(currentClaim.token)}` : '';
+    let url = `/api/links/${encodeURIComponent(currentClaim.code)}/self${path}`;
+    if (t) url += (path.includes('?') ? '&' : '?') + t;
+    return withToken(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
+
+  function bindSelfTools() {
+    const renew = $('#result-renew');
+    if (!renew) return;
+    renew.addEventListener('click', async () => {
+      renew.disabled = true;
+      setSelfStatus('续期中…');
+      try {
+        const data = await selfCall('/renew', 'POST', {
+          days: Number(($('#result-days') || {}).value) || 30,
+          enabled: true,
+        });
+        $('#result-expiry').textContent = data.expires_at ? '到 ' + fmtDate(data.expires_at) : '永不过期';
+        setSelfStatus('已续期，到期时间往后推了', 'ok');
+        toast('已续期');
+      } catch (err) {
+        setSelfStatus(err.message, 'err');
+      } finally {
+        renew.disabled = false;
+      }
+    });
+
+    const toggle = $('#result-toggle');
+    toggle.addEventListener('click', async () => {
+      const next = toggle.dataset.enabled !== '1';
+      toggle.disabled = true;
+      setSelfStatus(next ? '启用中…' : '停用中…');
+      try {
+        const data = await selfCall(`/disable?enabled=${next ? 'true' : 'false'}`, 'POST');
+        toggle.dataset.enabled = data.enabled ? '1' : '0';
+        toggle.textContent = data.enabled ? '停用' : '重新启用';
+        setSelfStatus(data.enabled ? '已重新启用' : '已停用：别人打不开了，凭回执你还能进来', 'ok');
+        loadLinks();
+      } catch (err) {
+        setSelfStatus(err.message, 'err');
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+
+    const del = $('#result-del');
+    del.addEventListener('click', async () => {
+      if (!confirm('删除后这条短链接立刻失效，且无法恢复。确定删除？')) return;
+      del.disabled = true;
+      setSelfStatus('删除中…');
+      try {
+        await selfCall('', 'DELETE');
+        setSelfStatus('已删除', 'ok');
+        toast('已删除');
+        const box = $('#result');
+        if (box) box.hidden = true;
+        loadLinks();
+      } catch (err) {
+        setSelfStatus(err.message, 'err');
+      } finally {
+        del.disabled = false;
+      }
+    });
   }
 
   function tokenQuery() {
@@ -463,10 +573,15 @@
   function rowOf(link) {
     const tags = (link.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
     const title = link.title ? `<span class="title-cell">${escapeHtml(link.title)}</span>` : '';
-    const tq = tokenQuery();
+    // 访客板面里那条是自己建的，回执在 cookie 里；这里顺手把回执带进链接，
+    // 省得统计页和二维码又各丢一次凭据
+    const tq = link.claim_token
+      ? `${tokenQuery()}${tokenQuery() ? '&' : '?'}t=${encodeURIComponent(link.claim_token)}`
+      : tokenQuery();
     const locked = access.admin_mode && !access.is_admin;
     // 前端列表只留「访问 / 编辑 / 删除」，停用、批量这类管理动作归后台，
     // 前台一屏塞四个按钮，格子一窄就全变三个点。
+    // 访客板面里的行是他自己那条，能改能删；管理员那边多一个「访问」
     const actions = locked
       ? `<span class="hint">只读</span>`
       : `<a class="btn tiny ghost" href="/${encodeURIComponent(link.code)}${tq}" target="_blank" rel="noopener">访问</a>
@@ -486,6 +601,44 @@
   }
 
   /* 链接库只给管理员。访客看到的是「创建后凭回执看自己那条」的说明板 */
+  /* 访客这边最近一条还有回执的短码。回执是 cookie（`su_claim`，HttpOnly），
+     脚本读不到，只有服务端知道它认不认——所以这里让服务端试一次再说。
+     试成功了就把这一条摆到「我的链接」下面，省得人翻聊天记录找回执。 */
+  const GUEST_LAST_KEY = 'simpleurl:last-claim-code';
+
+  function rememberClaimCode(code) {
+    try { if (code) localStorage.setItem(GUEST_LAST_KEY, code); } catch (_) { /* 隐私模式下存不了就算了 */ }
+  }
+
+  async function loadGuestLinks() {
+    const body = $('#links-body');
+    if (!body) return;
+    let code = '';
+    try { code = localStorage.getItem(GUEST_LAST_KEY) || ''; } catch (_) { code = ''; }
+    if (!code) { body.innerHTML = ''; updateGuestEmpty(true); return; }
+    try {
+      const link = await api('/api/links/' + encodeURIComponent(code) + '/self');
+      body.innerHTML = rowOf({ ...link, claim_token: null });
+      updateGuestEmpty(false);
+      $('#empty').hidden = true;
+    } catch (_) {
+      // 回执过期、换新过、或者换了台设备：都退回说明板，不吓人
+      body.innerHTML = '';
+      try { localStorage.removeItem(GUEST_LAST_KEY); } catch (_) { /* 忽略 */ }
+      updateGuestEmpty(true);
+    }
+  }
+
+  function updateGuestEmpty(show) {
+    const empty = $('#empty');
+    if (!empty) return;
+    empty.hidden = !show;
+    if (!show) return;
+    empty.querySelector('p').textContent = access.admin_mode
+      ? '站点仅管理员可使用，登录后台后查看自己建过的链接'
+      : '这里放的是建过的链接。没登录只能凭回执看刚建的那一条，登录后台可见全部。';
+  }
+
   function renderGuestBoard() {
     const body = $('#links-body');
     if (body) body.innerHTML = '';
@@ -493,15 +646,8 @@
     if (list) list.classList.add('is-guest');
     const head = document.querySelector('#list .board-head h2');
     if (head) head.textContent = '我的链接';
-    const empty = $('#empty');
-    if (empty) {
-      empty.hidden = false;
-      // 标题还写「链接库」、下面又说「仅管理员可见」，读起来像功能坏了。
-      // 访客这里其实有东西：他刚建的那条，凭回执能看。
-      empty.querySelector('p').textContent = access.admin_mode
-        ? '站点仅管理员可使用，登录后台后查看自己建过的链接'
-        : '这里放的是建过的链接。没登录只能凭回执看刚建的那一条，登录后台可见全部。';
-    }
+    updateGuestEmpty(true);
+    loadGuestLinks();
     ['#summary', '#page-info'].forEach((sel) => { const el = $(sel); if (el) el.innerHTML = ''; });
     ['#prev-btn', '#next-btn', '#export-btn', '#search-input', '#status-filter', '#sort-select', '#page-size'].forEach((sel) => {
       const el = $(sel); if (el) el.disabled = true;
@@ -620,18 +766,23 @@
       const btn = e.target.closest('button[data-act]');
       if (!btn) return;
       const code = btn.dataset.code;
+      // 管理员操作全量接口；访客只能碰自己那条，走 self 接口（凭 cookie 里的回执）
+      const base = access.is_admin
+        ? '/api/links/' + encodeURIComponent(code)
+        : '/api/links/' + encodeURIComponent(code) + '/self';
       try {
         if (btn.dataset.act === 'del') {
           if (!confirm(`确定删除 /${code} ？该操作不可恢复`)) return;
-          await withToken('/api/links/' + encodeURIComponent(code), { method: 'DELETE' });
+          await withToken(base, { method: 'DELETE' });
           toast(`已删除 /${code}`);
         } else if (btn.dataset.act === 'edit') {
-          const detail = await withToken('/api/links/' + encodeURIComponent(code));
-          openEdit(detail);
+          if (!access.is_admin) { await openGuestEdit(code); return; }
+          const detail = await withToken(base);
+          openEdit(detail, false);
           return;
         } else {
-          const current = await withToken('/api/links/' + encodeURIComponent(code));
-          await withToken('/api/links/' + encodeURIComponent(code), {
+          const current = await withToken(base);
+          await withToken(base, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ enabled: !current.enabled }),
@@ -647,8 +798,25 @@
   }
 
   /* ---------- 编辑弹窗 ---------- */
-  function openEdit(link) {
+  /* 访客点自己那条的「编辑」时，用的还是这个弹窗，只是请求打到 self 接口上 */
+  let editingGuest = false;
+
+  async function openGuestEdit(code) {
+    try {
+      const link = await api('/api/links/' + encodeURIComponent(code) + '/self');
+      openEdit(link, true);
+      // 访客改不了启停，弹窗里那两个按钮就藏起来
+      document.querySelectorAll('#edit-modal [data-admin-only]').forEach((el) => { el.hidden = true; });
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+
+  /* 传 guest=true 表示这是访客改自己那条：弹窗照旧，接口换成 self。
+     别靠 link.claim_token 判——列表里那几行本来就没有它，鉴权靠的是 cookie。 */
+  function openEdit(link, guest) {
     editing = link;
+    editingGuest = Boolean(guest);
     const modal = $('#edit-modal');
     if (!modal) return;
     $('#edit-code').textContent = '/' + link.code;
@@ -658,6 +826,7 @@
     $('#edit-expires').value = link.expires_at ? toLocalInput(link.expires_at) : '';
     $('#edit-status').textContent = '';
     $('#edit-status').className = 'status';
+    document.querySelectorAll('#edit-modal [data-admin-only]').forEach((el) => { el.hidden = editingGuest; });
     modal.hidden = false;
     document.body.style.overflow = 'hidden';
   }
@@ -668,6 +837,7 @@
     modal.hidden = true;
     document.body.style.overflow = '';
     editing = null;
+    editingGuest = false;
   }
 
   /* ISO 字符串 -> datetime-local 需要的本地 naive 串 */
@@ -702,7 +872,11 @@
       saveBtn.disabled = true;
       setEditStatus('保存中…');
       try {
-        await withToken('/api/links/' + encodeURIComponent(editing.code), {
+        // 管理员走管理接口；访客凭回执走 self 接口，两者字段一致
+        const url = editingGuest
+          ? '/api/links/' + encodeURIComponent(editing.code) + '/self'
+          : '/api/links/' + encodeURIComponent(editing.code);
+        await withToken(url, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
@@ -816,7 +990,7 @@
   /* ---------- 启动 ---------- */
   // 从后台（新标签页）切回来时刷新一次：那边删了/改了链接，这边还是旧的会误导人
   document.addEventListener('DOMContentLoaded', async () => {
-    bindCreate(); bindCopy(); bindBoard(); bindEdit(); bindGate(); bindRecover();
+    bindCreate(); bindCopy(); bindSelfTools(); bindBoard(); bindEdit(); bindGate(); bindRecover();
     bindCodeCheck(); bindDupCheck();
     await loadAccess();
     // 本站开了访问令牌而这位还没过门禁：先把门摆出来，别先拉一屏空数据再弹窗

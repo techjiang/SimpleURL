@@ -256,6 +256,27 @@ def update_link(db: Session, code: str, payload: LinkUpdate) -> Link:
     return link
 
 
+def renew_link(db: Session, link: Link, days: int = 30, enabled: bool = True) -> Link:
+    """续期：从「现在」和「原到期时间」里取更晚的那个，再往后推 `days` 天。
+
+    过期链接是最安静的失效方式——发出去半年后突然打不开，而人根本不知道。
+    从原到期时间往后推，是为了让「还剩 3 天」的链接不会因为续一次 30 天
+    反倒被提前扣掉这 3 天；已经过期很久的则一律从此刻算起。
+    """
+    days = max(1, min(3650, int(days or 30)))
+    base = utcnow()
+    if link.expires_at is not None:
+        current = ensure_aware(link.expires_at)
+        if current and current > base:
+            base = current
+    link.expires_at = base + dt.timedelta(days=days)
+    if enabled:
+        link.enabled = True
+    db.flush()
+    logger.info("续期短链 %s 至 %s", link.code, link.expires_at)
+    return link
+
+
 def delete_link(db: Session, code: str) -> None:
     link = get_link_by_code(db, code)
     db.delete(link)

@@ -95,8 +95,30 @@
   </div>
 </section>
 {% if claim %}
-<div class="receipt-tip">
-  <p>这张页面是凭一次性回执打开的。回执丢了就找不回来，但可以用现在这张换一张新的，旧的立刻作废。</p>
+<div class="receipt-tip" id="self-manage" data-code="{{ link.code }}" data-claim="{{ claim }}">
+  <p class="self-title">这条链接是你建的 · 凭回执你可以自己打理它</p>
+  <div class="self-row">
+    <label for="self-title">标题</label>
+    <input id="self-title" type="text" maxlength="255" value="{{ link.title or '' }}" placeholder="留空表示不设标题" />
+  </div>
+  <div class="self-row">
+    <label for="self-target">目标地址</label>
+    <input id="self-target" type="url" value="{{ link.target }}" />
+  </div>
+  <div class="self-actions">
+    <button class="btn primary" id="self-save" type="button">保存修改</button>
+    <select id="self-days" aria-label="续期天数">
+      <option value="7">7 天</option>
+      <option value="30" selected>30 天</option>
+      <option value="90">90 天</option>
+      <option value="365">1 年</option>
+    </select>
+    <button class="btn ghost" id="self-renew" type="button">续期</button>
+    <button class="btn ghost" id="self-toggle" type="button" data-enabled="{{ '1' if link.enabled else '0' }}">{{ '停用' if link.enabled else '重新启用' }}</button>
+    <button class="btn ghost danger" id="self-delete" type="button">删除</button>
+  </div>
+  <p class="status" id="self-status" role="status" aria-live="polite"></p>
+  <p class="hint">这张页面是凭一次性回执打开的。回执丢了就找不回来，但可以用现在这张换一张新的，旧的立刻作废。</p>
   <button class="btn ghost" id="rotate-receipt" type="button" data-code="{{ link.code }}" data-claim="{{ claim }}">换一张回执</button>
   <p class="hint" id="rotate-result" role="status" aria-live="polite"></p>
 </div>
@@ -107,6 +129,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (el && window.SimpleURL?.renderChart) {
     window.SimpleURL.renderChart(el, JSON.parse(el.dataset.daily || '[]'));
   }
+  bindSelfManage();
   const btn = document.getElementById('rotate-receipt');
   if (!btn) return;
   btn.addEventListener('click', async () => {
@@ -124,5 +147,71 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+// 回执自助：改、续、停、删。全部走 /api/links/{code}/self*，服务端只认回执不认人，
+// 所以这里没有「登录」这回事，权限就是手上这张回执。
+function bindSelfManage() {
+  const box = document.getElementById('self-manage');
+  if (!box) return;
+  const code = encodeURIComponent(box.dataset.code);
+  const t = encodeURIComponent(box.dataset.claim);
+  const out = document.getElementById('self-status');
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  const csrf = meta ? meta.content : '';
+  const say = (msg, kind) => { out.textContent = msg; out.className = 'status' + (kind ? ' ' + kind : ''); };
+
+  const call = async (path, method, body) => {
+    // path 里可能自带 query（`/disable?enabled=true`），回执参数接着往后拼
+    const url = `/api/links/${code}/self${path}` + (path.includes('?') ? '&' : '?') + `t=${t}`;
+    const r = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.message || `请求失败（${r.status}）`);
+    return data;
+  };
+
+  const btn = (id) => document.getElementById(id);
+  const guard = (el, fn) => async () => {
+    el.disabled = true;
+    try { await fn(); } catch (err) { say(err.message, 'err'); } finally { el.disabled = false; }
+  };
+
+  btn('self-save').addEventListener('click', guard(btn('self-save'), async () => {
+    say('保存中…');
+    const data = await call('', 'PATCH', {
+      title: btn('self-title').value.trim(),
+      target: btn('self-target').value.trim(),
+    });
+    btn('self-target').value = data.target;
+    say('已保存', 'ok');
+  }));
+
+  btn('self-renew').addEventListener('click', guard(btn('self-renew'), async () => {
+    say('续期中…');
+    const data = await call('/renew', 'POST', { days: Number(btn('self-days').value) || 30, enabled: true });
+    say('已续期到 ' + new Date(data.expires_at).toLocaleString(), 'ok');
+  }));
+
+  const toggle = btn('self-toggle');
+  toggle.addEventListener('click', guard(toggle, async () => {
+    const next = toggle.dataset.enabled !== '1';
+    say(next ? '启用中…' : '停用中…');
+    const data = await call(`/disable?enabled=${next ? 'true' : 'false'}`, 'POST');
+    toggle.dataset.enabled = data.enabled ? '1' : '0';
+    toggle.textContent = data.enabled ? '停用' : '重新启用';
+    say(data.enabled ? '已重新启用' : '已停用：别人现在打不开了，你还能凭回执进来', 'ok');
+  }));
+
+  btn('self-delete').addEventListener('click', guard(btn('self-delete'), async () => {
+    if (!confirm('删除后这条短链接立刻失效，且无法恢复。确定删除？')) return;
+    say('删除中…');
+    await call('', 'DELETE');
+    say('已删除，页面即将关闭', 'ok');
+    setTimeout(() => { location.replace('/'); }, 900);
+  }));
+}
 </script>
 {% endblock %}

@@ -70,10 +70,64 @@ def admin_page(request: Request):
     return HTMLResponse(render("admin.html", request, None))
 
 
+def _owner_claim(request: Request, db: Session, link) -> str | None:
+    """这条链接的创建者手里的回执明文（没有就 None）。
+
+    「链接失效了」这件事对创建者和其他人意义完全不同：别人只是点不开，
+    创建者可以当场修。所以友好页要两副面孔。
+    """
+    from app.core.middleware import CLAIM_COOKIE
+
+    token = request.query_params.get("t") or request.cookies.get(CLAIM_COOKIE) or ""
+    if not token or link is None:
+        return None
+    from app.core.claim import verify
+
+    return token if verify(db, link, token) else None
+
+
 def _gone_page(request: Request, code: str, message: str, detail: str, status_code: int = 404) -> HTMLResponse:
     """统一渲染「链接用不了」页：不裸 JSON，也不给一个像故障的白屏。"""
     return HTMLResponse(
         render("gone.html", request, None, code=code, message=message, detail=detail),
+        status_code=status_code,
+    )
+
+
+def _link_gone(request: Request, db: Session, code: str, message: str, detail: str, status_code: int = 404):
+    """链接用不了时给的那一页。
+
+    创建者（手里有回执）与普通访客看到的不是同一页：前者能当场续期、
+    看到自己那条剩下的账，后者只需要一句「为什么打不开」和一个能走的路。
+    """
+    from app.services import ServiceError
+
+    try:
+        link = get_link_by_code(db, code)
+    except ServiceError:
+        # 「查无此码」是最常见的一种，不该因此退回裸 JSON
+        link = None
+    token = _owner_claim(request, db, link) if link is not None else None
+    if token is None:
+        return _gone_page(request, code, message, detail, status_code=status_code)
+    state = "已过期" if link.is_expired else ("已停用" if not link.enabled else "正常")
+    return HTMLResponse(
+        render(
+            "gone.html",
+            request,
+            db,
+            code=code,
+            message=message,
+            detail=detail,
+            owner=True,
+            claim_token=token,
+            state=state,
+            clicks=link.clicks,
+            expires_at=link.expires_at,
+            target=link.target,
+            action_url=f"/s/{code}?t={token}",
+            action_label="查看这条的统计",
+        ),
         status_code=status_code,
     )
 
@@ -140,17 +194,21 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     # 含 . 的按资源路径处理（sitemap.xml、ads.txt 之类），403 / 404 一律回 404，
     # 别再把人 302 到首页——那看着像「链接坏了但系统还在笑」
     if "." in code:
-        return _gone_page(request, code, "页面不存在", "这里没有你要找的东西。", status_code=404)
+        return _link_gone(request, db, code, "页面不存在", "这里没有你要找的东西。", status_code=404)
     if len(code) > settings.code_max_length or code.lower() in RESERVED_PATHS:
-        raise ServiceError("页面不存在", 404)
+        # 以前这里抛 ServiceError，落到全局处理器上就是一句裸 JSON，
+        # 和「未收录的短码给友好页」两套待遇。保留字只是「这个名字不给用」，路人也该看到同一页。
+        return _link_gone(request, db, code, "页面不存在", "这里没有你要找的东西。", status_code=404)
     if not _check_access(request):
         return _access_denied(request, code)
     try:
         link, target = resolve_redirect(db, code)
     except ServiceError as exc:
-        # 未收录 / 已停用 / 已过期：给一个友好页面，而不是裸 JSON
-        return _gone_page(
+        # 未收录 / 已停用 / 已过期：给一个友好页面，而不是裸 JSON。
+        # 如果来的是创建者本人，页面会多一个「续期并重新启用」的按钮。
+        return _link_gone(
             request,
+            db,
             code,
             exc.message,
             "这个短链接已经不能用了。它可能被删除、被停用，或者到了过期时间。",

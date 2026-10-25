@@ -152,6 +152,21 @@ select option { background: var(--bg-soft); color: var(--text); }
 .result-meta { display: flex; align-items: center; gap: 16px; }
 .result-meta img { border-radius: 10px; background: #fff; padding: 4px; }
 .result-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.result-facts { display: grid; gap: 6px; min-width: 0; }
+/* 结果卡片里的自助区：目标 / 到期两行加三个动作，别让人为了改一个字重开一条 */
+.result-self:not([hidden]) { display: grid; gap: 8px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.result-self[hidden] { display: none; }
+.self-line { display: flex; gap: 10px; align-items: baseline; font-size: 0.8rem; min-width: 0; }
+.self-line .self-k { flex: 0 0 2.6em; color: var(--text-faint); }
+.self-line .self-v { color: var(--text-dim); word-break: break-all; overflow-wrap: anywhere; }
+.result-self .self-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.result-self select {
+  flex: 0 0 auto; width: auto; min-width: 5.5em;
+  padding: 6px 8px; border-radius: 9px; font: inherit; font-size: 0.78rem;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.result-self .status { min-height: 1.1em; font-size: 0.78rem; }
+.result-self .status:empty { display: none; }
 
 /* ============ 链接库 ============ */
 .board { margin-top: 30px; padding: 20px; }
@@ -373,6 +388,30 @@ select option { background: var(--bg-soft); color: var(--text); }
 .gone .lede { max-width: 44ch; }
 .gone .lede { max-width: 42ch; font-size: 0.92rem; }
 .gone .kicker { font-family: var(--mono); letter-spacing: 0.14em; }
+
+/* ============ 失效页上的「创建者自助」面板 ============ */
+/* 路人看到一句解释就够了；创建者需要的是动作，所以这块只对持回执的人渲染 */
+.owner-panel {
+  width: min(100%, 520px); text-align: left; display: grid; gap: 12px;
+  padding: 16px 18px; margin-top: 6px;
+  border: 1px solid rgba(79,140,255,0.28); border-radius: 16px;
+  background: rgba(79,140,255,0.07);
+}
+.owner-title { margin: 0; font-size: 0.86rem; color: var(--text-dim); }
+.owner-state { color: var(--accent); font-weight: 600; margin-left: 4px; }
+.owner-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.owner-facts li { display: flex; gap: 12px; align-items: baseline; font-size: 0.82rem; }
+.owner-facts span { color: var(--text-faint); flex: 0 0 5.2em; }
+.owner-facts b { font-weight: 500; word-break: break-all; overflow-wrap: anywhere; color: var(--text); }
+.owner-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.owner-actions select {
+  flex: 0 0 auto; width: auto; min-width: 6em;
+  padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border); color: var(--text); font: inherit; font-size: 0.85rem;
+}
+.owner-actions .btn { text-decoration: none; }
+.owner-panel .status { min-height: 1.2em; font-size: 0.82rem; }
+.owner-panel .status:empty { display: none; }
 
 /* ============ 创建时间列 ============ */
 .created-cell { font-size: 0.78rem; color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -650,6 +689,22 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   font-size: .86rem; line-height: 1.6;
 }
 .receipt-tip p { margin: 0; color: var(--text-dim); }
+/* 回执自助面板：创建者能改、能续、能停、能删，全在这一个块里完成 */
+.receipt-tip .self-title { color: var(--text); font-weight: 600; font-size: .9rem; }
+.receipt-tip .self-row { display: flex; gap: 10px; align-items: center; width: 100%; flex-wrap: wrap; }
+.receipt-tip .self-row label { flex: 0 0 4.5em; color: var(--text-faint); font-size: .8rem; }
+.receipt-tip .self-row input {
+  flex: 1 1 12em; min-width: 0; padding: 8px 10px; border-radius: 10px; font: inherit; font-size: .84rem;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.receipt-tip .self-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.receipt-tip .self-actions select {
+  flex: 0 0 auto; width: auto; min-width: 6.5em;
+  padding: 8px 10px; border-radius: 10px; font: inherit; font-size: .82rem;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
+}
+.receipt-tip .status { min-height: 1.2em; }
+.receipt-tip .status:empty { display: none; }
 @media (max-width: 560px) {
   .qr-block { justify-items: start; }
   .chart-table ul { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }

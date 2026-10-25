@@ -8,11 +8,66 @@
   {% if detail is defined and detail %}
   <p class="lede">{{ detail }}</p>
   {% endif %}
+  {% if owner %}
+  {# 创建者和路人看到的不是一件事：路人是「打不开了」，创建者是「你还有得救」 #}
+  <div class="owner-panel" id="owner-panel" data-code="{{ code }}" data-claim="{{ claim_token }}">
+    <p class="owner-title">这是你自己建的链接 · 当前<span class="owner-state">{{ state }}</span></p>
+    <ul class="owner-facts">
+      <li><span>目标地址</span><b>{{ target }}</b></li>
+      <li><span>累计点击</span><b>{{ clicks }}</b></li>
+      <li><span>到期时间</span><b>{{ expires_at | fmt_local if expires_at else '未设置' }}</b></li>
+    </ul>
+    <div class="owner-actions">
+      <button class="btn primary" type="button" id="owner-renew">续期并重新启用</button>
+      <select id="owner-days" aria-label="续期天数">
+        <option value="7">7 天</option>
+        <option value="30" selected>30 天</option>
+        <option value="90">90 天</option>
+        <option value="365">1 年</option>
+      </select>
+      <a class="btn ghost" href="/s/{{ code }}?t={{ claim_token }}">看统计</a>
+    </div>
+    <p class="status" id="owner-status" role="status" aria-live="polite"></p>
+  </div>
+  {% endif %}
   <div class="gone-actions">
-    {% if action_url is defined and action_url %}
+    {% if action_url is defined and action_url and not owner %}
     <a class="btn ghost" href="{{ action_url }}">{{ action_label or '继续' }}</a>
     {% endif %}
     <a class="btn primary" href="/">回到首页</a>
   </div>
 </section>
+{% if owner %}
+<script nonce="{{ csp_nonce(request) }}">
+// 链接失效页上的续期。写请求要带 CSRF 令牌，所以从 cookie 里读回来（同站、非 HttpOnly 的那份）
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('owner-renew');
+  if (!btn) return;
+  const panel = document.getElementById('owner-panel');
+  const out = document.getElementById('owner-status');
+  const days = document.getElementById('owner-days');
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  const csrf = meta ? meta.content : '';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    out.textContent = '正在续期…';
+    try {
+      const r = await fetch(`/api/links/${encodeURIComponent(panel.dataset.code)}/self/renew?t=${encodeURIComponent(panel.dataset.claim)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify({ days: Number(days.value) || 30, enabled: true }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.message || `续期失败（${r.status}）`);
+      out.textContent = '已续期，正在打开…';
+      // 续期完直接把人送到目标地址：他要的本来就是打开这个链接
+      location.replace(`/${encodeURIComponent(panel.dataset.code)}`);
+    } catch (err) {
+      btn.disabled = false;
+      out.textContent = err.message;
+    }
+  });
+});
+</script>
+{% endif %}
 {% endblock %}
