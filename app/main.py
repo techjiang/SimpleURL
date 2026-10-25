@@ -7,7 +7,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI, Request, status
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -20,7 +20,7 @@ from app.core.db import init_db
 from app.core.middleware import AccessTokenCookieMiddleware, CSRFProtectMiddleware, SecurityHeadersMiddleware
 from app.pages import router as pages_router
 from app.services import ServiceError
-from app.web import templates
+from app.web import render
 from app.yourls_api import install as install_yourls_mw
 from app.yourls_api import router as yourls_router
 
@@ -103,8 +103,12 @@ root_router = APIRouter(include_in_schema=False)
 
 @root_router.api_route("/", methods=["GET", "HEAD"])
 def index(request: Request):
-    # csrf_token / csp_nonce 由模板全局函数提供，这里不用显式传
-    return templates.TemplateResponse(request, "index.html")
+    # csrf_token / csp_nonce 由模板全局函数提供；站点名称 / 自述走后端覆盖值
+    from app.core.db import session_scope
+
+    with session_scope() as db:
+        html = render("index.html", request, db)
+    return HTMLResponse(html)
 
 
 @root_router.api_route("/favicon.ico", methods=["GET", "HEAD"])

@@ -185,6 +185,17 @@ select option { background: var(--bg-soft); color: var(--text); }
 .target-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .clicks-cell { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
 .title-cell { display: block; font-size: 0.78rem; color: var(--text-faint); margin-top: 2px; }
+/* 标题来源小标签：抓取 / 兜底 / 手填，后台一眼分清 */
+.ref-list .silent-note { align-items: flex-start; opacity: 0.85; }
+.ref-list .silent-note span { font-size: 0.76rem; line-height: 1.5; }
+.src-pill {
+  display: inline-block; font-size: 0.66rem; padding: 1px 6px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.14); color: var(--text-dim); margin-bottom: 2px;
+  white-space: nowrap;
+}
+.title-src { max-width: 220px; }
+.title-src .title-cell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title-source { margin: 0 0 6px; font-size: 0.76rem; }
 .tag-pill {
   display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px;
   background: rgba(123,92,255,0.16); color: #c4b5fd; margin: 1px 3px 1px 0;
@@ -478,16 +489,28 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   /* 一行：短码 · 状态；过期紧随其后；目标独占一行；操作按钮铺满最后一行 */
   .table td[data-label="短码"] { order: 1; flex: 1 1 auto; min-width: 0; font-size: 1rem; }
   .table td[data-label="状态"] { order: 2; flex: none; text-align: right; }
+  /* 有标题时不换行，让「/abc 标题」读起来是一句话 */
   /* 过期信息挂在标题下滑一行：窄屏没有表头，光一个「永久」「还剩 5 天」
      读起来不知道在说哪件事 */
   .table td[data-label="过期"] { order: 1; flex: 1 1 100%; min-width: 0; font-size: 0.76rem; line-height: 1.4; }
   .table td[data-label="过期"] .exp-soon, .table td[data-label="过期"] .hint { display: inline; }
   .table td[data-label="过期"] .exp-date { display: inline; margin-left: 6px; }
-  .table td[data-label="目标"] { order: 3; flex: 1 1 100%; min-width: 0; }
+  .table td[data-label="目标"] { order: 3; flex: 1 1 100%; width: 100%; min-width: 0; }
   .target-cell { max-width: none; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
   .table td[data-label="标签"] { order: 4; flex: 1 1 100%; }
+  /* 标题在卡片里已经跟在短码下面了，来源小标签别再多占一行 */
+  .table td.title-src { order: 5; flex: 1 1 100%; max-width: none; font-size: 0.72rem; }
+  .table td.title-src .title-cell { display: none; }
+  /* 卡片是 flex-wrap 容器，顺序由 order 决定。目标列只要不是 100%，
+     它就能和后面的按钮挤进同一行——短 URL 上按钮直接贴到地址右边，
+     长短不一，看着像列表坏了。这里：
+
+     - 目标列弹性生长，但给一个足够大的 flex-basis，保证单独成行
+     - 状态徽标紧跟短码（order 2），不再被目标列顶到下一行
+     - 操作列单独一行，按钮平均分宽度 */
+  .table td[data-label="状态"] { order: 2; flex: 0 0 auto; text-align: left; align-self: center; }
   .table td[data-label="操作"] {
-    order: 5; flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px;
+    order: 6; flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px;
     padding-top: 8px; margin-top: 2px; border-top: 1px solid rgba(255,255,255,0.06);
   }
   .table td[data-label="操作"] .btn { flex: 1 1 auto; padding: 6px 12px; text-align: center; }

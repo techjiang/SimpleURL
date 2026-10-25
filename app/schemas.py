@@ -35,6 +35,8 @@ class LinkCreate(BaseModel):
     note: Optional[str] = Field(None, max_length=1000)
     tags: Optional[list[str] | str] = Field(default=None)
     expires_at: Optional[dt.datetime] = None
+    # 传 false 表示这次跳过自动取标题（批量导入、脚本里不想等出网时用）
+    fetch_title: Optional[bool] = Field(None, description="本次是否自动获取标题，留空按站点设置")
 
     @field_validator("target")
     @classmethod
@@ -115,6 +117,8 @@ class LinkOut(BaseModel):
     updated_at: Optional[dt.datetime] = None
     short_url: str = ""
     expired: bool = False
+    # 标题来源：fetched 抓回来的、fallback URL 兜底、off 没开或没填
+    title_source: Optional[str] = None
     # 创建者手里的一次性回执：凭它回看这一条（仅创建响应里返回一次）
     claim_token: Optional[str] = None
     stats_url: Optional[str] = None
@@ -138,6 +142,8 @@ class StatsOut(BaseModel):
     devices: list[dict] = Field(default_factory=list)
     platforms: list[dict] = Field(default_factory=list)
     blocked: int = 0
+    # 其中属于「放行不计数」的部分（用户其实打开了页面）
+    silent: int = 0
 
 
 class MessageOut(BaseModel):
@@ -163,6 +169,7 @@ class SettingsOut(BaseModel):
     access_mode_label: str = "开放外部可使用"
     access_locked: bool = False
     announcement: str = ""
+    site_tagline: str = ""
     # 社交平台防洪
     social_guard: bool = True
     social_block_hint: str = ""
@@ -180,6 +187,7 @@ class SettingsUpdate(BaseModel):
     code_length: Optional[int] = None
     access_mode: Optional[str] = None
     announcement: Optional[str] = Field(None, max_length=280)
+    site_tagline: Optional[str] = Field(None, max_length=120)
     social_guard: Optional[bool] = None
     social_block_hint: Optional[str] = None
     social_tag_qq: Optional[bool] = None

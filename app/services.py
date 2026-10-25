@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
 from app.core.settings_store import code_length_value, effective
-from app.core.titles import guess_title
+from app.core.titles import resolve_title
 from app.core.timeutil import ensure_aware, utcnow
 from app.models import ClickEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
@@ -99,9 +99,16 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
     except IntegrityError as exc:
         db.rollback()
         raise ServiceError("该短码已被占用，换一个试试", 409) from exc
-    if not link.title and effective(db, "fetch_title"):
-        # 拿不到就留空，绝不让标题获取拖垮创建
-        link.title = guess_title(link.target)
+
+    # 标题：用户填了就尊重用户的；没填才去抓，抓不到用 URL 兜底。
+    # 开关既认后台配置，也认这次请求自带的 fetch_title（导入脚本常常不想等）。
+    if not link.title:
+        enabled = payload.fetch_title if payload.fetch_title is not None else bool(effective(db, "fetch_title"))
+        title, source = resolve_title(link.target, enabled, timeout=settings.fetch_title_timeout)
+        link.title = title
+        link.title_source = source
+    elif payload.title:
+        link.title_source = "manual"
     logger.info("创建短链 %s -> %s", link.code, link.target)
     return link
 
@@ -177,6 +184,30 @@ def list_links(
     return total, items
 
 
+def list_tags(db: Session, limit: int = 60) -> list[dict]:
+    """库里真实存在的标签，按出现次数排序。
+
+    标签一直是「存得进去、筛不出来」：前台没有筛选入口，后台的下拉框写死了
+    几个固定选项。要从 JSON 数组字符串里数，只能在应用层做一次聚合——
+    链接量级是几千条，比给标签单开一张多对多表划算得多。
+    """
+    rows = db.execute(select(Link.tags).where(Link.tags.is_not(None), Link.tags != "")).scalars().all()
+    counter: dict[str, int] = {}
+    for raw in rows:
+        try:
+            items = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            name = str(item).strip()
+            if name:
+                counter[name] = counter.get(name, 0) + 1
+    ordered = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0].lower()))
+    return [{"tag": name, "count": count} for name, count in ordered[:limit]]
+
+
 def all_links_for_export(
     db: Session,
     q: str | None = None,
@@ -203,6 +234,8 @@ def update_link(db: Session, code: str, payload: LinkUpdate) -> Link:
 
     for key, value in data.items():
         setattr(link, key, value)
+    if "title" in data:
+        link.title_source = "manual" if data["title"] else None
     db.flush()
     logger.info("更新短链 %s", link.code)
     return link
@@ -218,11 +251,28 @@ def delete_link(db: Session, code: str) -> None:
 BULK_ACTIONS = ("enable", "disable", "delete")
 
 
+def _bulk_code(raw: object) -> str:
+    """把界面上可能抄进来的各种写法收敛成纯短码。
+
+    列表里显示的是 `/abc`，接口文档里的示例是完整的 `https://host/abc`，
+    勾选后原样提交回来就成了「找不到这条链接」——批量操作静默失效，
+    比报错更难受。这里统一去掉协议 + 主机 + 前导斜杠。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if "://" in text:
+        text = text.split("://", 1)[1]
+        text = text.split("/", 1)[1] if "/" in text else ""
+    return normalize_code(text.lstrip("/"))
+
+
 def bulk_update(db: Session, codes: list[str], action: str) -> dict:
     """批量启用 / 停用 / 删除。不存在的短码跳过，不让一条脏码毁掉整批。"""
     if action not in BULK_ACTIONS:
         raise ServiceError("不支持的操作", 422)
-    wanted = [normalize_code(c) for c in codes if normalize_code(c)]
+    wanted = [_bulk_code(c) for c in codes]
+    wanted = [c for c in wanted if c]
     if not wanted:
         raise ServiceError("没有要处理的短码", 422)
     if len(wanted) > 500:
@@ -372,6 +422,15 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     blocked_count = db.execute(
         select(func.count(ClickEvent.id)).where(ClickEvent.link_id == link.id, ClickEvent.blocked.is_(True))
     ).scalar_one()
+    # 「放行不计数」与「真被拦下」在库里都标 blocked，但对使用的人是两件事：
+    # 前者用户其实打开了页面。拆开报，别让人以为微信那 27 次访问全被拒了。
+    silent_count = db.execute(
+        select(func.count(ClickEvent.id)).where(
+            ClickEvent.link_id == link.id,
+            ClickEvent.blocked.is_(True),
+            ClickEvent.platform.is_not(None),
+        )
+    ).scalar_one()
 
     unique = db.execute(
         select(func.count(func.distinct(ClickEvent.ip_hash))).where(
@@ -396,6 +455,7 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         "devices": devices,
         "platforms": platforms,
         "blocked": int(blocked_count or 0),
+        "silent": int(silent_count or 0),
     }
 
 
@@ -496,8 +556,42 @@ def runtime_status(db: Session) -> dict:
         "dropped_clicks": click_buffer.dropped(),
         "expiring_links": expiring,
         "retention_days": CLICK_EVENT_RETENTION_DAYS,
-        "warnings": access_warnings(),
+        "title_sources": title_source_stats(db),
+        "warnings": access_warnings() + title_warnings(db),
     }
+
+
+def title_source_stats(db: Session) -> dict:
+    """标题来源分布：抓取成功多少、兜底多少、手填多少。
+
+    「自动取标题」这个开关以前从没真发过请求，界面上拨来拨去都没区别，
+    谁都发现不了。有了这组数字，抓取占比长期是 0 就等于当场报警。
+    """
+    rows = db.execute(
+        select(Link.title_source, func.count(Link.id)).group_by(Link.title_source)
+    ).all()
+    out = {"fetched": 0, "fallback": 0, "manual": 0, "off": 0, "unknown": 0}
+    for key, count in rows:
+        out[key if key in out else "unknown"] += int(count)
+    return out
+
+
+def title_warnings(db: Session) -> list[dict]:
+    """自动取标题开着，却一条都没抓到时，直接说清楚。"""
+    if not effective(db, "fetch_title"):
+        return []
+    stats = title_source_stats(db)
+    if stats["fallback"] + stats["fetched"] < 3:
+        return []
+    if stats["fetched"] > 0:
+        return []
+    return [
+        {
+            "level": "warn",
+            "text": "自动取标题已开启，但没有一条抓到真实标题（全部走了 URL 兜底）。"
+            "多半是这台机器出不了网，或被 SSRF 解析检查挡住了。",
+        }
+    ]
 
 
 def prune_click_events(db: Session, days: int = CLICK_EVENT_RETENTION_DAYS) -> int:

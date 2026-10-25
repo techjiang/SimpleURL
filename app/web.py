@@ -10,7 +10,6 @@ from app.core.csrf import current_token
 from app.core.timeutil import ensure_aware, fmt_local, iso, local_naive
 
 templates = Jinja2Templates(directory=str(settings.templates_dir))
-templates.env.globals.update(site_name=settings.site_name, site_tagline=settings.site_tagline)
 
 
 def _csrf_token(request) -> str:
@@ -35,13 +34,34 @@ def _local_input(value) -> str:
     return naive.strftime("%Y-%m-%dT%H:%M") if naive else ""
 
 
-def render_stats(request: Request, link, data: dict) -> str:
+def branding(db=None) -> dict[str, str]:
+    """站点名称与自述：数据库里的覆盖优先，环境变量只是出厂默认。
+
+    原来模板全局只绑了环境变量，后台「设置 → 站点名称」改完存进库、
+    接口也读得到，页面标题和页脚却纹丝不动——看着像保存失败。
+    """
+    from app.core.settings_store import effective
+
+    site_name = str(effective(db, "site_name") or settings.site_name or "SimpleURL").strip()
+    tagline = str(effective(db, "site_tagline") or settings.site_tagline or "").strip()
+    return {"site_name": site_name or "SimpleURL", "site_tagline": tagline}
+
+
+def render(template: str, request: Request, db=None, **context) -> str:
+    """统一渲染入口：顺手把品牌信息塞进去。"""
+    ctx = {**branding(db), **context}
+    return templates.get_template(template).render(request=request, **ctx)
+
+
+def render_stats(request: Request, link, data: dict, db=None) -> str:
     base = str(request.base_url).rstrip("/")
     # 二维码也要带同一张通行证，否则统计页上那张图会 401
     claim = request.query_params.get("t") or ""
     qr_src = f"{base}/api/qr/{link.code}" + (f"?t={claim}" if claim else "")
-    return templates.get_template("stats.html").render(
-        request=request,
+    return render(
+        "stats.html",
+        request,
+        db,
         link=link,
         data=data,
         short_url=base + "/" + link.code,

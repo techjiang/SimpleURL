@@ -34,15 +34,41 @@ _SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Cross-Origin-Opener-Policy": "same-origin",
+    # 资源侧单独判断，见 static_headers()
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
     # 浏览器内置 XSS 过滤器反而可能被利用，直接关掉
     "X-XSS-Protection": "0",
 }
 
+# 允许被外站直接引用的站内资源：二维码、图标、样式表、脚本。
+# 短链站的日常就是「把东西贴到别人的页面里」——微信 / QQ / Slack 抓预览
+# 卡片、博客里嵌统计页的二维码，走的是 <img> 而不是导航请求。
+# 统一按 same-origin 封掉的话，这些图全部变成裂图，而浏览器只在控制台
+# 打一行 CORP 报错，从页面上看不出任何原因。
+_ASSET_PREFIXES = ("/static/",)
+_ASSET_EXACT = (
+    "/favicon.ico",
+    "/apple-touch-icon.png",
+    "/apple-touch-icon-precomposed.png",
+    "/api/qr/",
+)
 
-def security_headers(csp: str | None = None) -> dict[str, str]:
+
+def is_embeddable_asset(path: str) -> bool:
+    return path.startswith(_ASSET_PREFIXES) or path.startswith(_ASSET_EXACT)
+
+
+def security_headers(csp: str | None = None, path: str = "") -> dict[str, str]:
+    from app.core.config import settings
+
     headers = dict(_SECURITY_HEADERS)
+    if settings.static_cross_origin and is_embeddable_asset(path):
+        # 只放开「能不能被别站引用」，不放 frame-ancestors，也不碰页面本身
+        headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+        # 顺带允许媒体/脚本跨域读取所需的 CORS 头，图标这种资源浏览器不校验，
+        # 但 Canvas 里画二维码（导出分享图）需要。
+        headers["Access-Control-Allow-Origin"] = "*"
     if csp:
         headers["Content-Security-Policy"] = csp
     return headers
@@ -98,7 +124,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         csp = None
         if response.headers.get("content-type", "").startswith("text/html"):
             csp = content_security_policy(request.state.csp_nonce)
-        for key, value in security_headers(csp).items():
+        for key, value in security_headers(csp, request.url.path).items():
             response.headers[key] = value
 
         if _cookie_token(request) != token:

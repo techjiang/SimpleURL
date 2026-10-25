@@ -21,6 +21,7 @@ from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
 from app.services import (
     ServiceError,
     all_links_for_export,
+    list_tags,
     bulk_update,
     create_link,
     delete_link,
@@ -103,6 +104,19 @@ def api_list_links(
     return LinkListOut(
         total=total, page=page, page_size=page_size, items=[_serialize(item, request) for item in items]
     )
+
+
+@router.get("/tags", summary="标签列表")
+def api_tags(request: Request, db: Session = Depends(get_db)):
+    """供前后台的标签筛选下拉使用。
+
+    标签本身不含隐私（不给目标地址、不给点击数），所以访客也读得到；
+    但要先过访问令牌那道门，站点设了门禁就别绕过它。
+    """
+    check_api_key(request, db)
+    if not _access_granted(request):
+        raise ServiceError("访问受限：请先输入访问令牌", 403)
+    return {"items": list_tags(db)}
 
 
 @router.get("/links/export", summary="导出 CSV")

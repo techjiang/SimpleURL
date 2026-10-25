@@ -17,7 +17,7 @@ from app.core.db import get_db
 from app.core.middleware import ACCESS_COOKIE
 from app.core.security import client_ip
 from app.services import ServiceError, get_link_by_code, get_stats, record_click, resolve_redirect
-from app.web import render_stats, templates
+from app.web import render, render_stats
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(tags=["pages"])
@@ -52,8 +52,10 @@ def _check_access(request: Request) -> bool:
 
 def _access_denied(request: Request, code: str) -> HTMLResponse:
     return HTMLResponse(
-        templates.get_template("gone.html").render(
-            request=request,
+        render(
+            "gone.html",
+            request,
+            None,
             code=code,
             message="访问受限：请携带正确的访问令牌",
             detail="这个站点开了访问令牌保护，链接里带上 ?token=你的令牌 就能打开。",
@@ -65,15 +67,13 @@ def _access_denied(request: Request, code: str) -> HTMLResponse:
 @router.get("/admin", response_class=HTMLResponse, summary="管理后台")
 def admin_page(request: Request):
     """后台页本身不卡登录，前端按 /api/admin/session 结果自行弹登录框。"""
-    return HTMLResponse(templates.get_template("admin.html").render(request=request))
+    return HTMLResponse(render("admin.html", request, None))
 
 
 def _gone_page(request: Request, code: str, message: str, detail: str, status_code: int = 404) -> HTMLResponse:
     """统一渲染「链接用不了」页：不裸 JSON，也不给一个像故障的白屏。"""
     return HTMLResponse(
-        templates.get_template("gone.html").render(
-            request=request, code=code, message=message, detail=detail
-        ),
+        render("gone.html", request, None, code=code, message=message, detail=detail),
         status_code=status_code,
     )
 
@@ -159,8 +159,10 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         record_click(db, link, referrer=referrer, ua=ua, ip=ip, blocked=True, snapshot=snap)
         db.commit()
         return HTMLResponse(
-            templates.get_template("wxblock.html").render(
-                request=request,
+            render(
+                "wxblock.html",
+                request,
+                db,
                 code=code,
                 platform=social.label(blocked_platform),
                 notice=guard.platform_notice(db),
@@ -172,8 +174,10 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     allowed, reason = guard.check_redirect_quota(db, ip, snap)
     if not allowed:
         return HTMLResponse(
-            templates.get_template("gone.html").render(
-                request=request,
+            render(
+                "gone.html",
+                request,
+                db,
                 code=code,
                 message=reason,
                 detail="这是防洪限速在起作用，不是链接本身出了问题，稍等一会儿再试就好。",
@@ -202,8 +206,10 @@ def stats_page(code: str, request: Request, db: Session = Depends(get_db)):
             message = "统计页仅管理员可见"
             detail = "创建链接时会给你一条带领取码的回执链接，凭它查看自己那条的统计。"
         return HTMLResponse(
-            templates.get_template("gone.html").render(
-                request=request,
+            render(
+                "gone.html",
+                request,
+                db,
                 code=code,
                 message=message,
                 detail=detail,
@@ -213,4 +219,4 @@ def stats_page(code: str, request: Request, db: Session = Depends(get_db)):
             status_code=401,
         )
     data = get_stats(db, code, days=30)
-    return HTMLResponse(render_stats(request, link, data))
+    return HTMLResponse(render_stats(request, link, data, db))

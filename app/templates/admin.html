@@ -64,11 +64,15 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21 21l-4.3-4.3M17 10a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
             <input id="admin-search" type="search" placeholder="搜索短码 / 目标 / 标题" />
           </div>
+          <select id="admin-tag" aria-label="标签筛选">
+            <option value="">全部标签</option>
+          </select>
           <select id="admin-status" aria-label="状态筛选">
             <option value="">全部状态</option>
             <option value="enabled">已启用</option>
             <option value="disabled">已停用</option>
             <option value="expired">已过期</option>
+            <option value="expiring">即将过期（7 天内）</option>
           </select>
         </div>
       </div>
@@ -84,7 +88,7 @@
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="admin-check-all" aria-label="全选本页" /></th>
-              <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>状态</th><th>操作</th>
+              <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>状态</th><th>标题</th><th>操作</th>
             </tr>
           </thead>
           <tbody id="admin-links-body"></tbody>
@@ -268,6 +272,10 @@
           <input id="set-require-key" type="checkbox" />
           <span>要求 API 请求携带密钥</span>
         </label>
+        <div class="field">
+          <label for="set-tagline">页脚自述 <span class="hint">留空则不显示</span></label>
+          <input id="set-tagline" type="text" maxlength="120" placeholder="数据可自托管，隐私尽在掌握" />
+        </div>
         <div class="field">
           <label for="set-announcement">站点公告 <span class="hint">显示在首页顶部，留空不显示</span></label>
           <input id="set-announcement" type="text" maxlength="280" placeholder="比如：本周六 02:00 例行维护" />

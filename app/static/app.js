@@ -183,6 +183,7 @@
         setStatus('创建成功', 'ok');
         form.reset();
         loadSummary();
+        loadTags();
         loadLinks();
       } catch (err) {
         setStatus(err.message, 'err');
@@ -212,6 +213,18 @@
         rl.href = link.stats_url;
         rl.textContent = link.stats_url;
       }
+    }
+    const titleHint = $('#result-title-hint');
+    if (titleHint) {
+      const map = {
+        fetched: '标题已自动抓取',
+        fallback: '目标页抓不到标题，已用地址兜底',
+        manual: '标题按你填的来',
+        off: '未开启自动取标题',
+      };
+      const text = map[link.title_source] || '';
+      titleHint.textContent = link.title ? text : '';
+      titleHint.hidden = !text;
     }
     $('#result-tags').innerHTML = (link.tags || [])
       .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
@@ -378,6 +391,26 @@
     }
   }
 
+  /* 标签筛选下拉：选项来自库里的真实标签，不再写死几个假选项 */
+  async function loadTags() {
+    const sel = $('#tag-filter');
+    if (!sel) return;
+    try {
+      const data = await withToken('/api/tags');
+      const items = data.items || [];
+      const current = state.tag;
+      sel.innerHTML = '<option value="">全部标签</option>' + items
+        .map((t) => `<option value="${escapeHtml(t.tag)}">${escapeHtml(t.tag)}（${t.count}）</option>`)
+        .join('');
+      // 刷新后把选中的标签还原，别让筛选条件在翻页/重载时丢掉
+      sel.value = current;
+      if (sel.value !== current) { sel.value = ''; state.tag = ''; }
+      sel.disabled = false;
+    } catch (_) {
+      sel.innerHTML = '<option value="">全部标签</option>';
+    }
+  }
+
   function bindBoard() {
     const body = $('#links-body');
     if (!body) return;
@@ -386,6 +419,8 @@
       clearTimeout(t);
       t = setTimeout(() => { state.q = e.target.value.trim(); state.page = 1; loadLinks(); }, 260);
     });
+    const tagSel = $('#tag-filter');
+    if (tagSel) tagSel.addEventListener('change', (e) => { state.tag = e.target.value; state.page = 1; loadLinks(); });
     $('#status-filter').addEventListener('change', (e) => { state.status = e.target.value; state.page = 1; loadLinks(); });
     $('#sort-select').addEventListener('change', (e) => { state.sort = e.target.value; state.page = 1; loadLinks(); });
     $('#page-size').addEventListener('change', (e) => {
@@ -536,7 +571,7 @@
       showGate();
       return;
     }
-    loadSummary(); loadLinks();
+    loadSummary(); loadTags(); loadLinks();
   });
 
   window.SimpleURL = { renderChart };

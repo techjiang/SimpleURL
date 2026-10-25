@@ -33,6 +33,10 @@ class Link(Base):
     # 一次性领取码的哈希：开放模式下访客凭它回看自己建的那条链接
     claim_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
+    # 标题来源：fetched 抓回来的 / fallback URL 兜底 / manual 人工填的
+    # 分不清这三者，后台就没法回答「自动取标题到底有没有在工作」
+    title_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
@@ -71,6 +75,7 @@ class Link(Base):
             "enabled": self.enabled,
             "expires_at": iso(self.expires_at),
             "expired": self.is_expired,
+            "title_source": self.title_source,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
         }

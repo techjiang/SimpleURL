@@ -87,7 +87,7 @@
         p.classList.toggle('active', p.dataset.panel === btn.dataset.tab);
       });
       if (btn.dataset.tab === 'dash') loadDashboard();
-      if (btn.dataset.tab === 'links') loadAdminLinks();
+      if (btn.dataset.tab === 'links') { loadAdminTags(); loadAdminLinks(); }
       if (btn.dataset.tab === 'keys') loadKeys();
       if (btn.dataset.tab === 'guard') loadGuard();
       if (btn.dataset.tab === 'audit') loadAudit();
@@ -153,9 +153,23 @@
   }
 
   /* ---------- 链接管理 ---------- */
-  const lstate = { page: 1, size: 10, q: '', status: '', total: 0 };
+  const lstate = { page: 1, size: 10, q: '', status: '', tag: '', total: 0 };
   // 跨页保留勾选：翻页回来还得记得刚才选了谁
   const picked = new Set();
+
+  /* 标题来源：一眼看出这条标题是抓来的、URL 拼的，还是人工填的 */
+  function titleSourceCell(l) {
+    if (!l.title) return '<span class="hint">—</span>';
+    const map = {
+      fetched: ['抓取', '已从目标页取回真实标题'],
+      fallback: ['兜底', '目标页没取到标题，用地址最后一段拼的'],
+      manual: ['手填', '人工填写的标题'],
+      off: ['未抓取', '创建时自动取标题是关闭的'],
+    };
+    const [label, tip] = map[l.title_source] || ['—', ''];
+    return `<span class="src-pill" title="${escapeHtml(tip)}">${label}</span>`
+      + `<span class="title-cell">${escapeHtml(l.title)}</span>`;
+  }
 
   function syncBulkBar() {
     const bar = $('#admin-bulk');
@@ -164,10 +178,26 @@
     $('#admin-bulk-count').textContent = `已选 ${picked.size} 条`;
   }
 
+  /* 标签下拉：选项从库里真实标签来，原来写死几个选项等于没得选 */
+  async function loadAdminTags() {
+    const sel = $('#admin-tag');
+    if (!sel) return;
+    try {
+      const data = await api('/api/tags');
+      const items = data.items || [];
+      sel.innerHTML = '<option value="">全部标签</option>' + items
+        .map((t) => `<option value="${escapeHtml(t.tag)}">${escapeHtml(t.tag)}（${t.count}）</option>`)
+        .join('');
+      sel.value = lstate.tag;
+      if (sel.value !== lstate.tag) { sel.value = ''; lstate.tag = ''; }
+    } catch (_) { /* 标签拉不到不影响主列表 */ }
+  }
+
   async function loadAdminLinks() {
     const params = new URLSearchParams({ page: lstate.page, page_size: lstate.size });
     if (lstate.q) params.set('q', lstate.q);
     if (lstate.status) params.set('status', lstate.status);
+    if (lstate.tag) params.set('tag', lstate.tag);
     try {
       const data = await api('/api/links?' + params.toString());
       lstate.total = data.total;
@@ -179,6 +209,7 @@
         <td class="target-cell" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
         <td class="clicks-cell">${l.clicks}</td>
         <td>${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
+        <td class="title-src">${titleSourceCell(l)}</td>
         <td>
           <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(l.code)}">${l.enabled ? '停用' : '启用'}</button>
           <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(l.code)}">删除</button>
@@ -205,6 +236,7 @@
       const r = await post('/api/links/bulk', { action, codes: [...picked] });
       toast(r.message || `已${label} ${r.affected} 条`);
       picked.clear();
+      loadAdminTags();
       loadAdminLinks();
     } catch (err) { toast(err.message); }
   }
@@ -218,6 +250,8 @@
       t = setTimeout(() => { lstate.q = e.target.value.trim(); lstate.page = 1; loadAdminLinks(); }, 260);
     });
     $('#admin-status').addEventListener('change', (e) => { lstate.status = e.target.value; lstate.page = 1; loadAdminLinks(); });
+    const tagSel = $('#admin-tag');
+    if (tagSel) tagSel.addEventListener('change', (e) => { lstate.tag = e.target.value; lstate.page = 1; loadAdminLinks(); });
     $('#admin-prev').addEventListener('click', () => { if (lstate.page > 1) { lstate.page -= 1; loadAdminLinks(); } });
     $('#admin-next').addEventListener('click', () => { lstate.page += 1; loadAdminLinks(); });
 
@@ -492,6 +526,8 @@
     try {
       const s = await api('/api/admin/settings');
       $('#set-site').value = s.site_name;
+      const tagline = $('#set-tagline');
+      if (tagline) tagline.value = s.site_tagline || '';
       $('#set-create').value = s.create_daily_limit;
       $('#set-code-length').value = s.code_length;
       $('#set-fetch').checked = !!s.fetch_title;
@@ -530,6 +566,7 @@
           require_api_key: $('#set-require-key').checked,
           access_mode: $('#set-access-mode').value,
           announcement: ($('#set-announcement').value || '').trim(),
+          site_tagline: (($('#set-tagline') || {}).value || '').trim(),
         });
         setStatus('#settings-status', '已保存', 'ok');
         toast('设置已保存');
@@ -565,6 +602,7 @@
   async function loadStatus() {
     try {
       const s = await api('/api/admin/runtime');
+      const ts = s.title_sources || {};
       const rows = [
         ['链接总数', s.links],
         ['点击明细', s.click_events],
@@ -572,6 +610,9 @@
         ['待结算点击', s.pending_clicks],
         ['因超限丢弃', s.dropped_clicks],
         ['7 天内到期', s.expiring_links],
+        ['标题 · 抓取成功', ts.fetched || 0],
+        ['标题 · URL 兜底', ts.fallback || 0],
+        ['标题 · 人工填写', ts.manual || 0],
       ];
       $('#status-list').innerHTML = rows
         .map(([k, v]) => `<li><span>${k}</span><b>${escapeHtml(String(v))}</b></li>`)

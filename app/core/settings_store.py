@@ -22,6 +22,7 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "access_mode": ("open", "访问模式：open 开放外部可使用，admin 仅管理员可使用"),
     "announcement": ("", "站点公告，显示在首页顶部；留空不显示"),
     "code_length": (4, "自动生成短码的长度（3~16）"),
+    "site_tagline": ("数据可自托管，隐私尽在掌握", "页脚自述"),
     # ---------- 社交平台防洪 ----------
     "social_guard": (True, "社交平台防洪总开关（微信 / QQ 等）"),
     "social_block_hint": (

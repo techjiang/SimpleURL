@@ -42,7 +42,16 @@
       <li><span class="hint">还没有数据</span><b>0</b></li>
       {% endfor %}
       {% if data.blocked %}
-      <li><span><i class="plat-dot" data-plat="blocked"></i>被防洪拦截</span><b>{{ data.blocked }}</b></li>
+      <li>
+        <span><i class="plat-dot" data-plat="blocked"></i>未计入点击</span>
+        <b>{{ data.blocked }}</b>
+      </li>
+      {% if data.silent %}
+      <li class="silent-note">
+        <span class="hint">其中 {{ data.silent }} 次是「放行不计数」——页面其实打开了，只是没算进点击数</span>
+        <b></b>
+      </li>
+      {% endif %}
       {% endif %}
     </ul>
   </div>

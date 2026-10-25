@@ -126,6 +126,12 @@ class Settings:
         # 点击明细保留天数：只控明细，累计点击数不动。0 表示永不清理
         self.retention_days: int = max(0, min(3650, _as_int("CLICK_EVENT_RETENTION_DAYS", 365)))
 
+        # ---------- 外部资源 ----------
+        # 页面上的站内资源允许被外站嵌入：短链站的核心用途就是「贴到别处」，
+        # 微信 / QQ / Slack 抓预览卡片时用的就是这条。
+        # 默认 same-origin 的结果是二维码在微信里打不开、预览一片空白。
+        self.static_cross_origin: bool = _as_bool("STATIC_CROSS_ORIGIN", True)
+
         # ---------- 自动获取标题 ----------
         self.fetch_title: bool = _as_bool("FETCH_TITLE", True)
         self.fetch_title_timeout: int = max(1, min(30, _as_int("FETCH_TITLE_TIMEOUT", 5)))

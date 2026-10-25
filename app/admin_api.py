@@ -227,6 +227,7 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
         access_mode_label=access.LABELS.get(access.current_mode(db), ""),
         access_locked=access.is_admin_mode(db),
         announcement=str(values.get("announcement") or ""),
+        site_tagline=str(values.get("site_tagline") or ""),
         social_guard=bool(values.get("social_guard", True)),
         social_block_hint=str(values.get("social_block_hint") or ""),
         social_tag_qq=bool(values.get("social_tag_qq", True)),

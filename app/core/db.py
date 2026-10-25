@@ -101,6 +101,8 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "links": {
         # 开放模式下访客回看自己那条链接用的一次性领取码
         "claim_hash": "VARCHAR(64)",
+        # 标题来源：fetched / fallback / manual
+        "title_source": "VARCHAR(16)",
     },
     "click_events": {
         "device": "VARCHAR(16)",

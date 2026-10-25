@@ -31,7 +31,7 @@
         <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" />
       </div>
       <div class="field">
-        <label for="title">标题 <span class="hint">可选</span></label>
+        <label for="title">标题 <span class="hint">留空自动获取</span></label>
         <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
       </div>
     </div>
@@ -59,6 +59,7 @@
       </div>
       <div class="result-meta">
         <img id="result-qr" alt="二维码" width="96" height="96" />
+        <p class="hint title-source" id="result-title-hint" hidden></p>
         <div class="result-tags" id="result-tags"></div>
       </div>
       <div class="receipt" id="receipt" hidden>
@@ -80,6 +81,9 @@
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21 21l-4.3-4.3M17 10a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         <input id="search-input" type="search" placeholder="搜索短码 / 目标 / 标题" />
       </div>
+      <select id="tag-filter" aria-label="标签筛选">
+        <option value="">全部标签</option>
+      </select>
       <select id="status-filter" aria-label="状态筛选">
         <option value="">全部状态</option>
         <option value="enabled">已启用</option>
