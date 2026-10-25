@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from app.core import guard, social
+from app.core import guard, policy, social
 from app.core.codes import generate_unique_code, normalize_code, validate_custom_code
 from app.core.config import settings
 from app.core.clicks import click_buffer
@@ -52,17 +52,26 @@ def _expiry_guard(value: dt.datetime | None) -> dt.datetime | None:
     return value
 
 
-def check_create_quota(ip: str | None) -> None:
-    if not ip or settings.create_daily_limit <= 0:
+def check_create_quota(db: Session, ip: str | None) -> None:
+    """单 IP 每日创建上限。
+
+    额度走后台可改的 `create_daily_limit`（原来只认环境变量，导致
+    「设置 → 每日创建上限」改了也不生效），并且按自然日重置——滚动 24 小时
+    会让昨晚刷满的人今早继续被拦。
+    """
+    if not ip:
         return
-    if not rate_limiter.allow(f"create:{ip}", settings.create_daily_limit, 86400):
-        raise ServiceError("今日创建次数已达上限，请明天再试", 429)
+    limit = int(effective(db, "create_daily_limit") or 0)
+    if limit <= 0:
+        return
+    if not rate_limiter.allow(f"create:{ip}", limit, 86400, daily=True):
+        raise ServiceError(f"今日创建次数已达上限（{limit} 次），请明天再试", 429)
 
 
 def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link:
     target = _ensure_target(payload.target)
     expires_at = _expiry_guard(payload.expires_at)
-    check_create_quota(ip)
+    check_create_quota(db, ip)
 
     custom = normalize_code(payload.code) if payload.code else None
     if custom:
@@ -200,6 +209,35 @@ def delete_link(db: Session, code: str) -> None:
     logger.info("删除短链 %s", link.code)
 
 
+BULK_ACTIONS = ("enable", "disable", "delete")
+
+
+def bulk_update(db: Session, codes: list[str], action: str) -> dict:
+    """批量启用 / 停用 / 删除。不存在的短码跳过，不让一条脏码毁掉整批。"""
+    if action not in BULK_ACTIONS:
+        raise ServiceError("不支持的操作", 422)
+    wanted = [normalize_code(c) for c in codes if normalize_code(c)]
+    if not wanted:
+        raise ServiceError("没有要处理的短码", 422)
+    if len(wanted) > 500:
+        raise ServiceError("一次最多处理 500 条", 422)
+
+    rows = list(
+        db.execute(select(Link).where(func.lower(Link.code).in_([c.lower() for c in wanted]))).scalars().all()
+    )
+    found = {row.code.lower() for row in rows}
+    affected, missing = 0, [c for c in wanted if c.lower() not in found]
+    for row in rows:
+        if action == "delete":
+            db.delete(row)
+        else:
+            row.enabled = action == "enable"
+        affected += 1
+    db.flush()
+    logger.info("批量 %s：%d 条", action, affected)
+    return {"ok": True, "action": action, "affected": affected, "missing": missing}
+
+
 def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
     """返回 (链接, 目标地址)。已停用/过期/无效都抛错。"""
     link = get_link_by_code(db, code)
@@ -219,6 +257,7 @@ def record_click(
     ua: str | None,
     ip: str | None,
     blocked: bool = False,
+    snapshot: dict | None = None,
 ) -> dict:
     """记录一次点击。
 
@@ -229,23 +268,24 @@ def record_click(
     返回 {'recorded': bool, 'blocked': bool, 'platform': str | None}
     """
     platform = social.detect(ua, referrer)
+    snap = snapshot or policy.snapshot(db)
     if blocked:
         # 社交平台策略直接拦下的访问：只留痕，不算点击
         click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
         return {"recorded": False, "blocked": True, "platform": platform}
 
-    blocked_rule = guard.is_ua_blocked(ua, guard.blocked_ua_rules(db))
+    blocked_rule = guard.is_ua_blocked(ua, snap.get("ua_rules") or [])
     if blocked_rule:
         click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
         logger.info("UA 屏蔽命中 %s -> %s", link.code, blocked_rule)
         return {"recorded": False, "blocked": True, "platform": platform}
 
-    allowed, reason = guard.check_click_quota(db, ip)
+    allowed, reason = guard.check_click_quota(db, ip, snap)
     if not allowed:
         logger.info("点击配额拦截 %s -> %s", link.code, reason)
         return {"recorded": False, "blocked": False, "reason": reason, "platform": platform}
 
-    if platform and effective(db, "social_guard") and guard.platform_rules(db).get(platform) == "silent":
+    if platform and snap.get("social_guard") and (snap.get("platforms") or {}).get(platform) == "silent":
         # 放行不计数：怀疑被刷量的平台上，真实用户照样能打开，只是不进统计
         click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
         return {"recorded": False, "blocked": True, "platform": platform}

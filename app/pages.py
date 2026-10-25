@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from app.core import access, guard, social
+from app.core import access, guard, policy, social
 from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
@@ -59,13 +59,11 @@ def admin_page(request: Request):
     return HTMLResponse(templates.get_template("admin.html").render(request=request))
 
 
-def _social_blocked(db: Session, platform: str | None) -> str | None:
+def _social_blocked(snapshot: dict, platform: str | None) -> str | None:
     """命中拦截策略时返回平台键。总开关关掉就一律放行。"""
-    from app.core.settings_store import effective
-
-    if not platform or not effective(db, "social_guard"):
+    if not platform or not snapshot.get("social_guard"):
         return None
-    return guard.platform_hit(platform, guard.platform_rules(db))
+    return guard.platform_hit(platform, snapshot.get("platforms") or {})
 
 
 @router.get("/healthz", summary="健康检查")
@@ -102,13 +100,17 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     ua = request.headers.get("user-agent")
     ip = client_ip(request)
 
+    # 一次取齐本请求要用的策略（频率上限 / 社交总开关 / 平台策略 / UA 规则），
+    # 热门短码上这几次读会被快照合并掉
+    snap = policy.snapshot(db)
+
     # 社交平台防洪：微信 / QQ 等内置浏览器可能被策略拦下，给一页说明而不是白屏
     platform = social.detect(ua, referrer)
-    blocked_platform = _social_blocked(db, platform)
+    blocked_platform = _social_blocked(snap, platform)
     if blocked_platform:
         logger.info("社交平台拦截 %s -> %s", code, blocked_platform)
         # 拦下的访问也算一次「被拒」，落一条 blocked 事件，后台看得到战果
-        record_click(db, link, referrer=referrer, ua=ua, ip=ip, blocked=True)
+        record_click(db, link, referrer=referrer, ua=ua, ip=ip, blocked=True, snapshot=snap)
         db.commit()
         return HTMLResponse(
             templates.get_template("wxblock.html").render(
@@ -121,7 +123,7 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
             status_code=403,
         )
 
-    allowed, reason = guard.check_redirect_quota(db, ip)
+    allowed, reason = guard.check_redirect_quota(db, ip, snap)
     if not allowed:
         return HTMLResponse(
             templates.get_template("gone.html").render(
@@ -134,7 +136,7 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         )
 
     # 延迟计数：只入缓冲，不阻塞跳转
-    record_click(db, link, referrer=referrer, ua=ua, ip=ip)
+    record_click(db, link, referrer=referrer, ua=ua, ip=ip, snapshot=snap)
     db.commit()
     logger.info("跳转 %s -> %s", code, target)
     return RedirectResponse(url=target, status_code=307)

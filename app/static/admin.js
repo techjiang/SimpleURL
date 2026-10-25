@@ -90,6 +90,7 @@
       if (btn.dataset.tab === 'links') loadAdminLinks();
       if (btn.dataset.tab === 'keys') loadKeys();
       if (btn.dataset.tab === 'guard') loadGuard();
+      if (btn.dataset.tab === 'audit') loadAudit();
       if (btn.dataset.tab === 'settings') loadSettings();
     });
   }
@@ -137,6 +138,15 @@
 
   /* ---------- 链接管理 ---------- */
   const lstate = { page: 1, size: 10, q: '', status: '', total: 0 };
+  // 跨页保留勾选：翻页回来还得记得刚才选了谁
+  const picked = new Set();
+
+  function syncBulkBar() {
+    const bar = $('#admin-bulk');
+    if (!bar) return;
+    bar.hidden = picked.size === 0;
+    $('#admin-bulk-count').textContent = `已选 ${picked.size} 条`;
+  }
 
   async function loadAdminLinks() {
     const params = new URLSearchParams({ page: lstate.page, page_size: lstate.size });
@@ -145,7 +155,10 @@
     try {
       const data = await api('/api/links?' + params.toString());
       lstate.total = data.total;
-      $('#admin-links-body').innerHTML = data.items.map((l) => `<tr>
+      $('#admin-links-body').innerHTML = data.items.map((l) => {
+        const on = picked.has(l.code);
+        return `<tr>
+        <td class="col-check"><input type="checkbox" data-pick="${escapeHtml(l.code)}"${on ? ' checked' : ''} aria-label="选择 /${escapeHtml(l.code)}" /></td>
         <td><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
         <td class="target-cell" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
         <td class="clicks-cell">${l.clicks}</td>
@@ -154,12 +167,29 @@
           <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(l.code)}">${l.enabled ? '停用' : '启用'}</button>
           <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(l.code)}">删除</button>
         </td>
-      </tr>`).join('');
+      </tr>`;
+      }).join('');
       $('#admin-links-empty').hidden = data.items.length > 0;
       const pages = Math.max(1, Math.ceil(data.total / lstate.size));
       $('#admin-page-info').textContent = `第 ${data.page} 页 / 共 ${pages} 页`;
       $('#admin-prev').disabled = data.page <= 1;
       $('#admin-next').disabled = data.page * lstate.size >= data.total;
+      const all = data.items.length > 0 && data.items.every((l) => picked.has(l.code));
+      const box = $('#admin-check-all');
+      if (box) { box.checked = all; box.indeterminate = !all && data.items.some((l) => picked.has(l.code)); }
+      syncBulkBar();
+    } catch (err) { toast(err.message); }
+  }
+
+  async function runBulk(action) {
+    if (!picked.size) return;
+    const label = { enable: '启用', disable: '停用', delete: '删除' }[action];
+    if (action === 'delete' && !confirm(`确定删除选中的 ${picked.size} 条链接？该操作不可恢复`)) return;
+    try {
+      const r = await post('/api/links/bulk', { action, codes: [...picked] });
+      toast(r.message || `已${label} ${r.affected} 条`);
+      picked.clear();
+      loadAdminLinks();
     } catch (err) { toast(err.message); }
   }
 
@@ -174,6 +204,31 @@
     $('#admin-status').addEventListener('change', (e) => { lstate.status = e.target.value; lstate.page = 1; loadAdminLinks(); });
     $('#admin-prev').addEventListener('click', () => { if (lstate.page > 1) { lstate.page -= 1; loadAdminLinks(); } });
     $('#admin-next').addEventListener('click', () => { lstate.page += 1; loadAdminLinks(); });
+
+    body.addEventListener('change', (e) => {
+      const box = e.target.closest('input[data-pick]');
+      if (!box) return;
+      if (box.checked) picked.add(box.dataset.pick); else picked.delete(box.dataset.pick);
+      const all = $('#admin-check-all');
+      if (all) all.indeterminate = true;
+      syncBulkBar();
+    });
+    const allBox = $('#admin-check-all');
+    if (allBox) allBox.addEventListener('change', () => {
+      body.querySelectorAll('input[data-pick]').forEach((box) => {
+        box.checked = allBox.checked;
+        if (allBox.checked) picked.add(box.dataset.pick); else picked.delete(box.dataset.pick);
+      });
+      allBox.indeterminate = false;
+      syncBulkBar();
+    });
+    [['#bulk-enable', 'enable'], ['#bulk-disable', 'disable'], ['#bulk-delete', 'delete']].forEach(([sel, act]) => {
+      const btn = $(sel);
+      if (btn) btn.addEventListener('click', () => runBulk(act));
+    });
+    const clearBtn = $('#bulk-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => { picked.clear(); loadAdminLinks(); });
+
     body.addEventListener('click', async (e) => {
       const btn = e.target.closest('button[data-act]');
       if (!btn) return;
@@ -182,6 +237,7 @@
         if (btn.dataset.act === 'del') {
           if (!confirm(`确定删除 /${code}？不可恢复`)) return;
           await api('/api/links/' + encodeURIComponent(code), { method: 'DELETE' });
+          picked.delete(code);
           toast(`已删除 /${code}`);
         } else {
           const cur = await api('/api/links/' + encodeURIComponent(code));
@@ -194,6 +250,39 @@
         loadAdminLinks();
       } catch (err) { toast(err.message); }
     });
+  }
+
+  /* ---------- 操作留痕 ---------- */
+  const ACTION_TONE = { create: 'on', delete: 'exp', update: '', settings: '', import: '', login: '', logout: '' };
+
+  async function loadAudit() {
+    const list = $('#audit-list');
+    if (!list) return;
+    const sel = $('#audit-action');
+    try {
+      const params = new URLSearchParams({ limit: 40 });
+      if (sel && sel.value) params.set('action', sel.value);
+      const data = await api('/api/admin/audit?' + params.toString());
+      if (sel && sel.options.length <= 1) {
+        data.actions.forEach((a) => {
+          const opt = document.createElement('option');
+          opt.value = a.key;
+          opt.textContent = a.label;
+          sel.appendChild(opt);
+        });
+      }
+      const items = data.items || [];
+      if (!items.length) {
+        list.innerHTML = '<li><span class="hint">还没有操作记录</span><b>—</b></li>';
+        return;
+      }
+      list.innerHTML = items.map((i) => {
+        const where = i.code ? ` <span class="mono">/${escapeHtml(i.code)}</span>` : '';
+        const what = i.detail ? `<span class="hint">${escapeHtml(i.detail)}</span>` : '';
+        return `<li><span><span class="badge ${ACTION_TONE[i.action] || ''}">${escapeHtml(i.action_label)}</span>${where} ${what}</span>
+          <b>${escapeHtml(i.actor)} · ${escapeHtml(shortTime(i.ts))}</b></li>`;
+      }).join('');
+    } catch (err) { toast(err.message); }
   }
 
   /* ---------- 防洪 / UA ---------- */
@@ -444,9 +533,14 @@
     });
   }
 
+  function bindAudit() {
+    const sel = $('#audit-action');
+    if (sel) sel.addEventListener('change', loadAudit);
+  }
+
   /* ---------- 启动 ---------- */
   async function boot() {
-    bindTabs(); bindAdminLinks(); bindGuard(); bindSocial(); bindKeys(); bindMigrate(); bindSettings();
+    bindTabs(); bindAdminLinks(); bindGuard(); bindAudit(); bindSocial(); bindKeys(); bindMigrate(); bindSettings();
     await loadDashboard();
   }
 

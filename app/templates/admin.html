@@ -20,6 +20,7 @@
     <button class="admin-tab" data-tab="guard" type="button">防洪 / UA 屏蔽</button>
     <button class="admin-tab" data-tab="keys" type="button">API 密钥</button>
     <button class="admin-tab" data-tab="migrate" type="button">数据迁移</button>
+    <button class="admin-tab" data-tab="audit" type="button">操作留痕</button>
     <button class="admin-tab" data-tab="settings" type="button">设置</button>
   </nav>
 
@@ -63,10 +64,20 @@
           </select>
         </div>
       </div>
+      <div class="bulk-bar" id="admin-bulk" hidden>
+        <span id="admin-bulk-count">已选 0 条</span>
+        <button class="btn tiny ghost" id="bulk-enable" type="button">批量启用</button>
+        <button class="btn tiny ghost" id="bulk-disable" type="button">批量停用</button>
+        <button class="btn tiny danger" id="bulk-delete" type="button">批量删除</button>
+        <button class="btn tiny ghost" id="bulk-clear" type="button">取消选择</button>
+      </div>
       <div class="table-wrap">
         <table class="table">
           <thead>
-            <tr><th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>状态</th><th>操作</th></tr>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="admin-check-all" aria-label="全选本页" /></th>
+              <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>状态</th><th>操作</th>
+            </tr>
           </thead>
           <tbody id="admin-links-body"></tbody>
         </table>
@@ -151,6 +162,20 @@
         </div>
       </form>
       <p class="hint">命中规则的访问仍然照常跳转，只是不计入点击数，并在「最近访问」里标记为已拦截。</p>
+    </div>
+  </div>
+
+  <!-- 操作留痕 -->
+  <div class="admin-panel" data-panel="audit">
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>操作留痕</h2>
+        <select id="audit-action" aria-label="按动作筛选">
+          <option value="">全部动作</option>
+        </select>
+      </div>
+      <p class="hint">创建、修改、删除、改设置、导入都会留一条。IP 只存哈希，不留明文。</p>
+      <ul class="ref-list" id="audit-list"></ul>
     </div>
   </div>
 

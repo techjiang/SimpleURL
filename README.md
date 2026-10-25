@@ -12,6 +12,8 @@
 - **二维码** — 每条链接自动生成 PNG 二维码
 - **标签管理** — 标签检索、状态筛选、多字段搜索、多种排序
 - **链接控制** — 随时停用 / 启用 / 删除 / 编辑，支持设置或清除过期时间
+- **批量操作** — 勾选多条一次性启用 / 停用 / 删除，翻页仍保留已选（上限 500 条）
+- **操作留痕** — 创建、修改、删除、改设置、导入都记一条，谁在什么时候动了哪条一目了然
 - **数据导出** — 按当前筛选一键导出 CSV，Excel 直接打开不乱码
 - **社交平台防洪** — 微信 / QQ / 微博等内置浏览器逐平台放行、静默或拦截，带中转页与来源分布
 - **设备统计** — 桌面端 / 移动端 / 机器人来源一目了然
@@ -60,6 +62,7 @@ docker compose up -d         # 首次需构建
 | `GET` | `/api/links/{code}/stats` | 访问统计（管理员，或创建者带 `?t=` 回执） |
 | `GET` | `/api/qr/{code}` | 二维码 PNG（管理员，或创建者带 `?t=` 回执） |
 | `GET` | `/api/links/export` | 导出 CSV（沿用列表的筛选参数） |
+| `POST` | `/api/links/bulk` | 批量操作，`action` 取 `enable`/`disable`/`delete`，`codes` 为短码数组 |
 | `GET` | `/api/stats/summary` | 总览 |
 | `GET` | `/api/access` | 当前访问模式与登录态 |
 | `POST` | `/api/admin/login` | 后台登录 |
@@ -68,6 +71,7 @@ docker compose up -d         # 首次需构建
 | `GET/POST` | `/api/admin/ua-rules` | UA 屏蔽规则 |
 | `GET/POST/DELETE` | `/api/admin/api-keys` | API 密钥管理 |
 | `POST` | `/api/admin/migrate/yourls` | 从 YOURLS 迁移 |
+| `GET` | `/api/admin/audit` | 操作留痕，支持 `limit` / `action` |
 | `POST` | `/api/admin/flush-clicks` | 立即结算延迟计数 |
 | `POST` | `/yourls-api` | YOURLS 兼容接口（shorturl / expand / url-stats / db-stats） |
 | `GET` | `/{code}` | 跳转（307），延迟记录点击 |
@@ -92,7 +96,7 @@ curl -X POST http://localhost:8000/api/links \
 | `CODE_LENGTH` | `4` | 自动生成短码长度（3~16，后台可改） |
 | `CODE_NO_AMBIGUOUS` | `true` | 随机码排除易混字符 `0 O 1 l I` |
 | `CODE_MIN_LENGTH` / `CODE_MAX_LENGTH` | `3` / `16` | 自定义短码长度限制 |
-| `CREATE_DAILY_LIMIT` | `200` | 单 IP 每日创建上限，`0` 不限制 |
+| `CREATE_DAILY_LIMIT` | `200` | 单 IP 每日创建上限（自然日重置），后台可改，`0` 不限制 |
 | `ACCESS_TOKEN` | 空 | 设置后访问短链与统计页需带 `?token=`，留空则公开 |
 | `ACCESS_MODE` | `open` | `open` 开放外部可使用；`admin` 仅管理员可使用 |
 | `EXPORT_MAX_ROWS` | `50000` | 单次导出 CSV 的最大条数 |
@@ -210,6 +214,15 @@ python -c "from app.core.crypto import hash_secret; print(hash_secret('your-pass
 
 默认只信任回环代理的 `X-Forwarded-For` / `X-Real-IP`。不设这道关的话，任何人都能伪造转发头把限速和每日配额绕得一干二净。上了 Nginx 就把内网网段填进 `TRUSTED_PROXIES`。
 
+### 操作留痕
+
+短链接最典型的事故不是宕机，是「我的链接怎么跳到别处去了」。没有留痕只能靠猜，
+所以所有写操作（创建 / 修改 / 删除 / 批量 / 改设置 / 导入 / 登录）都落一条
+`audit_logs`，后台「操作留痕」按时间倒序看，可按动作筛选。
+
+只留动作与对象：操作者、短码、变更字段、时间。IP 与点击统计一样只存哈希，
+日志表只保留最近 2000 条，长跑进程不能只涨不落。
+
 ### URL 校验
 
 创建短链时挡掉带 userinfo 的地址（`https://trusted.com@evil.com` 这类钓鱼伪装）、内网 / 回环 / 链路本地 / IPv4 映射 IPv6 地址，以及非 http/https 协议。自动取标题的请求同样有 SSRF 防护。
@@ -236,7 +249,8 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-215 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计、设备分布、编辑与 CSV 导出、访问模式、管理后台、YOURLS 迁移、社交平台防洪（平台识别含 Referer 兜底、三档策略含 `silent` 落地、拦截页、总开关、来源统计、拦截留痕），以及安全加固（响应头、CSP、CSRF、可信代理、URL 校验、登录限速、口令哈希）与限速器本身（自然日重置、并发不上限、0 视为不限），以及回执链接、访客准入边界、短码长度可调、本地时区显示。
+237 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计、设备分布、编辑与 CSV 导出、访问模式、管理后台、YOURLS 迁移、社交平台防洪（平台识别含 Referer 兜底、三档策略含 `silent` 落地、拦截页、总开关、来源统计、拦截留痕），以及安全加固（响应头、CSP、CSRF、可信代理、URL 校验、登录限速、口令哈希）与限速器本身（自然日重置、并发不上限、0 视为不限），以及回执链接、访客准入边界、短码长度可调、本地时区显示，以及 v5 的批量操作、
+操作留痕、创建额度按后台配置生效、跳转策略快照（改配置立刻生效）。
 
 ## 项目结构
 
@@ -253,6 +267,7 @@ app/
 ├── core/              config / db / codes / security / crypto / csrf
 │                       middleware / access / admin / apikey / guard
 │                       clicks / settings_store / titles / yourls / timeutil
+│                       policy（跳转策略快照）/ report（操作留痕）
 │                       social（微信 / QQ 等来源识别与策略）
 ├── templates/         Jinja2 模板
 ├── static/            CSS / JS / Logo
@@ -263,6 +278,7 @@ app/
 │   ├── test_access_mode.py  访问模式
 │   ├── test_social.py       社交平台防洪
 │   ├── test_v4.py           回执链接 / 准入边界 / 短码长度
+│   ├── test_v5.py           批量操作 / 操作留痕 / 额度 / 策略快照
 │   └── test_security.py     安全加固
 └── scripts/           Logo 生成脚本
 ```
@@ -273,5 +289,7 @@ app/
 - 统计数据仅存 IP 的 SHA-256 前 32 位，不落明文 IP
 - 停用 / 过期 / 不存在的短码都会返回友好页面，不会裸奔报错
 - 延迟计数是内存缓冲，进程退出时会强制结算一次；极端崩溃可能丢最近几秒的点击
+- 跳转链路上的防洪策略（频率上限 / 社交开关 / 平台策略 / UA 规则）合并成 3 秒快照，
+  减少热链接上的重复查询；后台一保存立刻失效，改完马上生效
 - 被 UA 屏蔽的访问仍会跳转，也会留一条带 `blocked` 标记的记录，只是不计入点击数
 - 自动取标题会请求目标站，已做 SSRF 防护（内网/回环/链路本地地址一律不抓）

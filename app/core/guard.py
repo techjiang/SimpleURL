@@ -49,6 +49,7 @@ def save_ua_rules(db: Session, rules: list[str]) -> None:
     else:
         row.value = value
     db.flush()
+    _refresh_policy()
     logger.info("UA 屏蔽规则已更新：%d 条", len(rules))
 
 
@@ -102,6 +103,7 @@ def save_platform_rules(db: Session, rules: dict[str, str]) -> None:
     clean = {k: normalize_strategy(v) for k, v in rules.items() if known(k)}
     _set_row(db, _PLATFORM_RULES_KEY, serialize_list([f"{k}={v}" for k, v in clean.items()]))
     db.flush()
+    _refresh_policy()
     logger.info("社交平台防洪策略已更新：%s", clean or "全部放行")
 
 
@@ -137,11 +139,13 @@ def _client_key(ip: str | None) -> str | None:
     return ip or "unknown"
 
 
-def check_redirect_quota(db: Session, ip: str | None) -> tuple[bool, str | None]:
+def check_redirect_quota(db: Session, ip: str | None, snapshot: dict | None = None) -> tuple[bool, str | None]:
     """跳转限速：单 IP 每分钟上限。返回 (是否放行, 拒绝原因)。"""
     from app.core.settings_store import effective
 
-    per_minute = effective(db, "redirect_rate_limit")
+    per_minute = (snapshot or {}).get("redirect_rate_limit")
+    if per_minute is None:
+        per_minute = effective(db, "redirect_rate_limit")
     if not per_minute or per_minute <= 0:
         return True, None
     if not rate_limiter.allow(f"redirect:{_client_key(ip)}", per_minute, 60):
@@ -149,11 +153,13 @@ def check_redirect_quota(db: Session, ip: str | None) -> tuple[bool, str | None]
     return True, None
 
 
-def check_click_quota(db: Session, ip: str | None) -> tuple[bool, str | None]:
+def check_click_quota(db: Session, ip: str | None, snapshot: dict | None = None) -> tuple[bool, str | None]:
     """点击数配额：单 IP 每日上限，按自然日重置，超出后不计点击。"""
     from app.core.settings_store import effective
 
-    daily = effective(db, "click_daily_limit")
+    daily = (snapshot or {}).get("click_daily_limit")
+    if daily is None:
+        daily = effective(db, "click_daily_limit")
     if not daily or daily <= 0:
         return True, None
     if not rate_limiter.allow(f"click:{_client_key(ip)}", daily, 86400, daily=True):
@@ -185,6 +191,13 @@ def platform_hit_stats(db: Session, days: int = 14) -> list[dict]:
     for item in agg.values():
         item["label"] = social.label(None if item["key"] == "other" else item["key"])
     return sorted(agg.values(), key=lambda i: i["count"] + i["blocked"], reverse=True)
+
+
+def _refresh_policy() -> None:
+    """规则一改就让跳转快照失效，别让人等 TTL。"""
+    from app.core import policy
+
+    policy.invalidate()
 
 
 def reset_guard() -> None:

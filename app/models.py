@@ -101,6 +101,20 @@ class ClickEvent(Base):
     )
 
 
+class AuditLog(Base):
+    """操作留痕：谁在什么时候对哪条链接做了什么。"""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    actor: Mapped[str] = mapped_column(String(64), nullable=False, default="匿名")
+    code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ip_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
+
+
 class Setting(Base):
     """键值配置表：存可在后台改的运行参数。"""
 

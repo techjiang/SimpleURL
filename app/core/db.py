@@ -129,6 +129,8 @@ def _ensure_columns() -> None:
                 logger.info("已为 %s 补列 %s", table, name)
         if "click_events" in existing_tables:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_click_events_platform ON click_events (platform)"))
+        if "audit_logs" in existing_tables:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_audit_logs_ts ON audit_logs (ts)"))
 
 
 def init_db() -> None:

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core import access, guard, social
+from app.core import access, guard, policy, report, social
 from app.core.admin import (
     COOKIE_NAME,
     check_credentials,
@@ -224,6 +224,8 @@ def api_save_settings(payload: SettingsUpdate, request: Request, db: Session = D
         if key == "access_mode":
             value = access.normalize_mode(value)
         set_value(db, key, value)
+    policy.invalidate()
+    report.record(db, "settings", actor=require_admin(request), detail=", ".join(sorted(data.keys())), request=request)
     db.commit()
     return {"ok": True, "message": "已保存"}
 
@@ -235,6 +237,8 @@ def api_reset_settings(request: Request, db: Session = Depends(get_db)):
         row = db.execute(select(Setting).where(Setting.key == key)).scalar_one_or_none()
         if row is not None:
             db.delete(row)
+    policy.invalidate()
+    report.record(db, "settings", actor=require_admin(request), detail="恢复默认设置", request=request)
     db.commit()
     return {"ok": True, "message": "已恢复环境变量默认值"}
 
@@ -250,6 +254,7 @@ def api_save_ua_rules(payload: dict, request: Request, db: Session = Depends(get
     require_admin(request)
     rules = guard.parse_list(str(payload.get("rules") or ""))
     guard.save_ua_rules(db, rules)
+    report.record(db, "settings", actor=require_admin(request), detail=f"UA 屏蔽规则 {len(rules)} 条", request=request)
     db.commit()
     return UaRuleOut(rules=guard.blocked_ua_rules(db))
 
@@ -279,6 +284,8 @@ def api_save_social_rules(payload: dict, request: Request, db: Session = Depends
     else:
         rules = {}
     guard.save_platform_rules(db, rules)
+    policy.invalidate()
+    report.record(db, "settings", actor=require_admin(request), detail="社交平台防洪策略", request=request)
     if "hint" in payload:
         guard.save_platform_notice(db, str(payload.get("hint") or ""))
     db.commit()
@@ -321,6 +328,19 @@ def api_blocked_events(
         for code, platform_key, ua, ts in db.execute(stmt).all()
     ]
     return {"items": items, "total": len(items)}
+
+
+@router.get("/audit", summary="操作留痕")
+def api_audit(
+    request: Request,
+    limit: int = Query(40, ge=1, le=200),
+    action: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """最近的写操作：谁、什么时候、对哪条链接做了什么。"""
+    require_admin(request)
+    items = report.recent(db, limit=limit, action=action or None)
+    return {"items": items, "actions": [{"key": k, "label": v} for k, v in report.ACTIONS.items()]}
 
 
 @router.get("/api-keys", response_model=list[ApiKeyOut], summary="API 密钥列表")
@@ -368,5 +388,12 @@ def api_migrate(payload: MigrationIn, request: Request, db: Session = Depends(ge
     if not rows:
         raise ServiceError("没解析出任何记录，检查一下粘贴的内容", 422)
     result = import_yourls(db, rows)
+    report.record(
+        db,
+        "import",
+        actor=require_admin(request),
+        detail=f"导入 {result['imported']} 条，换码 {result['renamed']} 条，失败 {result['failed']} 条",
+        request=request,
+    )
     db.commit()
     return MigrationOut(**result)

@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core import access, claim
+from app.core import access, claim, report
+from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
@@ -19,6 +20,7 @@ from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
 from app.services import (
     ServiceError,
     all_links_for_export,
+    bulk_update,
     create_link,
     delete_link,
     get_link_by_code,
@@ -51,6 +53,12 @@ def check_api_key(request: Request, db: Session) -> None:
     if key:
         touch(db, key)
         db.commit()
+
+
+def access_actor(request: Request) -> str:
+    """留痕里的操作者：管理员会话名，或匿名访客。"""
+    admin = current_admin(request)
+    return admin or "匿名"
 
 
 def require_create(request: Request, db: Session) -> None:
@@ -121,7 +129,16 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
     require_create(request, db)
     link = create_link(db, payload, ip=client_ip(request))
     # 开放模式下创建者拿不到链接库，给一张一次性回执，凭它回看自己这条
-    token = None if access.is_admin(request, db) else claim.issue(db, link)
+    is_admin = access.is_admin(request, db)
+    token = None if is_admin else claim.issue(db, link)
+    report.record(
+        db,
+        "create",
+        actor="admin" if is_admin else "访客",
+        code=link.code,
+        detail=f"target={link.target[:200]}",
+        request=request,
+    )
     db.commit()
     db.refresh(link)
     return _serialize(link, request, token)
@@ -139,6 +156,8 @@ def api_update_link(code: str, payload: LinkUpdate, request: Request, db: Sessio
     check_api_key(request, db)
     require_manage(request, db)
     link = update_link(db, code, payload)
+    changed = ", ".join(sorted(payload.model_dump(exclude_unset=True).keys()))
+    report.record(db, "update", actor=access_actor(request), code=link.code, detail=changed, request=request)
     db.commit()
     db.refresh(link)
     return _serialize(link, request)
@@ -149,8 +168,30 @@ def api_delete_link(code: str, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
     require_manage(request, db)
     delete_link(db, code)
+    report.record(db, "delete", actor=access_actor(request), code=code, request=request)
     db.commit()
     return {"ok": True, "message": f"已删除 {code}"}
+
+
+@router.post("/links/bulk", summary="批量启用 / 停用 / 删除")
+def api_bulk(request: Request, payload: dict, db: Session = Depends(get_db)):
+    check_api_key(request, db)
+    require_manage(request, db)
+    codes = payload.get("codes") or []
+    if isinstance(codes, str):
+        codes = [c for c in codes.replace(",", "\n").split() if c]
+    action = str(payload.get("action") or "")
+    result = bulk_update(db, list(codes), action)
+    report.record(
+        db,
+        "delete" if action == "delete" else "update",
+        actor=access_actor(request),
+        detail=f"批量{'删除' if action == 'delete' else ('启用' if action == 'enable' else '停用')} {result['affected']} 条",
+        request=request,
+    )
+    db.commit()
+    label = {"enable": "启用", "disable": "停用", "delete": "删除"}.get(action, action)
+    return {**result, "message": f"已{label} {result['affected']} 条"}
 
 
 @router.get("/links/{code}/stats", response_model=StatsOut, summary="访问统计")
