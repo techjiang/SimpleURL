@@ -102,37 +102,49 @@ def _notify_warnings_once(seen: dict) -> None:
             if not warnings:
                 return
             now = time.time()
+            cooldown = float(effective(db, "notify_cooldown") or 0)
             fresh = []
             for item in warnings:
                 key = str(item.get("text") or "")[:200]
-                if now - seen.get(key, 0) < settings.notify_cooldown:
+                if now - float(seen.get(key, 0) or 0) < cooldown:
                     continue
-                seen[key] = now
                 fresh.append(item)
             if not fresh:
                 return
-            title = f"{settings.site_name} 有 {len(fresh)} 条告警"
+            # 冷却时间落库之前先占位：发送本身要几秒钟，
+            # 两个 tick 撞在一起时会各发一遍
+            for item in fresh:
+                seen[str(item.get("text") or "")[:200]] = now
+            site = str(effective(db, "site_name") or settings.site_name)
+            title = f"{site} 有 {len(fresh)} 条告警"
             body = notify.digest_body(fresh, db)
             for channel in notify.enabled(db):
                 notify.send(db, channel, title, body, level="warn")
-            # 状态留痕要落库，别跟着 session_scope 一起回滚
+            # 状态留痕（notify.record）写在 db 上，session_scope 退出时会一起提交
     except Exception:  # noqa: BLE001 - 通知失败绝不能影响主进程
         logger.exception("推送告警失败")
 
 
-def _start_notify_job():
-    """每 5 分钟看一眼告警，配了通道就推。"""
+def _start_notify_job(interval: int = 300):
+    """每 5 分钟看一眼告警，配了通道就推。
+
+    第一轮延迟一个周期：启动瞬间库和配置都还没热，此刻报出来的黄灯
+    往往是「刚起来还没读到配置」，推出去只是噪音。
+    """
     seen: dict[str, float] = {}
 
     def _tick() -> None:
-        _notify_warnings_once(seen)
-        _reschedule()
+        try:
+            _notify_warnings_once(seen)
+        finally:
+            # 发送里抛异常也必须把下一轮排上，否则告警线程死一次就再也不发
+            _reschedule()
 
     timer: threading.Timer | None = None
 
     def _reschedule() -> None:
         nonlocal timer
-        timer = threading.Timer(300, _tick)
+        timer = threading.Timer(interval, _tick)
         timer.daemon = True
         timer.start()
 

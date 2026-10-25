@@ -285,6 +285,8 @@ def api_get_settings(request: Request, db: Session = Depends(get_db)):
         social_block_hint=str(values.get("social_block_hint") or ""),
         social_tag_qq=bool(values.get("social_tag_qq", True)),
         social_tag_wechat=bool(values.get("social_tag_wechat", True)),
+        notify_enabled=bool(values.get("notify_enabled", False)),
+        notify_cooldown=int(values.get("notify_cooldown") or 0),
     )
 
 
@@ -295,7 +297,7 @@ def api_save_settings(payload: SettingsUpdate, request: Request, db: Session = D
     for key, value in data.items():
         if key not in EDITABLE:
             continue
-        if key in {"redirect_rate_limit", "click_daily_limit", "create_daily_limit"}:
+        if key in {"redirect_rate_limit", "click_daily_limit", "create_daily_limit", "notify_cooldown"}:
             value = max(0, int(value))
         if key == "code_length":
             value = max(3, min(16, int(value)))

@@ -19,7 +19,7 @@ from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
 from app.core.settings_store import code_length_value, effective
 from app.core.titles import resolve_title
-from app.core.timeutil import ensure_aware, local_day_start, today_local, utcnow
+from app.core.timeutil import ensure_aware, from_local_input, local_day_start, today_local, utcnow
 from app.models import ClickEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
 
@@ -40,7 +40,7 @@ NO_CLICK_LABELS = {
     NO_CLICK_QUOTA: ("超出配额", "单 IP 访问过于频繁或今日点击配额用完，未计入点击数"),
 }
 
-EXPORT_HEADER = ["短码", "短链接", "目标地址", "标题", "标签", "点击", "状态", "过期时间", "创建时间"]
+EXPORT_HEADER = ["短码", "短链接", "目标地址", "标题", "备注", "标签", "点击", "状态", "过期时间", "创建时间"]
 
 
 class ServiceError(Exception):
@@ -59,7 +59,8 @@ def _ensure_target(url: str) -> str:
 
 
 def _expiry_guard(value: dt.datetime | None) -> dt.datetime | None:
-    value = ensure_aware(value)
+    # 不带时区的输入是浏览器本地时间，不能当 UTC 收（会整体偏掉时区）
+    value = from_local_input(value)
     if value is None:
         return None
     if value <= utcnow():
@@ -138,6 +139,29 @@ def get_link_by_code(db: Session, code: str) -> Link:
     return link
 
 
+def _tag_filter(name: str):
+    """按标签筛选，且认得「带引号的标签」。
+
+    标签是 JSON 数组字符串，以前一律 `ilike '%"标签"%'`。可标签名里本来就
+    允许出现 `"` 和 `\\`，存进库里是转义形式 `"a\\"b"`，直接拼原值永远匹配不上——
+    界面上明明有这条标签，点进去却是空列表。所以两种写法都给：
+    原样的（覆盖不需要转义的普通标签）+ JSON 转义后的（覆盖含引号 / 反斜杠的）。
+    多这一个 or 只影响带特殊字符的标签，普通标签的命中结果不变。
+    """
+    from sqlalchemy import or_
+
+    name = (name or "").strip()
+    if not name:
+        return Link.id.is_(None)
+    # 原样的写法覆盖不需要转义的普通标签；JSON 转义（`json.dumps` 的输出去掉引号）
+    # 覆盖含 `"` 与 `\` 的标签。两者都不加 escape 子句，跟 `_tag_filter` 出现之前一致。
+    escaped = json.dumps(name, ensure_ascii=False)[1:-1]
+    return or_(
+        Link.tags.ilike(f'%"{name}"%'),
+        Link.tags.ilike(f'%"{escaped}"%'),
+    )
+
+
 def _base_query(
     q: str | None = None,
     tag: str | None = None,
@@ -151,7 +175,7 @@ def _base_query(
             or_(Link.code.ilike(like), Link.target.ilike(like), (Link.title or "").ilike(like), Link.tags.ilike(like))
         )
     if tag:
-        stmt = stmt.where(Link.tags.ilike(f'%"{tag.strip()}"%'))
+        stmt = stmt.where(_tag_filter(tag))
     if status == "enabled":
         stmt = stmt.where(Link.enabled.is_(True))
     elif status == "disabled":
@@ -541,8 +565,13 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     }
 
 
-def links_to_csv(links: list[Link]) -> str:
-    """把链接列表导成 CSV 文本。"""
+def links_to_csv(links: list[Link], base_url: str = "") -> str:
+    """把链接列表导成 CSV 文本。
+
+    `base_url` 给了就把「短链接」列写成完整地址（`https://s.example/abc1`），
+    否则至少是个以 `/` 开头的路径。之前两列都是裸短码，导出后
+    谁也看不出这条链接到底是什么。
+    """
 
     def _tags(link: Link) -> str:
         if not link.tags:
@@ -566,9 +595,12 @@ def links_to_csv(links: list[Link]) -> str:
         writer.writerow(
             [
                 _safe_cell(link.code),
-                _safe_cell(link.code),
+                # 「短链接」这一列以前也填短码，导出来只看到 `abc1`，
+                # 发给别人还得自己拼域名。这里补成完整地址
+                _safe_cell(f"{base_url}/{link.code}" if base_url else f"/{link.code}"),
                 _safe_cell(link.target),
                 _safe_cell(link.title or ""),
+                _safe_cell(link.note or ""),
                 _safe_cell(_tags(link)),
                 link.clicks or 0,
                 _status(link),

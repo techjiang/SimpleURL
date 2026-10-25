@@ -36,6 +36,10 @@
         <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
       </div>
     </div>
+    <div class="field">
+      <label for="note">备注 <span class="hint">可选 · 只有你自己和管理员看得到</span></label>
+      <input id="note" name="note" type="text" placeholder="这条链接用在哪、跟谁对的、什么时候撤" maxlength="400" />
+    </div>
     <div class="row">
       <div class="field">
         <label for="tags">标签 <span class="hint">逗号分隔</span></label>
@@ -90,6 +94,10 @@
         <div class="self-line">
           <span class="self-k">到期</span>
           <span class="self-v" id="result-expiry">永不过期</span>
+        </div>
+        <div class="self-line" id="result-note-line" hidden>
+          <span class="self-k">备注</span>
+          <span class="self-v" id="result-note"></span>
         </div>
         <div class="self-actions">
           <select id="result-days" aria-label="续期天数">
@@ -209,6 +217,10 @@
         <label for="edit-tags">标签 <span class="hint">逗号分隔</span></label>
         <input id="edit-tags" name="tags" type="text" maxlength="200" />
       </div>
+    </div>
+    <div class="field" id="edit-note-field">
+      <label for="edit-note">备注 <span class="hint">可选</span></label>
+      <input id="edit-note" name="note" type="text" maxlength="400" />
     </div>
     <div class="field">
       <label for="edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>

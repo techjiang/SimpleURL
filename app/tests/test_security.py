@@ -132,6 +132,12 @@ class TestTrustedProxies:
         assert client_ip(req) is None
 
     def test_forwarded_for_honored_from_trusted_proxy(self, monkeypatch):
+        """链条最右端才是我们这层代理写进去的地址，取那个。
+
+        老实现取最左边（`split(",")[0]`），而那个位置是客户端自己填的：
+        Nginx 只在末尾追加，`X-Forwarded-For: 假IP, 真IP` 一路传下来，
+        限速和每日配额按假 IP 记，等于没设防。
+        """
         monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1,::1")
 
         class Client:
@@ -142,7 +148,36 @@ class TestTrustedProxies:
             headers = {"x-forwarded-for": "203.0.113.9, 10.0.0.1"}
             cookies = {}
 
+        # 10.0.0.1 不在信任列表里，从右往左第一个不信任的就是真实客户端
+        assert client_ip(Req()) == "10.0.0.1"
+
+    def test_forwarded_for_skips_trusted_hops(self, monkeypatch):
+        """多级反代：右起把自家代理都跳过，落到第一个外部地址。"""
+        monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1,10.0.0.0/8")
+
+        class Client:
+            host = "127.0.0.1"
+
+        class Req:
+            client = Client()
+            headers = {"x-forwarded-for": "1.1.1.1, 203.0.113.9, 10.2.3.4, 10.9.9.9"}
+            cookies = {}
+
         assert client_ip(Req()) == "203.0.113.9"
+
+    def test_forwarded_for_all_trusted_falls_back_to_leftmost(self, monkeypatch):
+        """整条链都是自家代理时，最左就是最初的发起方。"""
+        monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1,10.0.0.0/8")
+
+        class Client:
+            host = "127.0.0.1"
+
+        class Req:
+            client = Client()
+            headers = {"x-forwarded-for": "10.1.1.1, 10.2.2.2"}
+            cookies = {}
+
+        assert client_ip(Req()) == "10.1.1.1"
 
     def test_x_real_ip_fallback(self, monkeypatch):
         monkeypatch.setattr(settings, "trusted_proxies", "127.0.0.1")

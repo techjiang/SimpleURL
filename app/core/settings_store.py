@@ -34,6 +34,9 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "social_tag_wechat": (True, "标记微信来源（照常放行计数）"),
     # ---------- 通知 ----------
     "notify_enabled": (False, "告警是否推送到 webhook / 邮件 / Bark"),
+    # 同类告警的静默时长。放在后台可改，是因为「多久算重复」跟部署环境
+    # 关系很大：证书快到期会连报一个月，5 分钟一条能把自己淹了
+    "notify_cooldown": (3600, "同类告警静默时长（秒）"),
 }
 
 
@@ -58,9 +61,13 @@ def _cast(key: str, raw: str, default: object) -> object:
         return raw.strip().lower() in {"1", "true", "yes", "on"}
     if isinstance(default, int):
         try:
-            return int(raw.strip())
+            value = int(raw.strip())
         except (TypeError, ValueError):
             return default
+        # 冷却太短等于没冷却，太长等于关掉通道；统一收到可用区间里
+        if key == "notify_cooldown":
+            return max(0, min(86400, value))
+        return value
     if key == "access_mode":
         from app.core.access import normalize_mode
 

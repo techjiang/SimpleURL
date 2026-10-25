@@ -23,9 +23,14 @@ logger = logging.getLogger("simpleurl")
 router = APIRouter(tags=["pages"])
 
 # 页面路径，不能被短码占用
+# 站内真实存在的路径，一个都不能被短码占用。这份清单是唯一来源：
+# 建链时的校验（core.codes.reserved_conflict）也读它。
+# 以前两边各写一份，`tools` 和 `yourls-api` 只在这里出现，结果能建出来，
+# 路由注册顺序又让它们永远到不了 —— 建的时候不报错，用起来跳去别处。
 RESERVED_PATHS = {
     "healthz",
     "robots.txt",
+    "tools",
     "s",
     "static",
     "api",
@@ -33,6 +38,8 @@ RESERVED_PATHS = {
     "favicon.ico",
     "manifest.webmanifest",
     "yourls-api",
+    "apple-touch-icon.png",
+    "apple-touch-icon-precomposed.png",
 }
 
 

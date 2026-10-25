@@ -26,6 +26,29 @@ def iso(value: dt.datetime | None) -> str | None:
     return aware.isoformat() if aware else None
 
 
+def from_local_input(value: dt.datetime | None) -> dt.datetime | None:
+    """把浏览器 `datetime-local` 传来的本地时间换成 UTC。
+
+    要命的地方：JSON 里 `2026-12-31T23:59` 会被 pydantic 解析成**不带时区**的
+    datetime，以前直接 `replace(tzinfo=utc)` 当成 UTC 收了，于是国内用户填
+    「12 月 31 日 23:59 过期」，实际却在北京时间 1 月 1 日 07:59 才失效，
+    页面上也照样显示 07:59 —— 设过期的人和看结果的人都很笃定，只是差了 8 小时。
+
+    带时区的输入（前端补了 +08:00 之后）按原样换算，不做二次猜测。
+    """
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(dt.timezone.utc)
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            return value.replace(tzinfo=zone).astimezone(dt.timezone.utc)
+        except Exception:  # noqa: BLE001 - 时区库异常就退回系统偏移
+            pass
+    return value.astimezone(dt.timezone.utc)
+
+
 def local_naive(value: dt.datetime | None) -> dt.datetime | None:
     """转成浏览器 datetime-local 输入框能吃的 naive 本地时间（YYYY-MM-DDTHH:mm）。"""
     aware = ensure_aware(value)

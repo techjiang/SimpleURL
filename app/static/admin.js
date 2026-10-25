@@ -276,7 +276,7 @@
         const on = picked.has(l.code);
         return `<tr>
         <td class="col-check" data-label="选择"><input type="checkbox" data-pick="${escapeHtml(l.code)}"${on ? ' checked' : ''} aria-label="选择 /${escapeHtml(l.code)}" /></td>
-        <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
+        <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}${l.note ? `<span class="note-cell" title="${escapeHtml(l.note)}">${escapeHtml(l.note)}</span>` : ''}</td>
         <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
         <td class="clicks-cell col-clicks" data-label="点击">${l.clicks}</td>
         <td class="col-status" data-label="状态">${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
@@ -324,6 +324,19 @@
   }
 
   /* ISO -> datetime-local 需要的本地 naive 串 */
+  /* datetime-local 的本地串 -> 带时区偏移的 ISO */
+  function localInputToIso(value) {
+    if (!value) return undefined;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return undefined;
+    const pad = (n) => String(n).padStart(2, '0');
+    const off = -d.getTimezoneOffset();
+    const sign = off >= 0 ? '+' : '-';
+    const abs = Math.abs(off);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
+      + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+  }
+
   function toLocalInput(isoStr) {
     const d = new Date(isoStr);
     if (Number.isNaN(d.getTime())) return '';
@@ -341,6 +354,7 @@
     $('#admin-edit-target').value = link.target || '';
     $('#admin-edit-title').value = link.title || '';
     $('#admin-edit-tags').value = (link.tags || []).join(', ');
+    $('#admin-edit-note').value = link.note || '';
     $('#admin-edit-expires').value = link.expires_at ? toLocalInput(link.expires_at) : '';
     setStatus('#admin-edit-status', '');
     modal.hidden = false;
@@ -378,9 +392,11 @@
           body: JSON.stringify({
             target,
             title: ($('#admin-edit-title').value || '').trim() || null,
+            note: ($('#admin-edit-note').value || '').trim() || null,
             tags: ($('#admin-edit-tags').value || '').trim() || null,
-            // 留空表示清除过期时间，不能省略这个字段，否则永远改不掉
-            expires_at: exp ? new Date(exp).toISOString() : null,
+            // 留空表示清除过期时间，不能省略这个字段，否则永远改不掉。
+            // datetime-local 是本地时间，补上偏移再发，别让后端当成 UTC
+            expires_at: localInputToIso(exp) || null,
           }),
         });
         toast(`/${editingCode} 已更新`);
@@ -859,6 +875,31 @@
     });
   }
 
+  /* 同类告警静默时长：以前写死在代码里，运营想「重要告警别等一小时」只能改代码。
+     放到面板上，落库即时生效。 */
+  function bindNotifyCooldown() {
+    const input = $('#notify-cooldown');
+    const btn = $('#notify-cooldown-save');
+    if (!input || !btn) return;
+    btn.addEventListener('click', async () => {
+      const value = Number(input.value);
+      if (!Number.isFinite(value) || value < 0) {
+        setStatus('#notify-cooldown-status', '填个 0 或正整数', 'err');
+        return;
+      }
+      btn.disabled = true;
+      setStatus('#notify-cooldown-status', '保存中…');
+      try {
+        await post('/api/admin/settings', { notify_cooldown: Math.min(86400, Math.round(value)) });
+        setStatus('#notify-cooldown-status', '已保存', 'ok');
+      } catch (err) {
+        setStatus('#notify-cooldown-status', err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   function bindBlockedFilter() {
     const sel = $('#blocked-reason');
     if (sel) sel.addEventListener('change', loadBlockedEvents);
@@ -965,11 +1006,14 @@
       const data = await api('/api/admin/notify');
       const toggle = $('#notify-enabled');
       if (toggle) toggle.checked = Boolean(data.enabled);
+      const cool = $('#notify-cooldown');
+      if (cool && document.activeElement !== cool) cool.value = Number(data.cooldown ?? 3600);
       box.innerHTML = Object.values(data.channels || {}).map(notifyCard).join('');
     } catch (err) { toast(err.message); }
   }
 
   function bindNotify() {
+    bindNotifyCooldown();
     const toggle = $('#notify-enabled');
     if (toggle) toggle.addEventListener('change', async () => {
       try {

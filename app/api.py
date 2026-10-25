@@ -280,7 +280,7 @@ def api_export(
     require_manage(request, db)
     links = all_links_for_export(db, q=q, tag=tag, status=status, sort=sort)
     # 加 BOM，Excel 打开中文不乱码
-    body = "﻿" + links_to_csv(links)
+    body = "﻿" + links_to_csv(links, base_url=str(request.base_url).rstrip("/"))
     return Response(
         content=body,
         media_type="text/csv; charset=utf-8",

@@ -163,6 +163,15 @@
     if (!el) return;
     el.textContent = msg || '';
     el.className = 'field-status' + (kind ? ' ' + kind : '');
+    // 从「已被占用」改成「可以用」这类状态变化时，把上一次提交留下的红字收掉：
+    // 短码已经换好了，底下还挂着「已被占用，换一个试试」，看着像怎么改都不行
+    if (kind === 'ok' || !msg) {
+      const status = $('#create-status');
+      if (status && status.classList.contains('err')) {
+        status.textContent = '';
+        status.className = 'status';
+      }
+    }
   }
 
   // 短码边打边查：字符集与长度本地挡掉，占用情况问后端，省一次白填
@@ -171,6 +180,8 @@
     if (!input) return;
     let timer = null;
     let seq = 0;
+    // 短码被占用时提交键不装死：系统会当场换一个可用短码
+    input.addEventListener('input', () => { input.dataset.taken = ''; });
     input.addEventListener('input', () => {
       const code = input.value.trim();
       clearTimeout(timer);
@@ -184,6 +195,7 @@
           const data = await api('/api/codes/' + encodeURIComponent(code) + '/available');
           if (mine !== seq) return;  // 慢一步的旧响应不许覆盖新结论
           setCodeStatus(data.message ? (data.available ? '可以用 ✓' : data.message) : '', data.available ? 'ok' : 'err');
+          input.dataset.taken = data.available ? '' : '1';
         } catch (_) {
           if (mine === seq) setCodeStatus('');
         }
@@ -298,24 +310,49 @@
         target: $('#target').value.trim(),
         code: $('#code').value.trim() || undefined,
         title: $('#title').value.trim() || undefined,
+        note: (($('#note') || {}).value || '').trim() || undefined,
         tags: $('#tags').value.trim() || undefined,
-        expires_at: $('#expires_at').value || undefined,
+        // datetime-local 给的是「用户眼里的时间」，原样发；由后端按时区换算成 UTC。
+        // 前端自己转 ISO 反而会多绕一圈，还容易把「本地 23:59」发成别的时刻。
+        expires_at: localInputToIso($('#expires_at').value),
         clue: (($('#clue') || {}).value || '').trim() || undefined,
         reuse: Boolean(($('#reuse') || {}).checked) || undefined,
       };
       if (!payload.target) { setStatus('请先粘贴一个链接', 'err'); return; }
+      // 短码被占这件事，边打边查时就已经告诉过他了。真正提交到这里时
+      // 不该一整屏都白填 —— 给他换一个可用短码，回头再改也行
+      const retryPayload = { ...payload };
+      delete retryPayload.code;
       btn.disabled = true;
       setStatus('正在生成…');
       try {
-        const link = await withToken('/api/links', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
+        let link;
+        try {
+          link = await withToken('/api/links', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+        } catch (err) {
+          const taken = payload.code && /已被占用/.test(err.message || '');
+          if (!taken) throw err;
+          // 先按原样建一条会被拒，这里改成自动短码，并明确告诉用户换过码
+          link = await withToken('/api/links', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(retryPayload),
+          });
+          link._code_swapped = payload.code;
+        }
         showResult(link);
         rememberClaimCode(link.code);
         loadGuestLinks();
-        setStatus(link.reused ? '已复用现成的短码' : '创建成功', 'ok');
+        if (link._code_swapped) {
+          setStatus(`短码 ${link._code_swapped} 已被占用，已改用 /${link.code}`, 'ok');
+          toast(`短码已被占用，已改用 /${link.code}`);
+        } else {
+          setStatus(link.reused ? '已复用现成的短码' : '创建成功', 'ok');
+        }
         form.reset();
         setCodeStatus('');
         const dup = $('#dup-hint');
@@ -392,6 +429,12 @@
     $('#result-expiry').textContent = link.expires_at
       ? '到 ' + fmtDate(link.expires_at)
       : '永不过期';
+    // 备注是建的时候自己写的那句话，建完得能看见——否则这个字段等于白填
+    const noteLine = $('#result-note-line');
+    if (noteLine) {
+      noteLine.hidden = !link.note;
+      $('#result-note').textContent = link.note || '';
+    }
     const toggle = $('#result-toggle');
     toggle.dataset.enabled = link.enabled ? '1' : '0';
     toggle.textContent = link.enabled ? '停用' : '重新启用';
@@ -573,6 +616,8 @@
   function rowOf(link) {
     const tags = (link.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
     const title = link.title ? `<span class="title-cell">${escapeHtml(link.title)}</span>` : '';
+    // 备注是「这条链接在干什么」的自述，标题常常是抓来的、跟自己无关，所以单独一行
+    const note = link.note ? `<span class="note-cell" title="${escapeHtml(link.note)}">${escapeHtml(link.note)}</span>` : '';
     // 访客板面里那条是自己建的，回执在 cookie 里；这里顺手把回执带进链接，
     // 省得统计页和二维码又各丢一次凭据
     const tq = link.claim_token
@@ -589,7 +634,7 @@
         <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(link.code)}">删除</button>`;
     // data-label 供窄屏卡片式布局定位，桌面端不显示
     return `<tr>
-      <td data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}</td>
+      <td data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}${note}</td>
       <td data-label="目标" class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
       <td data-label="点击" class="clicks-cell">${link.clicks}</td>
       <td data-label="标签">${tags || '<span class="hint">—</span>'}</td>
@@ -822,6 +867,7 @@
     $('#edit-code').textContent = '/' + link.code;
     $('#edit-target').value = link.target || '';
     $('#edit-title').value = link.title || '';
+    $('#edit-note').value = link.note || '';
     $('#edit-tags').value = (link.tags || []).join(', ');
     $('#edit-expires').value = link.expires_at ? toLocalInput(link.expires_at) : '';
     $('#edit-status').textContent = '';
@@ -838,6 +884,21 @@
     document.body.style.overflow = '';
     editing = null;
     editingGuest = false;
+  }
+
+  /* datetime-local 的本地串 -> 带时区偏移的 ISO。
+     `2026-12-31T23:59` 交给 `new Date()` 在各家浏览器上会被当成 UTC 或本地，
+     Safari 上干脆 Invalid Date。自己补偏移，语义就只有一种：用户填的就是他眼里的时间。 */
+  function localInputToIso(value) {
+    if (!value) return undefined;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return undefined;
+    const pad = (n) => String(n).padStart(2, '0');
+    const off = -d.getTimezoneOffset();
+    const sign = off >= 0 ? '+' : '-';
+    const abs = Math.abs(off);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`
+      + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
   }
 
   /* ISO 字符串 -> datetime-local 需要的本地 naive 串 */
@@ -863,11 +924,12 @@
       const payload = {
         target: $('#edit-target').value.trim(),
         title: $('#edit-title').value.trim() || null,
+        note: $('#edit-note').value.trim() || null,
         tags: $('#edit-tags').value.trim() || null,
       };
       if (!payload.target) { setEditStatus('目标链接不能为空', 'err'); return; }
-      const exp = $('#edit-expires').value;
-      payload.expires_at = exp ? new Date(exp).toISOString() : null;
+      // 留空表示清除过期时间（显式 null），填了就是本地时间
+      payload.expires_at = localInputToIso($('#edit-expires').value) || null;
       const saveBtn = $('#edit-save');
       saveBtn.disabled = true;
       setEditStatus('保存中…');

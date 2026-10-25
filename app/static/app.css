@@ -232,8 +232,16 @@ select option { background: var(--bg-soft); color: var(--text); }
 .target-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .clicks-cell { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
 .title-cell { display: block; font-size: 0.78rem; color: var(--text-faint); margin-top: 2px; }
+/* 备注：自己写的那句话，和抓来的标题不是一回事，给一点区分但别抢注意力 */
+.note-cell {
+  display: block; font-size: 0.74rem; color: var(--text-dim); margin-top: 3px;
+  padding-left: 7px; border-left: 2px solid var(--border-strong);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* 标题来源小标签：抓取 / 兜底 / 手填，后台一眼分清 */
 .ref-list .silent-note { align-items: flex-start; opacity: 0.85; }
+/* 空列表占位：别让一张卡片只剩标题 */
+.ref-list .empty-row { color: var(--text-faint); font-size: 0.82rem; }
 .ref-list .silent-note span { font-size: 0.76rem; line-height: 1.5; }
 .src-pill {
   display: inline-block; font-size: 0.66rem; padding: 1px 6px; border-radius: 6px;
@@ -833,6 +841,14 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 /* ---------- 通知通道 ---------- */
 .notify-card { margin-bottom: 18px; }
 .notify-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* 静默时长：一个数字 + 一句解释，窄屏自动折行，别把说明挤成一列竖字 */
+.notify-cooldown {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.notify-cooldown label { font-size: 0.8rem; color: var(--text-dim); }
+.notify-cooldown input { width: 96px; }
+.notify-cooldown .hint { flex: 1 1 220px; min-width: 160px; }
 .notify-state { font-size: 0.78rem; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); }
 .notify-state.ok { color: var(--accent); border-color: rgba(74, 222, 128, .4); background: rgba(74, 222, 128, .08); }
 .notify-state.err { color: var(--danger); border-color: rgba(248, 113, 113, .4); background: rgba(248, 113, 113, .08); }

@@ -218,13 +218,25 @@ def _is_trusted_proxy(ip: str | None) -> bool:
 
 
 def client_ip(request) -> str | None:
-    """取客户端 IP：默认只认直连地址，转发头需代理在信任列表里。"""
+    """取客户端 IP：默认只认直连地址，转发头需代理在信任列表里。
+
+    X-Forwarded-For 从**右往左**找第一个不在信任列表里的地址。
+    取最左边那个（`split(",")[0]`）看着更简单，但那个位置是客户端自己填的：
+    请求一路穿过反代时，Nginx 只会在末尾追加，不会洗掉前面 —— 于是
+    `X-Forwarded-For: 1.2.3.4` 后面跟几千个不同 IP，限速和每日配额就形同虚设。
+    右边才是最近的、由我们自己这层代理写进去的地址。
+    """
     peer = request.client.host if request.client else None
     if not _is_trusted_proxy(peer):
         return peer
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip() or peer
+    fwd = request.headers.get("x-forwarded-for") or ""
+    hops = [part.strip() for part in fwd.split(",") if part.strip()]
+    for hop in reversed(hops):
+        if not _is_trusted_proxy(hop):
+            return hop
+    if hops:
+        # 整条链都是自己的代理：取最左，也就是最初的发起方
+        return hops[0]
     real = request.headers.get("x-real-ip")
     if real:
         return real.strip() or peer

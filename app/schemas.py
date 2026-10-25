@@ -116,12 +116,16 @@ class LinkUpdate(BaseModel):
 class LinkSelfUpdate(BaseModel):
     """创建者凭回执修改自己那条链接。
 
-    管理员的 PATCH 能改全部字段；这里刻意只留四个：目标、标题、标签、过期时间。
+    管理员的 PATCH 能改全部字段；这里刻意只留五个：目标、标题、备注、标签、过期时间。
     短码不让改（改了别人手上的链接就成孤儿），启停和删除另有专门动作。
+
+    备注是这条链接自己的属性，创建者当然该能改——建的时候只能填一次、
+    填错了永远改不掉，那这个字段迟早没人用。
     """
 
     target: Optional[str] = Field(None, max_length=2048)
     title: Optional[str] = Field(None, max_length=255)
+    note: Optional[str] = Field(None, max_length=400)
     tags: Optional[list[str] | str] = None
     expires_at: Optional[dt.datetime] = None
 
@@ -132,7 +136,7 @@ class LinkSelfUpdate(BaseModel):
 
         return normalize_url(v) if v else v
 
-    @field_validator("title", mode="before")
+    @field_validator("title", "note", mode="before")
     @classmethod
     def _v_text(cls, v):
         if v is None:
@@ -232,6 +236,9 @@ class SettingsOut(BaseModel):
     social_block_hint: str = ""
     social_tag_qq: bool = True
     social_tag_wechat: bool = True
+    # 告警推送
+    notify_enabled: bool = False
+    notify_cooldown: int = 3600
 
 
 class SettingsUpdate(BaseModel):
@@ -249,6 +256,10 @@ class SettingsUpdate(BaseModel):
     social_block_hint: Optional[str] = None
     social_tag_qq: Optional[bool] = None
     social_tag_wechat: Optional[bool] = None
+    # 告警推送总开关与同类告警静默时长。之前只有环境变量 + 后台「通知」页签
+    # 能改，通用设置接口悄悄丢掉这两个字段，前端传了也没反应
+    notify_enabled: Optional[bool] = None
+    notify_cooldown: Optional[int] = None
 
     @field_validator("access_mode", mode="before")
     @classmethod

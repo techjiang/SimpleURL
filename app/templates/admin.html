@@ -333,7 +333,14 @@
           <span>运行状态里的告警自动推出去</span>
         </label>
       </div>
-      <p class="hint">部署自检、配额告警这些以前只写在「运行状态」页里，得有人主动点开才看得见。填好下面任意一个通道，出现新告警时自动推一条，同类告警 1 小时内不重复。</p>
+      <p class="hint">部署自检、配额告警这些以前只写在「运行状态」页里，得有人主动点开才看得见。填好下面任意一个通道，出现新告警时自动推一条。</p>
+      <div class="notify-cooldown">
+        <label for="notify-cooldown">同类告警静默</label>
+        <input id="notify-cooldown" type="number" min="0" max="86400" step="60" inputmode="numeric" />
+        <span class="hint">秒 · 0 表示每次都发。同一句话挂在页面上一天，发一次就够；填小了两分钟一条，自己把通道淹了。</span>
+        <button class="btn ghost tiny" id="notify-cooldown-save" type="button">保存</button>
+        <span class="status" id="notify-cooldown-status" role="status" aria-live="polite"></span>
+      </div>
     </div>
     <div id="notify-cards"></div>
     <div class="chart-card">
@@ -433,6 +440,10 @@
         <label for="admin-edit-tags">标签 <span class="hint">逗号分隔</span></label>
         <input id="admin-edit-tags" type="text" maxlength="200" />
       </div>
+    </div>
+    <div class="field">
+      <label for="admin-edit-note">备注 <span class="hint">可选 · 列表与导出里都能看到</span></label>
+      <input id="admin-edit-note" type="text" maxlength="400" />
     </div>
     <div class="field">
       <label for="admin-edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>

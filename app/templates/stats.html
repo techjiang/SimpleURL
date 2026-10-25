@@ -90,6 +90,10 @@
     <ul class="ref-list">
       {% for d in data.devices %}
       <li><span>{{ d.device }}</span><b>{{ d.count }}</b></li>
+      {% else %}
+      {# 还没有点击时这里原来是一片空白：卡片标题、副标题都在，正文什么都没有，
+         看起来像加载失败。给一句说明，把「为什么是空的」讲清楚 #}
+      <li class="empty-row"><span>还没有点击数据，这条链接被打开后这里会出现设备分布</span></li>
       {% endfor %}
     </ul>
   </div>

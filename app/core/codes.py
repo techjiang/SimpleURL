@@ -42,10 +42,22 @@ def validate_custom_code(code: str, min_len: int, max_len: int) -> tuple[bool, s
         return False, f"短码最多 {max_len} 位"
     if not all(ch.isalnum() or ch in "-_" for ch in code):
         return False, "短码仅支持字母、数字、- 和 _"
-    lowered = code.lower()
-    if lowered in {"api", "admin", "static", "healthz", "favicon.ico", "robots.txt"}:
+    if reserved_conflict(code):
         return False, "该短码为系统保留字"
     return True, ""
+
+
+def reserved_conflict(code: str) -> bool:
+    """这个短码会不会把站内已有路径盖掉？
+
+    单一来源，别再各写一份清单。以前这里只有六个名字，漏了 `/tools` 和
+    `/yourls-api`：这两个是真能建出来的，而且建完**不报错**——路由注册顺序
+    决定了它们永远到不了，页面上却多出一条点了会跳去别处的「链接」。
+    真正不能用的集合就取页面路由里那份 RESERVED_PATHS。
+    """
+    from app.pages import RESERVED_PATHS
+
+    return bool(code) and code.lower() in RESERVED_PATHS
 
 
 def code_exists(code: str) -> bool:
