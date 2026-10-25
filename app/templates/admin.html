@@ -52,6 +52,13 @@
         <ul class="ref-list" id="dash-recent"></ul>
       </div>
     </div>
+    <div class="chart-card" id="dash-noclick-card" hidden>
+      <div class="chart-head">
+        <h2>未计入点击</h2>
+        <span class="hint">按原因分账 · 这些访问没有进「真实点击」</span>
+      </div>
+      <ul class="ref-list" id="dash-noclick"></ul>
+    </div>
   </div>
 
   <!-- 链接管理 -->
@@ -159,6 +166,16 @@
       <div class="chart-head">
         <h2>拦截留痕</h2>
         <span class="hint">最近被拦下的访问 · 只留痕不计数</span>
+      </div>
+      <div class="chart-head">
+        <label class="hint" for="blocked-reason">筛选原因</label>
+        <select id="blocked-reason">
+          <option value="">全部原因</option>
+          <option value="quota">超出配额</option>
+          <option value="ua">UA 屏蔽</option>
+          <option value="social">平台拦截</option>
+          <option value="social_silent">放行不计数</option>
+        </select>
       </div>
       <ul class="ref-list" id="blocked-list"></ul>
     </div>

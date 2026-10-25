@@ -24,6 +24,7 @@ from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip, rate_limiter
+from app.core.timeutil import local_day_start
 from app.core.settings_store import EDITABLE, code_length_value, effective, get_all, set_value
 from app.core.yourls import parse as parse_yourls
 from app.models import ApiKey, ClickEvent, Link, Setting
@@ -39,7 +40,7 @@ from app.schemas import (
     SettingsUpdate,
     UaRuleOut,
 )
-from app.services import ServiceError, flush_clicks, import_yourls, runtime_status
+from app.services import NO_CLICK_LABELS, ServiceError, flush_clicks, import_yourls, runtime_status
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -111,7 +112,9 @@ def api_logout(response: Response):
 def api_dashboard(request: Request, db: Session = Depends(get_db)):
     require_admin(request)
     now = dt.datetime.now(dt.timezone.utc)
-    today = now.date()
+    # 「今日」一律指本地自然日：容器跑 UTC 时 now.date() 是服务器日期，
+    # 跟用户在页面上看到的「今天」差 8 小时
+    today = now.astimezone().date()
 
     total_links = db.execute(select(func.count()).select_from(Link)).scalar_one() or 0
     total_clicks = db.execute(select(func.coalesce(func.sum(Link.clicks), 0))).scalar_one() or 0
@@ -146,9 +149,28 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
     blocked_events = (
         db.execute(select(func.count()).select_from(ClickEvent).where(ClickEvent.blocked.is_(True))).scalar_one() or 0
     )
+    # 没计入的访问按原因拆开。只给一个总数的话，看到「拦截留痕 40」根本
+    # 判断不了是有人在刷（该调限速）还是 UA 黑名单误伤了正常用户（该改规则）。
+    blocked_by_reason = {
+        str(key or ""): int(count)
+        for key, count in db.execute(
+            select(ClickEvent.block_reason, func.count(ClickEvent.id))
+            .where(ClickEvent.blocked.is_(True))
+            .group_by(ClickEvent.block_reason)
+        ).all()
+    }
+    no_click = [
+        {"reason": key, "label": label, "count": blocked_by_reason.get(key, 0)}
+        for key, (label, _hint) in NO_CLICK_LABELS.items()
+    ]
+    legacy = blocked_by_reason.get("", 0)
+    if legacy:
+        no_click.append({"reason": "legacy", "label": "历史未分类", "count": legacy})
     total_events = db.execute(select(func.count()).select_from(ClickEvent)).scalar_one() or 0
-    # 今日按本地自然日算，跟用户看到的日期一致（UTC 会整体错位 8 小时）
-    today_start = dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc)
+    # 今日按本地自然日算，跟用户看到的日期一致。
+    # 注意不能自己 combine(tzinfo=utc)：那切的是本地早上 8 点，
+    # 早班那几个小时的点击会被算到昨天去。
+    today_start = local_day_start(today)
     clicks_today = (
         db.execute(
             select(func.count())
@@ -188,21 +210,22 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         ).all()
     ]
 
-    # 近 14 天按本地日期分桶，和统计页保持同一口径
-    local_day = func.date(ClickEvent.ts, "localtime")
+    # 近 14 天按本地日期分桶，和统计页保持同一口径。
+    # 窗口同样按本地自然日切，否则最后一根柱子（今天）会是空的。
+    # 与统计页同一口径：先按 UTC 解释再转本地，别用裸的 "localtime"
+    local_day = func.date(func.datetime(ClickEvent.ts, "utc"), "localtime")
     daily_rows = (
         db.execute(
             select(local_day, func.count(ClickEvent.id))
-            .where(ClickEvent.ts >= now - dt.timedelta(days=13), ClickEvent.blocked.is_(False))
+            .where(ClickEvent.ts >= local_day_start(today - dt.timedelta(days=13)), ClickEvent.blocked.is_(False))
             .group_by(local_day)
             .order_by(local_day)
         )
         .all()
     )
-    today_local = now.astimezone().date()
     buckets: dict[str, int] = {}
     for i in range(14):
-        buckets[(today_local - dt.timedelta(days=13 - i)).isoformat()] = 0
+        buckets[(today - dt.timedelta(days=13 - i)).isoformat()] = 0
     for d, c in daily_rows:
         key = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
         buckets[key] = int(c)
@@ -220,6 +243,7 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         ],
         pending_clicks=click_buffer.pending(),
         blocked_events=int(blocked_events),
+        no_click=no_click,
         clicks_today=int(clicks_today),
         total_events=int(total_events),
         top_links=top_links,
@@ -364,12 +388,13 @@ def api_blocked_events(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
     platform: str | None = Query(None),
+    reason: str | None = Query(None, description="ua / social / social_silent / quota"),
     db: Session = Depends(get_db),
 ):
-    """拦截留痕：平台、时间、UA 摘要，不含 IP 明文（只存哈希也一并省略）。"""
+    """拦截留痕：原因、平台、时间、UA 摘要，不含 IP 明文（只存哈希也一并省略）。"""
     require_admin(request)
     stmt = (
-        select(Link.code, ClickEvent.platform, ClickEvent.ua, ClickEvent.ts)
+        select(Link.code, ClickEvent.platform, ClickEvent.ua, ClickEvent.ts, ClickEvent.block_reason)
         .join(Link, Link.id == ClickEvent.link_id)
         .where(ClickEvent.blocked.is_(True))
         .order_by(ClickEvent.ts.desc())
@@ -377,6 +402,9 @@ def api_blocked_events(
     )
     if platform and social.known(platform):
         stmt = stmt.where(ClickEvent.platform == platform)
+    if reason:
+        # 按原因筛：查出「配额用尽」那几条，才知道该调阈值还是该封人
+        stmt = stmt.where(ClickEvent.block_reason == reason)
     items = [
         {
             "code": code,
@@ -385,9 +413,13 @@ def api_blocked_events(
             "color": social.color(platform_key),
             "icon": social.icon(platform_key),
             "ua": (ua or "")[:90],
+            "reason": block_reason or "",
+            "reason_label": NO_CLICK_LABELS.get(block_reason, ("历史未分类", ""))[0]
+            if block_reason
+            else "历史未分类",
             "ts": ensure_iso(ts),
         }
-        for code, platform_key, ua, ts in db.execute(stmt).all()
+        for code, platform_key, ua, ts, block_reason in db.execute(stmt).all()
     ]
     return {"items": items, "total": len(items)}
 

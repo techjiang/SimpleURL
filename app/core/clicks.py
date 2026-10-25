@@ -26,9 +26,9 @@ logger = logging.getLogger("simpleurl")
 class _Pending:
     """一条待写入的点击。"""
 
-    __slots__ = ("link_id", "referrer", "ua", "device", "platform", "ip", "blocked", "ts")
+    __slots__ = ("link_id", "referrer", "ua", "device", "platform", "ip", "blocked", "reason", "ts")
 
-    def __init__(self, link_id: int, referrer, ua, device, platform, ip, blocked, ts) -> None:
+    def __init__(self, link_id: int, referrer, ua, device, platform, ip, blocked, reason, ts) -> None:
         self.link_id = link_id
         self.referrer = referrer
         self.ua = ua
@@ -36,6 +36,7 @@ class _Pending:
         self.platform = platform
         self.ip = ip
         self.blocked = blocked
+        self.reason = reason
         self.ts = ts
 
 
@@ -60,6 +61,7 @@ class ClickBuffer:
         ip: str | None,
         blocked: bool = False,
         platform: str | None = None,
+        reason: str | None = None,
     ) -> bool:
         """入队一条点击；队列满时丢弃并返回 False。"""
         from app.core.security import parse_user_agent
@@ -72,7 +74,8 @@ class ClickBuffer:
             device=device,
             platform=(platform or None),
             ip=ip,
-            blocked=blocked,
+            blocked=blocked or bool(reason),
+            reason=reason,
             ts=utcnow(),
         )
         with self._lock:
@@ -82,8 +85,8 @@ class ClickBuffer:
                 self._queue.pop(0)
                 self._dropped += 1
             self._queue.append(item)
-            # 被 UA 屏蔽的事件只留痕、不算点击
-            if not blocked:
+            # 被 UA 屏蔽 / 平台拦截 / 超出配额的事件只留痕、不算点击
+            if not blocked and not reason:
                 self._counts[link_id] = self._counts.get(link_id, 0) + 1
         return True
 
@@ -126,6 +129,7 @@ class ClickBuffer:
                         platform=item.platform,
                         ip_hash=ip_hash(item.ip) or None,
                         blocked=item.blocked,
+                        block_reason=item.reason,
                     )
                     for item in batch
                 ]

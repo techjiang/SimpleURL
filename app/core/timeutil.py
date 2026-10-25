@@ -48,3 +48,48 @@ def local_date(value: dt.datetime | None) -> dt.date | None:
     """
     aware = ensure_aware(value)
     return aware.astimezone().date() if aware else None
+
+
+def local_day_start(day: dt.date) -> dt.datetime:
+    """某个本地自然日的 00:00，换算成 UTC 时刻（库里一律存 UTC）。
+
+    统计窗口、每日配额、仪表盘「今日」都要按本地自然日切，
+    自己写 `combine(...,tzinfo=utc)` 会切在当地时间早上 8 点。
+    """
+    local = dt.datetime.combine(day, dt.time.min).astimezone()
+    # 用真实时区库换算，别只靠 UTC 偏移：夏令时切换那几天偏移会变。
+    # 容器里常见「UTC 偏移是 0，但 TZ=Asia/Shanghai」的组合，此时 astimezone()
+    # 给的是 UTC 零点，和用户眼里的本地零点差 8 小时——所以 TZ 要单独认。
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            return dt.datetime.combine(day, dt.time.min, tzinfo=zone).astimezone(dt.timezone.utc)
+        except Exception:  # noqa: BLE001 - 时区库异常就退回按偏移算
+            pass
+    return local.astimezone(dt.timezone.utc)
+
+
+def _process_zone():
+    """进程实际使用的时区对象：优先认 TZ 环境变量，其次认系统本地时区。"""
+    import os
+
+    from zoneinfo import ZoneInfo
+
+    key = (os.environ.get("TZ") or "").strip()
+    if key and key not in {"UTC", "Etc/UTC"}:
+        try:
+            return ZoneInfo(key)
+        except Exception:  # noqa: BLE001 - 写错的名字不该让页面挂掉
+            return None
+    name = getattr(dt.datetime.now().astimezone().tzinfo, "key", None)
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def today_local() -> dt.date:
+    """今天的本地日期。统计窗口、每日配额都按它切。"""
+    return dt.datetime.now(dt.timezone.utc).astimezone().date()

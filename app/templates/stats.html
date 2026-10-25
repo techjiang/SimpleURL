@@ -30,6 +30,9 @@
       <span class="hint">最近 30 天{% if peak %} · 单日最高 {{ peak }} 次{% endif %}</span>
     </div>
     <div class="chart-scroll"><div class="chart" id="chart" data-daily='{{ data.daily | tojson }}'></div></div>
+    {# 窄屏放不下 30 根柱子，图会横向滚动并默认停在最右端。不说一声，
+       用户只会看到「今天」那根，以为前面 20 天全是零。 #}
+    <p class="chart-swipe hint" hidden>← 左右滑动看完整 30 天</p>
     {# 趋势图是脚本画的，读屏软件和「Ctrl+A 复制出来」都拿不到数字。
        这里留一份纯文本视图：看清哪天点了多少次，也不用等脚本。 #}
     <details class="chart-table">
@@ -62,20 +65,26 @@
       {% else %}
       <li><span class="hint">还没有数据</span><b>0</b></li>
       {% endfor %}
-      {% if data.blocked %}
-      <li>
-        <span><i class="plat-dot" data-plat="blocked"></i>未计入点击</span>
-        <b>{{ data.blocked }}</b>
-      </li>
-      {% if data.silent %}
-      <li class="silent-note">
-        <span class="hint">其中 {{ data.silent }} 次是「放行不计数」——页面其实打开了，只是没算进点击数</span>
-        <b></b>
-      </li>
-      {% endif %}
-      {% endif %}
     </ul>
   </div>
+  {% if data.no_click %}
+  {# 「未计入点击」原来是单独一行数字，看不出为什么没计入。限额、UA 黑名单、
+     平台拦截三者处置方式完全不同：前者要调阈值，后两者要么关规则要么认了。 #}
+  <div class="chart-card">
+    <div class="chart-head">
+      <h2>未计入点击</h2>
+      <span class="hint">这些访问没有算进上面的总数</span>
+    </div>
+    <ul class="ref-list">
+      {% for row in data.no_click %}
+      <li title="{{ row.hint }}">
+        <span><b class="no-click-label">{{ row.label }}</b><span class="hint inline-hint">{{ row.hint }}</span></span>
+        <b>{{ row.count }}</b>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
   <div class="chart-card">
     <div class="chart-head"><h2>设备分布</h2><span class="hint">全部历史</span></div>
     <ul class="ref-list">

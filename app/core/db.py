@@ -108,6 +108,8 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "device": "VARCHAR(16)",
         "blocked": "BOOLEAN NOT NULL DEFAULT 0",
         "platform": "VARCHAR(16)",
+        # 没计入点击的原因：ua / social / social_silent / quota
+        "block_reason": "VARCHAR(16)",
     },
 }
 

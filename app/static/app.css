@@ -268,19 +268,40 @@ select option { background: var(--bg-soft); color: var(--text); }
 /* 右侧控件不许抢满整行：筛选下拉固定宽度，并靠右 */
 .chart-head > select { flex: none; width: auto; min-width: 128px; max-width: 180px; }
 .chart-head .hint { margin-left: auto; }
-.chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; min-width: 100%; width: 100%; }
-
+/* 图表 = 左侧刻度 + 柱状区。刻度绝对定位贴在容器左上，柱子区照旧 flex 撑满。
+   原来是单纯的一排柱子，没有任何量纲：1 次和 100 次看起来是同一种东西。 */
+.chart { position: relative; display: flex; align-items: stretch; width: 100%; padding-left: 30px; box-sizing: border-box; }
+/* 刻度用绝对定位钉在图表左上，不跟着柱子跑：柱子一多就横向滚动，
+   纵轴跟着滚走等于没有纵轴。滚动时脚本用 translateX 把它拉回来。 */
+.chart-axis { position: absolute; left: 0; top: 0; height: 160px; width: 26px; pointer-events: none; border-radius: 3px; border-right: 1px solid var(--border); background: var(--bg); z-index: 2; }
+.chart-axis span { position: absolute; right: 6px; transform: translateY(50%); font-size: .62rem; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 柱状区要能撑开：放在横向滚动容器里、柱子又有最小宽度时，flex 会把 30 根柱子
+   压回可视宽度，手机上这段图就是一片空白。fit-content 吃的是「柱子最小宽度之和」，
+   图表外壳只负责留出左侧刻度位。 */
+.chart-bars { flex: 1 1 auto; display: flex; align-items: stretch; gap: 3px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
 .chart-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; scrollbar-width: thin; }
+/* 只在真的滚得动时出现（脚本按滚动宽度决定），别在桌面端白占一行 */
+.chart-swipe { margin: 6px 0 0; font-size: .74rem; text-align: right; }
 .chart-scroll::-webkit-scrollbar { height: 6px; }
 .chart-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-.bar { flex: 1 1 0; min-width: 14px; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; height: 100%; }
-.bar i { display: block; width: 100%; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
+.bar { position: relative; flex: 1 0 auto; min-width: 14px; height: calc(100% - 16px); }
+.bar i { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
 .bar:hover i { filter: brightness(1.3); }
+/* 日期挂在柱子底下：横向滚动时跟着自己那根走，不会滚丢 */
+.bar b { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 4px; font-size: .62rem; color: var(--text-faint); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bar.is-zero i { background: transparent; border-top: 1px dashed var(--border-strong); border-radius: 0; }
-.bar b { font-size: 0.6rem; color: var(--text-faint); text-align: center; font-weight: 500; }
 .ref-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .ref-list li { display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.88rem; }
-.ref-list b { font-variant-numeric: tabular-nums; }
+.ref-list b { font-variant-numeric: tabular-nums; flex: none; }
+/* 拦截留痕里那一小片原因标签：不抢眼，但要能和平台名区分开 */
+.reason-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: .7rem; color: var(--text-dim); background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
+/* 「未计入点击」这一类：原因名后面跟一句人话解释，窄屏自动换到第二行 */
+.ref-list li > span { min-width: 0; flex: 1 1 auto; }
+/* 原因名和它的人话说明分两行：挤在一行时窄屏会把「放行不计数」折成三截 */
+.no-click-label { display: block; color: var(--text); font-weight: 600; }
+/* 原因和解释必须分两行：并排时窄屏会把「超出配额」和后面的说明挤成一坨，
+   看起来像一句话没说完 */
+.inline-hint { display: block; font-size: .74rem; margin-top: 2px; line-height: 1.5; }
 
 /* ============ Toast ============ */
 .toast {
@@ -322,13 +343,18 @@ select option { background: var(--bg-soft); color: var(--text); }
   .container { padding: 18px 0 60px; }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
-  .chart { height: 110px; }
+  .chart { padding-left: 26px; }
+  .chart-bars { height: 130px; }
+  /* 手机上柱子给足宽度，宁可横滑也别全挤成一根线 */
+  .chart .bar { min-width: 22px; }
+  .bar b { font-size: .58rem; }
+  .chart-axis { width: 22px; height: 130px; }
+  .chart-axis span { font-size: .58rem; right: 4px; }
   /* 30 天在 390px 里每根柱子只剩 10px：点击全堆在最后一天时那根柱子细到看不见。
      窄屏给柱子一个下限宽度让图横向可滑，右端留 4px 内边距，免得最后一根贴边被裁。
      标签同时抽稀，不然滚起来满屏都是字 */
-  .chart { padding-right: 4px; }
+  .chart-bars { padding-right: 4px; }
   .chart .bar { min-width: 24px; }
-  .bar b { font-size: .58rem; white-space: nowrap; }
 }
 
 /* ============ 无障碍 ============ */

@@ -98,6 +98,13 @@ class ClickEvent(Base):
     blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default='0')
     # 访问来源平台：wechat / wecom / qq / weibo ...，认不出为空
     platform: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
+    # 这一条为什么没算进点击数：ua（UA 黑名单）/ social（社交拦截）/
+    # social_silent（放行不计数）/ quota（限速或每日配额）。有值即等于 blocked。
+    #
+    # 原来这些情况全塞在 blocked 一个布尔里，后台只能显示「已拦截」——
+    # 可「微信里被拦下」和「每人每天第 N 次之后不再计数」是两件事：
+    # 前者要看战果，后者往往是配额配小了，得把数字调大。
+    block_reason: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     link: Mapped[Link] = relationship(back_populates="events")
 

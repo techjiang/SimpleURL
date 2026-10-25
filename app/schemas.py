@@ -145,6 +145,8 @@ class StatsOut(BaseModel):
     blocked: int = 0
     # 其中属于「放行不计数」的部分（用户其实打开了页面）
     silent: int = 0
+    # 没计入点击的访问按原因拆开：ua / social / social_silent / quota / legacy
+    no_click: list[dict] = Field(default_factory=list)
 
 
 class MessageOut(BaseModel):
@@ -269,6 +271,8 @@ class DashboardOut(BaseModel):
     blocked_events: int
     clicks_today: int
     total_events: int = 0
+    # blocked_events 按原因拆开：ua / social / social_silent / quota / legacy
+    no_click: list[dict] = Field(default_factory=list)
     top_links: list[dict] = Field(default_factory=list)
     recent_clicks: list[dict] = Field(default_factory=list)
     daily: list[dict] = Field(default_factory=list)

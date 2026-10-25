@@ -46,7 +46,7 @@ class TestDelayedClicks:
         assert click_buffer.pending() == 1
         # 掺一条指向不存在链接的记录，外键会整批拦下
         pending_cls = type(click_buffer._queue[0])
-        click_buffer._queue.append(pending_cls(9999, None, "curl", "bot", None, "1.1.1.1", False, utcnow()))
+        click_buffer._queue.append(pending_cls(9999, None, "curl", "bot", None, "1.1.1.1", False, None, utcnow()))
         with pytest.raises(Exception):
             click_buffer.flush()
         assert click_buffer.pending() == 2

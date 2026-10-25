@@ -19,13 +19,26 @@ from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
 from app.core.settings_store import code_length_value, effective
 from app.core.titles import resolve_title
-from app.core.timeutil import ensure_aware, local_date, utcnow
+from app.core.timeutil import ensure_aware, local_day_start, today_local, utcnow
 from app.models import ClickEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
 
 logger = logging.getLogger("simpleurl")
 
 EXPIRING_DAYS = 7
+
+# 一次点击没被计入的原因。库里存这几个短值，界面再翻译成人话。
+NO_CLICK_UA = "ua"  # UA 黑名单命中
+NO_CLICK_SOCIAL = "social"  # 社交平台策略拦下
+NO_CLICK_SOCIAL_SILENT = "social_silent"  # 放行不计数
+NO_CLICK_QUOTA = "quota"  # 单 IP 限速或每日点击配额用尽
+
+NO_CLICK_LABELS = {
+    NO_CLICK_UA: ("UA 屏蔽", "命中自定义 UA 黑名单，未计入点击数"),
+    NO_CLICK_SOCIAL: ("平台拦截", "被社交平台防洪策略拦下，返回了提示页"),
+    NO_CLICK_SOCIAL_SILENT: ("放行不计数", "页面正常打开了，但按策略不计入点击数"),
+    NO_CLICK_QUOTA: ("超出配额", "单 IP 访问过于频繁或今日点击配额用完，未计入点击数"),
+}
 
 EXPORT_HEADER = ["短码", "短链接", "目标地址", "标题", "标签", "点击", "状态", "过期时间", "创建时间"]
 
@@ -329,37 +342,50 @@ def record_click(
     snap = snapshot or policy.snapshot(db)
     if blocked:
         # 社交平台策略直接拦下的访问：只留痕，不算点击
-        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
-        return {"recorded": False, "blocked": True, "platform": platform}
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL)
+        return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_SOCIAL}
 
     blocked_rule = guard.is_ua_blocked(ua, snap.get("ua_rules") or [])
     if blocked_rule:
-        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_UA)
         logger.info("UA 屏蔽命中 %s -> %s", link.code, blocked_rule)
-        return {"recorded": False, "blocked": True, "platform": platform}
+        return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_UA}
 
     allowed, reason = guard.check_click_quota(db, ip, snap)
     if not allowed:
+        # 这一条原来连留痕都没有：跳转照常 307，库里一行记录都不落，
+        # 于是「今天的点击数为什么比实际访问少了一大截」在界面上无从解释。
+        # 现在同样入库（blocked + quota），只是不计入点击数。
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_QUOTA)
         logger.info("点击配额拦截 %s -> %s", link.code, reason)
-        return {"recorded": False, "blocked": False, "reason": reason, "platform": platform}
+        return {"recorded": False, "blocked": True, "reason": reason, "platform": platform, "block_reason": NO_CLICK_QUOTA}
 
     if platform and snap.get("social_guard") and (snap.get("platforms") or {}).get(platform) == "silent":
         # 放行不计数：怀疑被刷量的平台上，真实用户照样能打开，只是不进统计
-        click_buffer.add(db, link.id, referrer, ua, ip, blocked=True, platform=platform)
-        return {"recorded": False, "blocked": True, "platform": platform}
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL_SILENT)
+        return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_SOCIAL_SILENT}
 
-    click_buffer.add(db, link.id, referrer, ua, ip, blocked=False, platform=platform)
+    click_buffer.add(db, link.id, referrer, ua, ip, platform=platform)
     return {"recorded": True, "blocked": False, "platform": platform}
 
 
 def get_stats(db: Session, code: str, days: int = 30) -> dict:
     link = get_link_by_code(db, code)
     days = max(1, min(365, days))
-    now = utcnow()
-    since = now - dt.timedelta(days=days - 1)
+    # 分桶口径是本地日期，取窗口也得按本地自然日算。
+    # 原来是「现在往前推 days-1 天」，本地 08:00 就是 UTC 00:00，
+    # 于是「最近 30 天」实际是 29 天前到今天凌晨，今天的点击一根柱子都没有——
+    # 图上一片空白，卡片上却明写着今天点了 23 次。
+    today = today_local()
+    since = local_day_start(today - dt.timedelta(days=days - 1))
 
-    # 按本地日期分桶：UTC 分桶会让「今天」整体错位 8 小时（见 timeutil.local_date）
-    local_day = func.date(ClickEvent.ts, "localtime")
+    # 按本地日期分桶：UTC 分桶会让「今天」整体错位 8 小时（见 timeutil.local_date）。
+    # 不用 SQL 的 "localtime" 修饰符：SQLite 里时间存的是不带时区的字符串，
+    # `date(ts,'localtime')` 等于把这个 UTC 值当成 UTC 再转一次宿主机时区，
+    # 而宿主机多半也是 UTC——分出来的日期跟「用户看到的今天」差一截。
+    # 更隐蔽的是：容器时区设成东八区之后，同一个时刻会被分到前一天去。
+    # 这里显式按 UTC 解释、再转进程本地时区，跟 Python 侧 today_local() 同一口径。
+    local_day = func.date(func.datetime(ClickEvent.ts, "utc"), "localtime")
     daily_rows = db.execute(
         select(local_day, func.count(ClickEvent.id))
         .where(ClickEvent.link_id == link.id, ClickEvent.ts >= since)
@@ -369,7 +395,6 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
 
     # 补全缺失日期
     buckets: dict[str, int] = {}
-    today = local_date(now) or now.date()
     for i in range(days):
         buckets[(today - dt.timedelta(days=days - 1 - i)).isoformat()] = 0
     for d, c in daily_rows:
@@ -437,13 +462,34 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     ).scalar_one()
     # 「放行不计数」与「真被拦下」在库里都标 blocked，但对使用的人是两件事：
     # 前者用户其实打开了页面。拆开报，别让人以为微信那 27 次访问全被拒了。
-    silent_count = db.execute(
-        select(func.count(ClickEvent.id)).where(
-            ClickEvent.link_id == link.id,
-            ClickEvent.blocked.is_(True),
-            ClickEvent.platform.is_not(None),
-        )
-    ).scalar_one()
+    #
+    # 口径改准：原来这里数的是「被拦且带平台」，凡是微信里被拦的都算成
+    # 「放行不计数」，于是「平台拦截 10 次」里那 10 次也被重复报了一遍。
+    # 现在只认 block_reason = social_silent，老数据没有这个字段才算 0。
+    by_reason = {
+        str(key or ""): int(count)
+        for key, count in db.execute(
+            select(ClickEvent.block_reason, func.count(ClickEvent.id))
+            .where(ClickEvent.link_id == link.id, ClickEvent.blocked.is_(True))
+            .group_by(ClickEvent.block_reason)
+        ).all()
+    }
+    silent_count = by_reason.get(NO_CLICK_SOCIAL_SILENT, 0)
+    no_click = [
+        {
+            "reason": key,
+            "label": NO_CLICK_LABELS.get(key, ("其它", ""))[0],
+            "hint": NO_CLICK_LABELS.get(key, ("其它", "没计入点击"))[1],
+            "count": count,
+        }
+        # 老数据（这次升级前入库的）没有原因，归到「历史未分类」最后一栏，
+        # 总不能因为升级把它们算丢
+        for key, count in sorted(by_reason.items(), key=lambda kv: -kv[1])
+        if key
+    ]
+    legacy = by_reason.get("", 0)
+    if legacy:
+        no_click.append({"reason": "legacy", "label": "历史未分类", "hint": "升级前入库的拦截记录", "count": legacy})
 
     unique = db.execute(
         select(func.count(func.distinct(ClickEvent.ip_hash))).where(
@@ -469,6 +515,8 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         "platforms": platforms,
         "blocked": int(blocked_count or 0),
         "silent": int(silent_count or 0),
+        # 没计入点击的访问按原因拆开：UA 屏蔽 / 平台拦截 / 放行不计数 / 超出配额
+        "no_click": no_click,
     }
 
 
@@ -576,6 +624,17 @@ def runtime_status(db: Session) -> dict:
         ).scalar_one()
         or 0
     )
+    # 没计入点击的访问，按原因分账。「今天点击数怎么比实际访问少这么多」
+    # 这个问题的答案全在这几个数字里：配额用尽、UA 命中、平台拦截，
+    # 三者的处置方式完全不同，混成一个总数没法判断。
+    no_click_rows = db.execute(
+        select(ClickEvent.block_reason, func.count(ClickEvent.id))
+        .where(ClickEvent.blocked.is_(True))
+        .group_by(ClickEvent.block_reason)
+    ).all()
+    no_click = {key: 0 for key in NO_CLICK_LABELS}
+    for key, count in no_click_rows:
+        no_click[key if key in NO_CLICK_LABELS else "legacy"] = int(count)
     return {
         "links": link_count,
         "click_events": event_count,
@@ -585,7 +644,8 @@ def runtime_status(db: Session) -> dict:
         "expiring_links": expiring,
         "retention_days": CLICK_EVENT_RETENTION_DAYS,
         "title_sources": title_source_stats(db),
-        "warnings": access_warnings() + title_warnings(db),
+        "no_click": no_click,
+        "warnings": access_warnings() + title_warnings(db) + quota_warnings(no_click),
     }
 
 
@@ -618,6 +678,28 @@ def title_warnings(db: Session) -> list[dict]:
             "level": "warn",
             "text": "自动取标题已开启，但没有一条抓到真实标题（全部走了 URL 兜底）。"
             "多半是这台机器出不了网，或被 SSRF 解析检查挡住了。",
+        }
+    ]
+
+
+def quota_warnings(no_click: dict) -> list[dict]:
+    """配额用尽的占比高了就直说，别让人对着少掉的点击数瞎猜。
+
+    单 IP 的每日点击配额是防刷的口子，配小了会把自己人也挡在外面。
+    判断门槛取两条：绝对量超过 20 次，且在那条链接的访问里占了一成以上。
+    """
+    quota = int(no_click.get(NO_CLICK_QUOTA) or 0)
+    total = sum(int(v or 0) for v in no_click.values())
+    if quota < 20 or not total:
+        return []
+    if quota / total < 0.1:
+        return []
+    return [
+        {
+            "level": "warn",
+            "text": f"有 {quota} 次访问因为单 IP 每日点击配额用尽而没计入点击。"
+            "如果这是正常访客，去「防洪 / UA 屏蔽」把每日点击上限调大，或确认 TRUSTED_PROXIES 正确——"
+            "反代没配好时，所有访客会共用同一个 IP 的配额。",
         }
     ]
 

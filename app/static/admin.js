@@ -138,6 +138,17 @@
             .join('');
         }
       }
+      // 未计入点击按原因分账：只给一个总数，没法判断是该调阈值还是该改规则
+      const noClickCard = $('#dash-noclick-card');
+      if (noClickCard) {
+        const rows = (d.no_click || []).filter((r) => r.count > 0);
+        noClickCard.hidden = rows.length === 0;
+        if (rows.length) {
+          $('#dash-noclick').innerHTML = rows
+            .map((r) => `<li><span>${escapeHtml(r.label)}</span><b>${r.count}</b></li>`)
+            .join('');
+        }
+      }
       $('#dash-top').innerHTML = d.top_links.length
         ? d.top_links.map((l) => `<li><span class="mono">/${escapeHtml(l.code)}</span><b>${l.clicks}</b></li>`).join('')
         : '<li><span>暂无数据</span><b>0</b></li>';
@@ -156,20 +167,58 @@
     } catch (err) { toast(err.message); }
   }
 
+  // 后台不加载 app.js，这段和前台 renderChart 里那份是一样的算法：
+  // 柱子放得下就逐根标日期，放不下按宽度抽稀；纵轴给好看的整数刻度
+  function axisTicks(max, count = 3) {
+    const raw = Math.max(1, max) / count;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = Math.max(1, Math.round((norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag));
+    const top = Math.ceil(Math.max(1, max) / step) * step;
+    const ticks = [];
+    for (let v = 0; v <= top; v += step) ticks.push(v);
+    return { top, ticks };
+  }
+
   function renderChart(el, daily) {
     if (!el) return;
-    const max = Math.max(1, ...daily.map((d) => d.count));
-    // 后台不加载 app.js，这段和前台 renderChart 里那份是一样的算法：
-    // 柱子放得下就逐根标日期，放不下按宽度抽稀，窄到抽稀也没意义就只留首尾
+    const peak = Math.max(0, ...daily.map((d) => d.count));
+    const { top, ticks } = axisTicks(peak);
     const width = el.parentElement.clientWidth;
     const per = 21;
     const last = daily.length - 1;
     const dense = width / Math.max(1, daily.length) >= per * 2.2;
     const step = Math.ceil(daily.length / Math.max(2, Math.floor(width / (per * 2.2))));
     const showAt = (i) => dense || i === 0 || i === last || i % step === 0;
-    el.innerHTML = daily
-      .map((d, i) => `<div class="bar" title="${d.date}：${d.count}"><i style="height:${(d.count / max) * 100}%"></i><b>${showAt(i) ? d.date.slice(5) : ''}</b></div>`)
+    const bars = daily
+      .map((d, i) => {
+        // 有数据的柱子留个下限高度，1 次和 0 次不该长得一样
+        const h = d.count ? Math.max(4, (d.count / top) * 100) : 0;
+        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count}"><i style="height:${h}%"></i><b>${showAt(i) ? d.date.slice(5) : ''}</b></div>`;
+      })
       .join('');
+    el.innerHTML =
+      `<div class="chart-axis" aria-hidden="true">${ticks
+        .slice()
+        .reverse()
+        .map((v) => `<span style="bottom:${(v / top) * 100}%">${v}</span>`)
+        .join('')}</div><div class="chart-bars">${bars}</div>`;
+    // 柱子撑出容器时默认停在最右端：窄屏上一打开该看到「今天」，不是 30 天前
+    const wrap = el.parentElement;
+    if (!wrap) return;
+    const axis = el.querySelector('.chart-axis');
+    const keepAxis = () => {
+      if (axis) axis.style.transform = `translateX(${wrap.scrollLeft}px)`;
+    };
+    if (!wrap.dataset.axisBound) {
+      wrap.dataset.axisBound = '1';
+      wrap.addEventListener('scroll', keepAxis, { passive: true });
+    }
+    if (wrap.scrollWidth > wrap.clientWidth + 1) {
+      // 窄屏上一打开该看到「今天」，不是 14 天前
+      wrap.scrollLeft = wrap.scrollWidth;
+      keepAxis();
+    }
   }
 
   /* ---------- 链接管理 ---------- */
@@ -515,16 +564,21 @@
   async function loadBlockedEvents() {
     const list = $('#blocked-list');
     if (!list) return;
+    const pick = $('#blocked-reason');
+    const reason = pick ? pick.value : '';
     try {
-      const data = await api('/api/admin/blocked-events?limit=8');
+      const data = await api('/api/admin/blocked-events?limit=8' + (reason ? `&reason=${encodeURIComponent(reason)}` : ''));
       const items = data.items || [];
       if (!items.length) {
-        list.innerHTML = '<li><span class="hint">还没有被拦下的访问</span><b>0</b></li>';
+        list.innerHTML = `<li><span class="hint">${reason ? '这个原因下还没有记录' : '还没有被拦下的访问'}</span><b>0</b></li>`;
         return;
       }
+      // 原因写在这一行里：只显示「已拦截」的话，UA 误伤和配额用尽长得一模一样，
+      // 该改规则还是该调阈值完全看不出来
       list.innerHTML = items.map((i) => `
         <li title="${escapeHtml(i.ua)}"><span class="plat-name">${platMark(i.icon, i.label, i.color)}
-        ${escapeHtml(i.label)} · <span class="mono">/${escapeHtml(i.code)}</span></span>
+        ${escapeHtml(i.label)} · <span class="mono">/${escapeHtml(i.code)}</span>
+        <span class="reason-pill">${escapeHtml(i.reason_label || '历史未分类')}</span></span>
         <b>${escapeHtml(shortTime(i.ts))}</b></li>`).join('');
     } catch (err) { toast(err.message); }
   }
@@ -734,6 +788,10 @@
         ['标题 · 抓取成功', ts.fetched || 0],
         ['标题 · URL 兜底', ts.fallback || 0],
         ['标题 · 人工填写', ts.manual || 0],
+        ['未计入 · 超出配额', (s.no_click || {}).quota || 0],
+        ['未计入 · UA 屏蔽', (s.no_click || {}).ua || 0],
+        ['未计入 · 平台拦截', (s.no_click || {}).social || 0],
+        ['未计入 · 放行不计数', (s.no_click || {}).social_silent || 0],
       ];
       $('#status-list').innerHTML = rows
         .map(([k, v]) => `<li><span>${k}</span><b>${escapeHtml(String(v))}</b></li>`)
@@ -767,6 +825,11 @@
     });
   }
 
+  function bindBlockedFilter() {
+    const sel = $('#blocked-reason');
+    if (sel) sel.addEventListener('change', loadBlockedEvents);
+  }
+
   function bindAudit() {
     const sel = $('#audit-action');
     if (sel) sel.addEventListener('change', loadAudit);
@@ -775,6 +838,7 @@
   /* ---------- 启动 ---------- */
   async function boot() {
     bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
+    bindBlockedFilter();
     bindMigrate(); bindSettings(); bindStatus();
     await loadDashboard();
   }

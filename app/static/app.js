@@ -672,17 +672,72 @@
   }
 
   /* ---------- 图表 ---------- */
+  // 纵轴刻度：原来只画柱子，不给任何量纲。1 次和 100 次看起来是同一种东西，
+  // 一根顶天的柱子到底是 3 还是 300，只能靠 hover 猜。
+  // 刻度用「好看的步长」（1/2/5×10ⁿ），上限永远包住最大值。
+  function axisTicks(max, count = 3) {
+    const raw = Math.max(1, max) / count;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = Math.max(1, Math.round((norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag));
+    const top = Math.ceil(Math.max(1, max) / step) * step;
+    const ticks = [];
+    for (let v = 0; v <= top; v += step) ticks.push(v);
+    return { top, ticks };
+  }
+
   function renderChart(el, daily) {
-    const max = Math.max(1, ...daily.map((d) => d.count));
+    const peak = Math.max(0, ...daily.map((d) => d.count));
+    const { top, ticks } = axisTicks(peak);
     const labels = chartLabels(el.parentElement.clientWidth, daily);
-    el.innerHTML = daily
+    // 柱高按刻度上限算，不再按最大值——否则「最高的一根」永远是 100%，
+    // 加上坐标轴之后数字会和视觉对不上
+    const bars = daily
       .map((d, i) => {
         // 只点了一次的柱子按比例算出来不到 3%，在 140px 高度里就是一条线，
         // 看着和「完全没有」没区别。给有数据的柱子一个下限高度。
-        const h = d.count ? Math.max(4, (d.count / max) * 100) : 0;
+        const h = d.count ? Math.max(4, (d.count / top) * 100) : 0;
         return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${labels.get(i) || ''}</b></div>`;
       })
       .join('');
+    el.innerHTML =
+      `<div class="chart-axis" aria-hidden="true">${ticks
+        .slice()
+        .reverse()
+        .map((v) => `<span style="bottom:${(v / top) * 100}%">${v}</span>`)
+        .join('')}</div><div class="chart-bars">${bars}</div>`;
+    // 柱子撑出容器了（手机上 30 天放不下）：默认停在最右端。
+    // 不这么做的话，一打开看到的是 30 天前那段——那几天大多是零，
+    // 图上一片空白，而「今天的点击」恰好在滚动区外面。
+    scrollChartToLatest(el);
+  }
+
+  function scrollChartToLatest(el) {
+    const wrap = el.parentElement;
+    if (!wrap) return;
+    const axis = el.querySelector('.chart-axis');
+    const keepAxis = () => {
+      if (axis) axis.style.transform = `translateX(${wrap.scrollLeft}px)`;
+    };
+    const scrollable = wrap.scrollWidth > wrap.clientWidth + 1;
+    // 「左右滑动」这句只在真滚得动时出现，桌面端不该白占一行
+    const tip = wrap.parentElement.querySelector('.chart-swipe');
+    if (tip) tip.hidden = !scrollable;
+    if (!scrollable) return;
+    // 柱子撑出去了：窄屏该先看到「今天」，而不是 30 天前那几根零。
+    // 但纵轴刻度留在左边不动，否则那块数值就跟柱子一起滚没了。
+    // 边距补丁：日期挂在柱子底下，会往外溢出几像素，去掉它反而把滚动条去掉、
+    // 让 scrollWidth 刚好等于 clientWidth。
+    if (wrap.scrollLeft > 0 && !wrap.dataset.snapped) {
+      wrap.dataset.snapped = '1';
+      wrap.scrollLeft = wrap.scrollWidth;
+    }
+    if (!wrap.dataset.axisBound) {
+      wrap.dataset.axisBound = '1';
+      wrap.addEventListener('scroll', keepAxis, { passive: true });
+    }
+    wrap.scrollLeft = wrap.scrollWidth;
+    keepAxis();
   }
 
   // 柱子宽度够就每根都标日期，不够就抽稀；窄到抽稀也放不下（手机竖屏 30 根柱子），
@@ -721,5 +776,5 @@
     }
   });
 
-  window.SimpleURL = { renderChart, chartLabels };
+  window.SimpleURL = { renderChart, chartLabels, axisTicks, scrollChartToLatest };
 })();
