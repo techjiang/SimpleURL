@@ -24,10 +24,12 @@ from app.services import (
     all_links_for_export,
     list_tags,
     bulk_update,
+    code_available,
     create_link,
     delete_link,
     get_link_by_code,
     get_stats,
+    find_similar,
     links_to_csv,
     list_links,
     update_link,
@@ -118,6 +120,32 @@ def api_tags(request: Request, db: Session = Depends(get_db)):
     if not _access_granted(request):
         raise ServiceError("访问受限：请先输入访问令牌", 403)
     return {"items": list_tags(db)}
+
+
+@router.get("/codes/{code}/available", summary="自定义短码可用性")
+def api_code_available(code: str, request: Request, db: Session = Depends(get_db)):
+    """创建前顺手查一下短码能不能用。
+
+    只在「这个请求本来就有创建权」时才说真话；否则一律回可以用——
+    否则这就是个免费的短码库扫描器，谁都能顺着把别人的短码摸出来。
+    """
+    if not _access_granted(request):
+        raise ServiceError("访问受限：请先输入访问令牌", 403)
+    if not can_create(request, db):
+        return {"code": code, "available": True, "message": ""}
+    ok, msg = code_available(db, code)
+    return {"code": code, "available": ok, "message": msg}
+
+
+@router.get("/duplicate", summary="按目标地址查重")
+def api_duplicate(request: Request, target: str = Query(..., min_length=1), db: Session = Depends(get_db)):
+    """这个地址是不是已经收录过了。
+
+    只给管理员：结果里有别人建的短码，开放给访客等于把链接库开个后门。
+    """
+    check_api_key(request, db)
+    require_manage(request, db)
+    return {"items": find_similar(db, target)}
 
 
 @router.get("/links/export", summary="导出 CSV")
@@ -282,6 +310,19 @@ def _access_granted(request: Request) -> bool:
     from app.pages import _check_access
 
     return _check_access(request)
+
+
+def can_create(request: Request, db: Session) -> bool:
+    """当前请求是否具备创建权，只问不抛。
+
+    `require_create` 是同一套判断的「拒绝版」：要给接口做能力探测时用这个，
+    别去 catch 那个异常——异常里带着给人看的中文提示，拿来当布尔值用很脆。
+    """
+    try:
+        require_create(request, db)
+    except ServiceError:
+        return False
+    return True
 
 
 @router.get("/stats/summary", summary="总览统计")

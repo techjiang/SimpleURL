@@ -695,6 +695,62 @@ def import_yourls(db: Session, rows: list[dict]) -> dict:
     return {"imported": imported, "renamed": skipped, "failed": failed, "total": len(rows)}
 
 
+def code_available(db: Session, raw: str) -> tuple[bool, str]:
+    """自定义短码可用性预检：让前端边打边看，别等提交了才知道被占。"""
+    code = normalize_code(raw)
+    if not code:
+        return False, "短码不能为空"
+    ok, msg = validate_custom_code(code, settings.code_min_length, settings.code_max_length)
+    if not ok:
+        return False, msg
+    # 与 create_link 同一套语义：大小写不敏感，`Abc` 和 `abc` 是同一个地址
+    if _code_taken(db, code):
+        return False, "该短码已被占用"
+    return True, "可以用"
+
+
+def _url_key(url: str) -> str:
+    """归一化目标地址用于查重：忽略协议差异、末尾斜杠与 # 片段。"""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(str(url).strip())
+    except ValueError:
+        return str(url).strip()
+    host = (parts.hostname or "").lower()
+    if parts.port and parts.port not in (80, 443):
+        host = f"{host}:{parts.port}"
+    path = parts.path.rstrip("/") or "/"
+    return urlunsplit(("", host, path, parts.query, ""))
+
+
+def find_similar(db: Session, target: str, limit: int = 5) -> list[dict]:
+    """找出指向同一地址的已有短码，按「能用且点击多」排序。"""
+    from app.core.security import normalize_url
+
+    normalized = normalize_url(target) or str(target).strip()
+    key = _url_key(normalized)
+    if not key:
+        return []
+
+    # 先用 host 粗筛一把，再在 Python 里精确比对，别把库整张拉进内存
+    host = key.split("/", 1)[0]
+    rows = db.execute(select(Link).where(func.lower(Link.target).contains(host)).limit(500)).scalars().all()
+    hits = [row for row in rows if _url_key(row.target) == key]
+    hits.sort(key=lambda r: (not r.enabled or r.is_expired, -(r.clicks or 0)))
+    return [
+        {
+            "code": row.code,
+            "title": row.title,
+            "target": row.target,
+            "clicks": int(row.clicks or 0),
+            "enabled": row.enabled,
+            "expired": row.is_expired,
+        }
+        for row in hits[:limit]
+    ]
+
+
 def _code_taken(db: Session, code: str) -> bool:
     return db.execute(select(Link.id).where(func.lower(Link.code) == code.lower())).first() is not None
 

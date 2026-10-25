@@ -706,3 +706,22 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
     padding-left: 12px; border-left: 2px solid var(--border-strong);
   }
 }
+
+/* ============ 创建前校验：短码状态 / 重复目标 ============ */
+.field-status {
+  display: block; min-height: 1.15em; margin-top: 5px;
+  font-size: 0.76rem; color: var(--text-faint); transition: color .15s ease;
+}
+.field-status.ok { color: var(--accent); }
+.field-status.err { color: var(--danger); }
+
+.dup-hint {
+  margin-top: 14px; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: rgba(255, 196, 87, .08); border: 1px solid rgba(255, 196, 87, .26);
+}
+.dup-title { margin: 0 0 8px; font-size: 0.82rem; color: #ffd894; }
+.dup-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.dup-list li { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; padding: 4px 0; }
+.dup-list li a { font-weight: 600; }
+.dup-list li .hint { flex: 1 1 auto; font-size: 0.76rem; }
+.dup-list li .btn { padding: 3px 8px; font-size: 0.72rem; }
