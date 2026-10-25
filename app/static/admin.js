@@ -17,6 +17,18 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
   }
 
+  /* 平台标记：有图标画图标，没图标画色点。色值与图标都由后端给（social.COLORS）,
+     这里只负责拼 DOM——认不出的平台退回中性灰点，不会画成一个空洞。 */
+  function platMark(icon, label, color) {
+    const tint = escapeHtml(color || '#7c889c');
+    const tip = escapeHtml(label || '');
+    if (icon) {
+      return `<span class="plat-mark" style="--dot:${tint};color:${tint}" title="${tip}">`
+        + `<svg viewBox="0 0 24 24"><path d="${escapeHtml(icon)}"/></svg></span>`;
+    }
+    return `<i class="plat-dot" style="--dot:${tint}" title="${tip}"></i>`;
+  }
+
   function setStatus(id, msg, kind) {
     const el = $(id);
     if (!el) return;
@@ -101,10 +113,10 @@
     try {
       const d = await api('/api/admin/dashboard');
       const cards = [
-        ['链接总数', d.total_links], ['总点击', d.total_clicks],
+        ['链接总数', d.total_links], ['真实点击', d.total_clicks],
         ['已启用', d.enabled_links], ['已停用', d.disabled_links],
         ['已过期', d.expired_links], ['7 天内到期', d.expiring_links || 0], ['今日点击', d.clicks_today],
-        ['拦截访问', d.blocked_events], ['待结算', d.pending_clicks],
+        ['拦截留痕', d.blocked_events], ['待结算', d.pending_clicks],
       ];
       $('#dash-cards').innerHTML = cards
         .map(([k, v]) => `<div class="stat-card"><span class="stat-label">${k}</span><strong>${v}</strong></div>`)
@@ -134,7 +146,7 @@
             const mark = c.blocked ? '<span class="badge exp">已拦截</span>' : '';
             // 带上来源平台，一眼看出这条是被微信拦的还是 QQ 里点的
             const plat = c.platform
-              ? `<i class="plat-dot" data-plat="${escapeHtml(c.platform)}" title="${escapeHtml(c.platform_label || '')}"></i>`
+              ? platMark(c.platform_icon, c.platform_label, c.platform_color)
               : '';
             const dev = c.device === 'mobile' ? '移动端' : c.device === 'desktop' ? '桌面端' : c.device === 'bot' ? '机器人' : '未知';
             const platName = c.platform ? `<span class="hint">${escapeHtml(c.platform_label || c.platform)}</span>` : '';
@@ -147,8 +159,16 @@
   function renderChart(el, daily) {
     if (!el) return;
     const max = Math.max(1, ...daily.map((d) => d.count));
+    // 后台不加载 app.js，这段和前台 renderChart 里那份是一样的算法：
+    // 柱子放得下就逐根标日期，放不下按宽度抽稀，窄到抽稀也没意义就只留首尾
+    const width = el.parentElement.clientWidth;
+    const per = 21;
+    const last = daily.length - 1;
+    const dense = width / Math.max(1, daily.length) >= per * 2.2;
+    const step = Math.ceil(daily.length / Math.max(2, Math.floor(width / (per * 2.2))));
+    const showAt = (i) => dense || i === 0 || i === last || i % step === 0;
     el.innerHTML = daily
-      .map((d) => `<div class="bar" title="${d.date}：${d.count}"><i style="height:${(d.count / max) * 100}%"></i><b>${d.date.slice(5)}</b></div>`)
+      .map((d, i) => `<div class="bar" title="${d.date}：${d.count}"><i style="height:${(d.count / max) * 100}%"></i><b>${showAt(i) ? d.date.slice(5) : ''}</b></div>`)
       .join('');
   }
 
@@ -204,16 +224,19 @@
       $('#admin-links-body').innerHTML = data.items.map((l) => {
         const on = picked.has(l.code);
         return `<tr>
-        <td class="col-check"><input type="checkbox" data-pick="${escapeHtml(l.code)}"${on ? ' checked' : ''} aria-label="选择 /${escapeHtml(l.code)}" /></td>
-        <td><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
-        <td class="target-cell" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
-        <td class="clicks-cell">${l.clicks}</td>
-        <td>${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
-        <td class="title-src">${titleSourceCell(l)}</td>
-        <td>
+        <td class="col-check" data-label="选择"><input type="checkbox" data-pick="${escapeHtml(l.code)}"${on ? ' checked' : ''} aria-label="选择 /${escapeHtml(l.code)}" /></td>
+        <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
+        <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
+        <td class="clicks-cell col-clicks" data-label="点击">${l.clicks}</td>
+        <td class="col-status" data-label="状态">${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
+        <td class="exp-cell col-exp" data-label="过期">${expiryText(l)}</td>
+        <td class="title-src col-src" data-label="标题">${titleSourceCell(l)}</td>
+        <td class="col-ops" data-label="操作"><div class="ops">
+          <a class="btn tiny ghost" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">统计</a>
+          <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(l.code)}">编辑</button>
           <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(l.code)}">${l.enabled ? '停用' : '启用'}</button>
           <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(l.code)}">删除</button>
-        </td>
+        </div></td>
       </tr>`;
       }).join('');
       $('#admin-links-empty').hidden = data.items.length > 0;
@@ -226,6 +249,99 @@
       if (box) { box.checked = all; box.indeterminate = !all && data.items.some((l) => picked.has(l.code)); }
       syncBulkBar();
     } catch (err) { toast(err.message); }
+  }
+
+  /* 过期那一列：后台原来完全看不到到期时间，只能靠「状态」猜。
+     「还剩 5 天」比一个日期有用，7 天内标黄。 */
+  function expiryText(l) {
+    if (!l.expires_at) return '<span class="hint">永不过期</span>';
+    const end = new Date(l.expires_at).getTime();
+    if (Number.isNaN(end)) return '<span class="hint">—</span>';
+    const date = shortDay(l.expires_at);
+    const left = end - Date.now();
+    if (left <= 0) return `<span class="exp-soon">已过期</span><span class="hint exp-date">${date}</span>`;
+    const days = Math.ceil(left / 86400000);
+    const text = days <= 1 ? '不到 1 天' : `还剩 ${days} 天`;
+    return `<span class="${days <= 7 ? 'exp-soon' : 'hint'}">${text}</span><span class="hint exp-date">${date}</span>`;
+  }
+
+  function shortDay(iso) {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  /* ISO -> datetime-local 需要的本地 naive 串 */
+  function toLocalInput(isoStr) {
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  let editingCode = null;
+
+  function openEdit(link) {
+    editingCode = link.code;
+    const modal = $('#admin-edit-modal');
+    if (!modal) return;
+    $('#admin-edit-code').textContent = '/' + link.code;
+    $('#admin-edit-target').value = link.target || '';
+    $('#admin-edit-title').value = link.title || '';
+    $('#admin-edit-tags').value = (link.tags || []).join(', ');
+    $('#admin-edit-expires').value = link.expires_at ? toLocalInput(link.expires_at) : '';
+    setStatus('#admin-edit-status', '');
+    modal.hidden = false;
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeEdit() {
+    const modal = $('#admin-edit-modal');
+    if (!modal) return;
+    modal.hidden = true;
+    document.body.style.overflow = '';
+    editingCode = null;
+  }
+
+  function bindEdit() {
+    const modal = $('#admin-edit-modal');
+    if (!modal) return;
+    modal.addEventListener('click', (e) => { if (e.target.dataset.close) closeEdit(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) closeEdit(); });
+    const form = $('#admin-edit-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!editingCode) return;
+      const target = ($('#admin-edit-target').value || '').trim();
+      if (!target) { setStatus('#admin-edit-status', '目标链接不能为空', 'err'); return; }
+      const exp = $('#admin-edit-expires').value;
+      const btn = $('#admin-edit-save');
+      btn.disabled = true;
+      setStatus('#admin-edit-status', '保存中…');
+      try {
+        await api('/api/links/' + encodeURIComponent(editingCode), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target,
+            title: ($('#admin-edit-title').value || '').trim() || null,
+            tags: ($('#admin-edit-tags').value || '').trim() || null,
+            // 留空表示清除过期时间，不能省略这个字段，否则永远改不掉
+            expires_at: exp ? new Date(exp).toISOString() : null,
+          }),
+        });
+        toast(`/${editingCode} 已更新`);
+        closeEdit();
+        loadAdminTags();
+        loadAdminLinks();
+      } catch (err) {
+        setStatus('#admin-edit-status', err.message, 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    });
   }
 
   async function runBulk(action) {
@@ -284,6 +400,11 @@
       if (!btn) return;
       const code = btn.dataset.code;
       try {
+        if (btn.dataset.act === 'edit') {
+          const detail = await api('/api/links/' + encodeURIComponent(code));
+          openEdit(detail);
+          return;
+        }
         if (btn.dataset.act === 'del') {
           if (!confirm(`确定删除 /${code}？不可恢复`)) return;
           await api('/api/links/' + encodeURIComponent(code), { method: 'DELETE' });
@@ -364,7 +485,7 @@
       $('#social-hint').value = rules.hint || settings.social_block_hint || '';
       $('#social-grid').innerHTML = (rules.platforms || []).map((p) => `
         <label class="social-row">
-          <span class="social-name"><i class="plat-dot" data-plat="${escapeHtml(p.key)}"></i>${escapeHtml(p.label)}</span>
+          <span class="social-name">${platMark(p.icon, p.label, p.color)}${escapeHtml(p.label)}</span>
           <select data-plat="${escapeHtml(p.key)}">
             ${STRATEGY_LABELS.map(([v, t]) =>
               `<option value="${v}"${p.strategy === v ? ' selected' : ''}>${t}</option>`).join('')}
@@ -385,7 +506,7 @@
         return;
       }
       list.innerHTML = items.map((i) => `
-        <li><span><i class="plat-dot" data-plat="${escapeHtml(i.key)}"></i>${escapeHtml(i.label)}</span>
+        <li><span class="plat-name">${platMark(i.icon, i.label, i.color)}${escapeHtml(i.label)}</span>
         <b>${i.count}${i.blocked ? ` <em class="hint">拦截 ${i.blocked}</em>` : ''}</b></li>`).join('');
     } catch (err) { toast(err.message); }
     loadBlockedEvents();
@@ -402,7 +523,7 @@
         return;
       }
       list.innerHTML = items.map((i) => `
-        <li title="${escapeHtml(i.ua)}"><span><i class="plat-dot" data-plat="${escapeHtml(i.platform || 'other')}"></i>
+        <li title="${escapeHtml(i.ua)}"><span class="plat-name">${platMark(i.icon, i.label, i.color)}
         ${escapeHtml(i.label)} · <span class="mono">/${escapeHtml(i.code)}</span></span>
         <b>${escapeHtml(shortTime(i.ts))}</b></li>`).join('');
     } catch (err) { toast(err.message); }
@@ -653,7 +774,7 @@
 
   /* ---------- 启动 ---------- */
   async function boot() {
-    bindTabs(); bindAdminLinks(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
+    bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
     bindMigrate(); bindSettings(); bindStatus();
     await loadDashboard();
   }

@@ -31,7 +31,7 @@
     <div class="chart-card">
       <div class="chart-head">
         <h2>近 14 天点击</h2>
-        <span class="hint">延迟计数待结算 <b id="dash-pending">0</b> 条</span>
+        <span class="hint">不含拦截留痕 · 待结算 <b id="dash-pending">0</b> 条</span>
       </div>
       <div class="chart-scroll"><div class="chart" id="dash-chart"></div></div>
     </div>
@@ -88,7 +88,8 @@
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="admin-check-all" aria-label="全选本页" /></th>
-              <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>状态</th><th>标题</th><th>操作</th>
+              <th class="col-code">短码</th><th class="col-target">目标</th><th class="col-clicks">点击</th>
+              <th class="col-status">状态</th><th class="col-exp">过期</th><th class="col-src">标题</th><th class="col-ops">操作</th>
             </tr>
           </thead>
           <tbody id="admin-links-body"></tbody>
@@ -310,6 +311,39 @@
     <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password" />
     <button class="btn primary" type="submit">登录</button>
     <span class="status" id="login-status" role="status"></span>
+  </form>
+</div>
+
+<!-- 编辑弹窗：后台原来只能停用/删除，改个标题得回首页，列表中间跳来跳去很别扭 -->
+<div class="modal" id="admin-edit-modal" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <form class="modal-card" id="admin-edit-form" autocomplete="off">
+    <div class="modal-head">
+      <h3>编辑 <span class="mono" id="admin-edit-code"></span></h3>
+      <button class="btn tiny ghost" type="button" data-close="1">关闭</button>
+    </div>
+    <div class="field">
+      <label for="admin-edit-target">目标链接</label>
+      <input id="admin-edit-target" type="text" required />
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="admin-edit-title">标题</label>
+        <input id="admin-edit-title" type="text" maxlength="255" />
+      </div>
+      <div class="field">
+        <label for="admin-edit-tags">标签 <span class="hint">逗号分隔</span></label>
+        <input id="admin-edit-tags" type="text" maxlength="200" />
+      </div>
+    </div>
+    <div class="field">
+      <label for="admin-edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>
+      <input id="admin-edit-expires" type="datetime-local" />
+    </div>
+    <div class="modal-actions">
+      <button type="submit" class="btn primary" id="admin-edit-save">保存</button>
+      <span class="status" id="admin-edit-status" role="status" aria-live="polite"></span>
+    </div>
   </form>
 </div>
 

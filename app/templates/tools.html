@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} · 接口与工具{% endblock %}
+{% block content %}
+<section class="tools-page">
+  <div class="stats-hero">
+    <div>
+      <p class="kicker">Developers</p>
+      <h1>接口与工具</h1>
+      <p class="lede">一个接口建一条短链，一把密钥接进任意系统。下面每个请求都能直接在本页试。</p>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head">
+      <h2>接口约定</h2>
+      <span class="hint">全部返回 JSON</span>
+    </div>
+    <ul class="api-spec">
+      <li><span>Base URL</span><code id="api-base">{{ request.base_url }}api</code></li>
+      <li><span>鉴权</span><code>X-Api-Key: sk-xxxx</code><span class="hint">站点开启「要求 API 密钥」后必带；查链接库与统计始终要管理员会话</span></li>
+      <li><span>CSRF</span><code>X-CSRF-Token</code><span class="hint">本站页面内的写请求会自动带上；脚本调用不受限</span></li>
+      <li><span>错误</span><code>{"ok": false, "message": "原因"}</code><span class="hint">HTTP 状态码同步给出 400/401/403/409/422/429</span></li>
+    </ul>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head">
+      <h2>创建短链接</h2>
+      <span class="hint">POST /api/links</span>
+    </div>
+    <form class="composer-form" id="try-form" autocomplete="off">
+      <div class="field main">
+        <label for="try-target">目标链接</label>
+        <input id="try-target" type="text" placeholder="https://example.com/a/very/long/link" required />
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="try-code">自定义短码 <span class="hint">留空自动生成</span></label>
+          <input id="try-code" type="text" maxlength="16" placeholder="my-link" />
+        </div>
+        <div class="field">
+          <label for="try-key">API 密钥 <span class="hint">站点没开密钥要求就留空</span></label>
+          <input id="try-key" type="text" placeholder="sk-..." />
+        </div>
+      </div>
+      <div class="composer-actions">
+        <button type="submit" class="btn primary" id="try-btn">发一次请求</button>
+        <span class="status" id="try-status" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+    <pre class="curl" id="try-curl">curl -X POST {{ request.base_url }}api/links \
+  -H 'Content-Type: application/json' \
+  -H 'X-Api-Key: sk-...' \
+  -d '{"target":"https://example.com/a/very/long/link"}'</pre>
+    <div class="result" id="try-result" hidden>
+      <div class="result-card">
+        <p class="result-label">创建成功</p>
+        <div class="result-main">
+          <a id="try-link" href="#" target="_blank" rel="noopener"></a>
+          <button class="btn ghost copy" id="try-copy" type="button">复制</button>
+        </div>
+      </div>
+      <pre class="curl" id="try-json"></pre>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head">
+      <h2>接口清单</h2>
+      <span class="hint">点一下展开</span>
+    </div>
+    {% for group, items in endpoints.items() %}
+    <details class="api-group">
+      <summary>{{ group }}</summary>
+      <ul class="api-list">
+        {% for e in items %}
+        <li>
+          <span class="method {{ e.method | lower }}">{{ e.method }}</span>
+          <code>{{ e.path }}</code>
+          <span class="hint">{{ e.desc }}</span>
+          {% if e.auth %}<span class="badge off">{{ e.auth }}</span>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endfor %}
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-head">
+      <h2>YOURLS 兼容</h2>
+      <span class="hint">老插件换个域名就能用</span>
+    </div>
+    <pre class="curl">curl '{{ request.base_url }}yourls-api?action=shorturl&amp;url=https://example.com'</pre>
+    <ul class="api-list">
+      <li><span class="method get">GET</span><code>action=shorturl</code><span class="hint">创建短链，返回 keyword / shorturl</span></li>
+      <li><span class="method get">GET</span><code>action=expand</code><span class="hint">用 shorturl 换回原始地址</span></li>
+      <li><span class="method get">GET</span><code>action=url-stats</code><span class="hint">单条链接的点击数</span></li>
+      <li><span class="method get">GET</span><code>action=db-stats</code><span class="hint">站点总量</span></li>
+    </ul>
+    <p class="hint">配了 <code>YOURLS_TOKEN</code> 就在请求里带上 <code>signature</code>；没配则不校验。</p>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/app.js" defer nonce="{{ csp_nonce(request) }}"></script>
+<script src="/static/tools.js" defer nonce="{{ csp_nonce(request) }}"></script>
+{% endblock %}

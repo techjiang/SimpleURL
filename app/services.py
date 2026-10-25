@@ -19,7 +19,7 @@ from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
 from app.core.settings_store import code_length_value, effective
 from app.core.titles import resolve_title
-from app.core.timeutil import ensure_aware, utcnow
+from app.core.timeutil import ensure_aware, local_date, utcnow
 from app.models import ClickEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
 
@@ -358,20 +358,22 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     now = utcnow()
     since = now - dt.timedelta(days=days - 1)
 
+    # 按本地日期分桶：UTC 分桶会让「今天」整体错位 8 小时（见 timeutil.local_date）
+    local_day = func.date(ClickEvent.ts, "localtime")
     daily_rows = db.execute(
-        select(func.date(ClickEvent.ts), func.count(ClickEvent.id))
+        select(local_day, func.count(ClickEvent.id))
         .where(ClickEvent.link_id == link.id, ClickEvent.ts >= since)
-        .group_by(func.date(ClickEvent.ts))
-        .order_by(func.date(ClickEvent.ts))
+        .group_by(local_day)
+        .order_by(local_day)
     ).all()
 
     # 补全缺失日期
     buckets: dict[str, int] = {}
+    today = local_date(now) or now.date()
     for i in range(days):
-        d = (now - dt.timedelta(days=days - 1 - i)).date().isoformat()
-        buckets[d] = 0
+        buckets[(today - dt.timedelta(days=days - 1 - i)).isoformat()] = 0
     for d, c in daily_rows:
-        key = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        key = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
         buckets[key] = int(c)
 
     referrer_rows = (
@@ -384,11 +386,13 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         )
         .all()
     )
-    top = [
-        {"source": _host(r) or "直接访问", "count": int(c)}
-        for r, c in referrer_rows
-        if (_host(r) is not None)
-    ]
+    # referrer 可能为空串以外的脏值（含端口的 origin、大写主机），统一收敛成主机名
+    top_counts: dict[str, int] = {}
+    for r, c in referrer_rows:
+        host = _host(r)
+        if host:
+            top_counts[host] = top_counts.get(host, 0) + int(c)
+    top = [{"source": k, "count": v} for k, v in sorted(top_counts.items(), key=lambda kv: -kv[1])]
     if not top:
         top = [{"source": "直接访问", "count": link.clicks or 0}]
 
@@ -418,7 +422,14 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         .all()
     )
     platforms = [
-        {"platform": social.label(key), "key": key or "other", "count": int(c)}
+        {
+            "platform": social.label(key),
+            "key": key or "other",
+            "count": int(c),
+            # 默认灰点毫无信息量，这里把墨迹色（社交平台官网色）一起给前端
+            "color": social.color(key),
+            "icon": social.icon(key),
+        }
         for key, c in platform_rows
     ]
     blocked_count = db.execute(

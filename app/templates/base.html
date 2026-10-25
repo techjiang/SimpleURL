@@ -1,3 +1,12 @@
+{# 平台标记：有图标画图标，没图标画色点。颜色都取自后端 social.COLORS，
+   别再在模板里各写一份色值——加一个平台要改三处是最容易漏的那种维护。 #}
+{% macro plat_mark(key, label, color, icon) -%}
+{% if icon %}
+<span class="plat-mark" style="--dot: {{ color }}; color: {{ color }}" title="{{ label }}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="{{ icon }}"/></svg></span>
+{% else %}
+<i class="plat-dot" style="--dot: {{ color }}" title="{{ label }}" aria-hidden="true"></i>
+{% endif %}
+{%- endmacro %}
 <!doctype html>
 <html lang="zh-CN">
 <head>
@@ -22,6 +31,7 @@
     <nav class="topnav">
       <a href="/" class="nav-link">首页</a>
       <a href="/#list" class="nav-link">链接库</a>
+      <a href="/tools" class="nav-link">接口</a>
       <a href="/admin" class="nav-link">后台</a>
       <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
     </nav>

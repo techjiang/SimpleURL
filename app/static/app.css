@@ -167,7 +167,39 @@ select option { background: var(--bg-soft); color: var(--text); }
 .chip { font-size: 0.76rem; color: var(--text-dim); background: var(--surface); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; }
 
 .table-wrap { overflow-x: auto; border-radius: var(--radius-sm); }
-.table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+/* 列宽按内容分配：表格是 auto 布局，列宽由内容决定，长 URL 那列会被
+   一路撑开，最后把操作列顶到可视区外面——截图里只剩一个「统计」，
+   编辑和删除藏在横向滚动条后面，而这一屏根本没有滚动条。
+   所以固定布局 + 百分比：目标列吃掉剩余宽度，其余列按内容 min-content
+   收紧，操作列给足四个按钮的位置。窄屏另有卡片式布局接管（见 @media）。 */
+/* 百分比与固定像素混着给，加起来可能超过 100%；目标列吃掉剩下的，
+   所以给它一个极小值，让它随容器伸缩而不是反过来把表格撑破。 */
+.table { table-layout: fixed; width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.88rem; }
+.table th.col-check, .table td.col-check { width: 3.6%; }
+/* 小数百分比才够分：整数百分比会被逐列四舍五入，八列各进位一点，
+   加起来能比表格宽出 4%，最右边的按钮就被裁掉半个。 */
+.table .col-code { width: 12.8%; }
+.table .col-target { width: 24.6%; }
+.table .col-clicks { width: 5.6%; }
+.table .col-status { width: 8.6%; }
+.table .col-exp { width: 9.6%; }
+.table .col-src { width: 17.3%; }
+.table .col-ops { width: 15.5%; }
+/* 操作列的按钮：固定布局下格子宽度是死的，按钮又都是 nowrap，
+   一行放不下会直接画到表格边界外面。所以按数量铺成等宽小栅格——
+   前台 3 个（访问 / 编辑 / 删除），后台 4 个（统计 / 编辑 / 停用 / 删除），
+   格子宽度随列宽伸缩，绝不溢出。 */
+.table td.col-ops { white-space: normal; padding: 10px 8px; }
+.table td.col-ops .ops {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px;
+}
+.table td.col-ops .btn {
+  padding: 5px 0; font-size: 0.72rem; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* 固定布局下内容必须自己收住，否则会顶出单元格 */
+.table .exp-cell, .table .created-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.table .title-src { overflow: hidden; }
 .table th {
   text-align: left; font-size: 0.74rem; font-weight: 600; color: var(--text-faint);
   text-transform: uppercase; letter-spacing: 0.1em; padding: 10px 12px;
@@ -176,7 +208,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); vertical-align: middle; }
 .table tbody tr { transition: background .16s; }
 .table tbody tr:hover { background: rgba(255,255,255,0.035); }
-.col-clicks { text-align: right; }
+.table th.col-clicks, .table .clicks-cell { text-align: right; }
 .table td:last-child { text-align: right; white-space: nowrap; }
 /* 短码不许折行：`/api-ref` 断成 `/api-` + `ref` 会看着像两条链接 */
 .code-cell { font-family: var(--mono); font-weight: 600; color: #fff; white-space: nowrap; }
@@ -237,12 +269,11 @@ select option { background: var(--bg-soft); color: var(--text); }
 .chart-head > select { flex: none; width: auto; min-width: 128px; max-width: 180px; }
 .chart-head .hint { margin-left: auto; }
 .chart { display: flex; align-items: flex-end; gap: 3px; height: 140px; min-width: 100%; width: 100%; }
-.chart .bar { flex: 1 1 0; min-width: 6px; }
+
 .chart-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; scrollbar-width: thin; }
 .chart-scroll::-webkit-scrollbar { height: 6px; }
 .chart-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-.bar { min-width: 14px; }
-.bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; height: 100%; }
+.bar { flex: 1 1 0; min-width: 14px; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; height: 100%; }
 .bar i { display: block; width: 100%; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
 .bar:hover i { filter: brightness(1.3); }
 .bar.is-zero i { background: transparent; border-top: 1px dashed var(--border-strong); border-radius: 0; }
@@ -292,8 +323,12 @@ select option { background: var(--bg-soft); color: var(--text); }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
   .chart { height: 110px; }
-  .bar { min-width: 10px; }
-  .bar:nth-child(even) b { display: none; }
+  /* 30 天在 390px 里每根柱子只剩 10px：点击全堆在最后一天时那根柱子细到看不见。
+     窄屏给柱子一个下限宽度让图横向可滑，右端留 4px 内边距，免得最后一根贴边被裁。
+     标签同时抽稀，不然滚起来满屏都是字 */
+  .chart { padding-right: 4px; }
+  .chart .bar { min-width: 24px; }
+  .bar b { font-size: .58rem; white-space: nowrap; }
 }
 
 /* ============ 无障碍 ============ */
@@ -423,16 +458,7 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   width: 8px; height: 8px; border-radius: 3px; flex: none;
   background: var(--text-dim); display: inline-block;
 }
-.plat-dot[data-plat="wechat"] { background: #07c160; }
-.plat-dot[data-plat="wecom"] { background: #2f7bff; }
-.plat-dot[data-plat="qq"] { background: #12b7f5; }
-.plat-dot[data-plat="weibo"] { background: #e6162d; }
-.plat-dot[data-plat="alipay"] { background: #1677ff; }
-.plat-dot[data-plat="dingtalk"] { background: #3296fa; }
-.plat-dot[data-plat="douyin"] { background: #fe2c55; }
-.plat-dot[data-plat="xiaohongshu"] { background: #ff2442; }
 .plat-dot[data-plat="blocked"] { background: var(--warn); }
-.plat-dot[data-plat="other"] { background: var(--text-dim); }
 .ref-list li span { display: inline-flex; align-items: center; gap: 8px; }
 .ref-list em.hint { font-style: normal; margin-left: 4px; }
 
@@ -494,14 +520,17 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   /* 有标题时不换行，让「/abc 标题」读起来是一句话 */
   /* 过期信息挂在标题下滑一行：窄屏没有表头，光一个「永久」「还剩 5 天」
      读起来不知道在说哪件事 */
-  .table td[data-label="过期"] { order: 1; flex: 1 1 100%; min-width: 0; font-size: 0.76rem; line-height: 1.4; }
+  .table td[data-label="过期"], .table td[data-label="标题"] { order: 1; flex: 1 1 100%; min-width: 0; font-size: 0.76rem; line-height: 1.4; }
   .table td[data-label="过期"] .exp-soon, .table td[data-label="过期"] .hint { display: inline; }
   .table td[data-label="过期"] .exp-date { display: inline; margin-left: 6px; }
   .table td[data-label="目标"] { order: 3; flex: 1 1 100%; width: 100%; min-width: 0; }
   .target-cell { max-width: none; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
   .table td[data-label="标签"] { order: 4; flex: 1 1 100%; }
   /* 标题在卡片里已经跟在短码下面了，来源小标签别再多占一行 */
-  .table td.title-src { order: 5; flex: 1 1 100%; max-width: none; font-size: 0.72rem; }
+  .table td.title-src, .table td[data-label="标题"] { order: 5; flex: 1 1 100%; max-width: none; font-size: 0.72rem; }
+  /* 勾选框不该在窄屏单独占一整行——后台列表有这一列，一行只剩一个框 */
+  .table td.col-check { order: -1; flex: 0 0 auto; width: auto; }
+  .table td.col-check input { width: 18px; height: 18px; }
   .table td.title-src .title-cell { display: none; }
   /* 卡片是 flex-wrap 容器，顺序由 order 决定。目标列只要不是 100%，
      它就能和后面的按钮挤进同一行——短 URL 上按钮直接贴到地址右边，
@@ -518,9 +547,6 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   .table td[data-label="操作"] .btn { flex: 1 1 auto; padding: 6px 12px; text-align: center; }
   /* 窄屏不展示点击/创建列：计数看板上另有，卡片里挤进去只会打断阅读 */
   .table td[data-label="点击"], .table td.clicks-cell, .table td[data-label="创建"], .table td.created-cell { display: none; }
-  /* 勾选列没有表头，放在卡片最前的独立一行，点起来也宽松 */
-  .table td.col-check { order: 0; flex: 1 1 100%; width: auto; text-align: left; }
-  .table td.col-check input { width: 18px; height: 18px; }
 }
 
 /* 后台「最近访问」一行：平台名 + 色点 + 设备 + 拦截标记，不要挤成一串 */
@@ -607,3 +633,76 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .board.is-guest .board-tools,
 .board.is-guest .table thead,
 .board.is-guest .pager { display: none; }
+
+/* ============ 平台标记 ============ */
+/* 色值由后端下发（social.COLORS），前端只负责写进 --dot；
+   原来靠 data-plat 选择器一个个写死，加一个平台得同时改三处。 */
+.plat-dot { background: var(--dot, var(--text-dim)); }
+.plat-mark {
+  width: 16px; height: 16px; flex: none; display: inline-flex;
+  align-items: center; justify-content: center; border-radius: 5px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  color: var(--text-dim);
+}
+.plat-mark svg { width: 11px; height: 11px; display: block; }
+.plat-mark path { fill: currentColor; }
+.plat-mark.is-plain { background: none; }
+.plat-name { display: inline-flex; align-items: center; gap: 7px; }
+.exp-cell { white-space: nowrap; }
+
+/* ============ 接口与工具页 ============ */
+.tools-page { padding: 10px 0 40px; animation: rise .3s ease both; }
+.api-spec { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.api-spec li {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 12px;
+  align-items: baseline; padding: 10px 12px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: .88rem;
+}
+.api-spec li > span:first-child { color: var(--text-dim); }
+.api-spec li > .hint { grid-column: 2; }
+.api-spec code, .api-list code, .curl {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem; word-break: break-all;
+}
+.curl {
+  margin: 14px 0 0; padding: 14px 16px; overflow-x: auto;
+  background: rgba(8, 13, 24, 0.7); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text-dim); line-height: 1.7;
+  white-space: pre; -webkit-overflow-scrolling: touch;
+}
+.api-group { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+.api-group:first-of-type { border-top: 0; margin-top: 0; }
+.api-group summary {
+  cursor: pointer; list-style: none; color: var(--text-dim);
+  display: flex; align-items: center; gap: 7px; padding: 6px 0; font-size: .9rem;
+}
+.api-group summary::-webkit-details-marker { display: none; }
+.api-group summary::before { content: "▸"; font-size: .7em; transition: transform .15s ease; }
+.api-group[open] summary::before { transform: rotate(90deg); }
+.api-list { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 6px; }
+.api-list li {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  padding: 9px 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: .84rem;
+}
+.api-list li > .hint { flex: 1 1 180px; min-width: 0; }
+.method {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .7rem; font-weight: 700; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 5px; border: 1px solid currentColor; flex: none;
+}
+.method.get { color: var(--accent); }
+.method.post { color: var(--brand); }
+.method.patch { color: var(--warn); }
+.method.delete { color: var(--danger); }
+#try-result .result-card { margin-top: 14px; }
+
+@media (max-width: 720px) {
+  .api-spec li { grid-template-columns: 1fr; }
+  .api-spec li > .hint { grid-column: 1; }
+  /* 一行 curl 在 390px 里拖不长：允许折行，配上左侧色条当续行提示，不用横滑也能整段读完 */
+  .curl {
+    font-size: .72rem; white-space: pre-wrap; overflow-wrap: anywhere;
+    padding-left: 12px; border-left: 2px solid var(--border-strong);
+  }
+}

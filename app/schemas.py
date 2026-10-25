@@ -140,6 +140,7 @@ class StatsOut(BaseModel):
     daily: list[dict] = Field(default_factory=list)
     top_referrers: list[dict] = Field(default_factory=list)
     devices: list[dict] = Field(default_factory=list)
+    # 每项含 platform / key / count / color / icon（墨迹色与图标路径）
     platforms: list[dict] = Field(default_factory=list)
     blocked: int = 0
     # 其中属于「放行不计数」的部分（用户其实打开了页面）
@@ -263,8 +264,11 @@ class DashboardOut(BaseModel):
     expiring_links: int = 0
     expiring: list[dict] = Field(default_factory=list)
     pending_clicks: int
+    # blocked_events 是所有「被留痕但没计数」的事件总数，其中真实点击多少、
+    # 拦截留痕多少要拆开说——把拦截算进总点击，数字就跟链接列表对不上
     blocked_events: int
     clicks_today: int
+    total_events: int = 0
     top_links: list[dict] = Field(default_factory=list)
     recent_clicks: list[dict] = Field(default_factory=list)
     daily: list[dict] = Field(default_factory=list)

@@ -72,15 +72,16 @@
 
   async function api(path, options) {
     const res = await fetch(path, withCsrf(options));
-    if (res.status === 403) {
-      showGate();
-      throw new Error('访问令牌校验失败');
-    }
-    if (res.status === 401 && access.admin_mode && !access.is_admin) {
-      throw new Error('站点已设为仅管理员可使用，请先登录后台');
-    }
     let data = {};
-    try { data = await res.json(); } catch (_) { /* ignore */ }
+    try { data = await res.json(); } catch (_) { /* 非 JSON 响应原样报错 */ }
+    if (res.status === 401) {
+      // 只有真正开了访问令牌的站点才搞门禁，否则这里弹出来的门根本没法过
+      if (access.access_required) showGate();
+      if (access.admin_mode && !access.is_admin) {
+        throw new Error('站点已设为仅管理员可使用，请先登录后台');
+      }
+    }
+    if (res.status === 403 && access.access_required) showGate();
     if (!res.ok) throw new Error(data.message || `请求失败（${res.status}）`);
     return data;
   }
@@ -237,12 +238,18 @@
   }
 
   async function loadSummary() {
+    // 访客读不到链接库，总点击数对他没有意义，也没必要为此去撞一次 401
+    // ——那会在控制台留下一条红色错误，看起来像页面坏了
+    if (!access.is_admin) {
+      summary = { total_links: 0, total_clicks: 0, access_required: access.access_required };
+      return summary;
+    }
     try {
       summary = await withToken('/api/stats/summary');
-      if (summary.access_required && !state.token) showGate();
     } catch (_) {
       summary = { total_links: 0, total_clicks: 0 };
     }
+    return summary;
   }
 
   /* 复制按钮的通用行为：从某个元素取文本，复制后给 1.6 秒反馈 */
@@ -311,11 +318,12 @@
     const title = link.title ? `<span class="title-cell">${escapeHtml(link.title)}</span>` : '';
     const tq = tokenQuery();
     const locked = access.admin_mode && !access.is_admin;
+    // 前端列表只留「访问 / 编辑 / 删除」，停用、批量这类管理动作归后台，
+    // 前台一屏塞四个按钮，格子一窄就全变三个点。
     const actions = locked
       ? `<span class="hint">只读</span>`
       : `<a class="btn tiny ghost" href="/${encodeURIComponent(link.code)}${tq}" target="_blank" rel="noopener">访问</a>
         <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(link.code)}">编辑</button>
-        <button class="btn tiny ghost" data-act="toggle" data-code="${escapeHtml(link.code)}">${link.enabled ? '停用' : '启用'}</button>
         <button class="btn tiny danger" data-act="del" data-code="${escapeHtml(link.code)}">删除</button>`;
     // data-label 供窄屏卡片式布局定位，桌面端不显示
     return `<tr>
@@ -326,7 +334,7 @@
       <td data-label="状态">${badgeOf(link)}</td>
       <td data-label="过期">${expiryCell(link)}</td>
       <td data-label="创建" class="created-cell">${fmtDate(link.created_at)}</td>
-      <td data-label="操作">${actions}</td>
+      <td data-label="操作" class="col-ops"><div class="ops">${actions}</div></td>
     </tr>`;
   }
 
@@ -334,7 +342,8 @@
   function renderGuestBoard() {
     const body = $('#links-body');
     if (body) body.innerHTML = '';
-    $('#list').classList.add('is-guest');
+    const list = $('#list');
+    if (list) list.classList.add('is-guest');
     const head = document.querySelector('#list .board-head h2');
     if (head) head.textContent = '我的链接';
     const empty = $('#empty');
@@ -356,9 +365,14 @@
   }
 
   async function loadLinks() {
+    // 工具页、统计页也加载了这份脚本，但页面上没有链接库。
+    // 没有就先退出去：不然一进 /tools 控制台就报一个空指针，
+    // 看着像页面坏了，实际什么都没坏。
+    const list = $('#list');
+    if (!list) return;
     const pager = document.querySelector('.pager');
     if (!access.is_admin) { renderGuestBoard(); return; }
-    $('#list').classList.remove('is-guest');
+    list.classList.remove('is-guest');
     const boardTitle = document.querySelector('#list .board-head h2');
     if (boardTitle) boardTitle.textContent = '链接库';
     if (pager) pager.hidden = false;
@@ -380,7 +394,7 @@
       const pages = Math.max(1, Math.ceil(data.total / state.pageSize));
       $('#summary').innerHTML = [
         `<span class="chip">共 ${data.total} 条</span>`,
-        `<span class="chip">总点击 ${summary.total_clicks}</span>`,
+        `<span class="chip">总点击 ${summary.total_clicks || 0}</span>`,
         `<span class="chip">第 ${data.page}/${pages} 页</span>`,
       ].join('');
       $('#page-info').textContent = `第 ${data.page} 页 / 共 ${pages} 页`;
@@ -568,17 +582,37 @@
   /* ---------- 图表 ---------- */
   function renderChart(el, daily) {
     const max = Math.max(1, ...daily.map((d) => d.count));
+    const labels = chartLabels(el.parentElement.clientWidth, daily);
     el.innerHTML = daily
-      .map((d) => {
+      .map((d, i) => {
         // 只点了一次的柱子按比例算出来不到 3%，在 140px 高度里就是一条线，
         // 看着和「完全没有」没区别。给有数据的柱子一个下限高度。
         const h = d.count ? Math.max(4, (d.count / max) * 100) : 0;
-        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${d.date.slice(5)}</b></div>`;
+        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${labels.get(i) || ''}</b></div>`;
       })
       .join('');
   }
 
+  // 柱子宽度够就每根都标日期，不够就抽稀；窄到抽稀也放不下（手机竖屏 30 根柱子），
+  // 只留首尾两天——中间全是糊字，不如让人先看懂趋势形状。
+  function chartLabels(width, daily) {
+    const out = new Map();
+    const last = daily.length - 1;
+    // 每根柱子连缝留 21px：够放下「10-25」这种标签
+    const per = 21;
+    if (width / Math.max(1, daily.length) >= per * 2.2) {
+      daily.forEach((d, i) => out.set(i, d.date.slice(5)));
+      return out;
+    }
+    const step = Math.ceil(daily.length / Math.max(2, Math.floor(width / (per * 2.2))));
+    daily.forEach((d, i) => {
+      if (i === 0 || i === last || i % step === 0) out.set(i, d.date.slice(5));
+    });
+    return out;
+  }
+
   /* ---------- 启动 ---------- */
+  // 从后台（新标签页）切回来时刷新一次：那边删了/改了链接，这边还是旧的会误导人
   document.addEventListener('DOMContentLoaded', async () => {
     bindCreate(); bindCopy(); bindBoard(); bindEdit(); bindGate();
     await loadAccess();
@@ -587,8 +621,12 @@
       showGate();
       return;
     }
-    loadSummary(); loadTags(); loadLinks();
+    // 没有链接库的页面（工具页、统计页）根本不需要这几个请求，
+    // 少发三个 GET，也少三条可能报错的地方
+    if ($('#list')) {
+      loadSummary(); loadTags(); loadLinks();
+    }
   });
 
-  window.SimpleURL = { renderChart };
+  window.SimpleURL = { renderChart, chartLabels };
 })();

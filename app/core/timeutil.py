@@ -37,3 +37,14 @@ def local_naive(value: dt.datetime | None) -> dt.datetime | None:
 def fmt_local(value: dt.datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
     aware = ensure_aware(value)
     return aware.astimezone().strftime(fmt) if aware else ""
+
+
+def local_date(value: dt.datetime | None) -> dt.date | None:
+    """转成本地日期。
+
+    统计按天分桶时不能用 UTC 日期：容器默认跑 UTC，国内用户看到的
+    「今天」会比服务器早 8 小时——早上 7 点前的点击全部落到昨天那张柱子上。
+    入库统一 UTC，出库统一本地，中间别再各写一遍。
+    """
+    aware = ensure_aware(value)
+    return aware.astimezone().date() if aware else None

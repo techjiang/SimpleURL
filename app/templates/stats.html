@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "base.html" import plat_mark with context %}
 {% block title %}{{ site_name }} · {{ link.code }} 统计{% endblock %}
 {% block content %}
 <section class="stats-page">
@@ -57,7 +58,7 @@
     </div>
     <ul class="ref-list">
       {% for p in data.platforms %}
-      <li><span><i class="plat-dot" data-plat="{{ p.key }}"></i>{{ p.platform }}</span><b>{{ p.count }}</b></li>
+      <li><span class="plat-name">{{ plat_mark(p.key, p.platform, p.color, p.icon) }}{{ p.platform }}</span><b>{{ p.count }}</b></li>
       {% else %}
       <li><span class="hint">还没有数据</span><b>0</b></li>
       {% endfor %}

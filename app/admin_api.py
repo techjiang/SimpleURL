@@ -141,12 +141,19 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         or 0
     )
 
+    # 「被留痕」不等于「被拦下」：UA 屏蔽算拦截，社交平台的「放行不计数」
+    # 用户其实打开了页面。混在一个数字里，仪表盘和链接列表永远对不上账。
     blocked_events = (
         db.execute(select(func.count()).select_from(ClickEvent).where(ClickEvent.blocked.is_(True))).scalar_one() or 0
     )
+    total_events = db.execute(select(func.count()).select_from(ClickEvent)).scalar_one() or 0
+    # 今日按本地自然日算，跟用户看到的日期一致（UTC 会整体错位 8 小时）
+    today_start = dt.datetime.combine(today, dt.time.min, tzinfo=dt.timezone.utc)
     clicks_today = (
         db.execute(
-            select(func.count()).select_from(ClickEvent).where(func.date(ClickEvent.ts) == today.isoformat())
+            select(func.count())
+            .select_from(ClickEvent)
+            .where(ClickEvent.ts >= today_start, ClickEvent.blocked.is_(False))
         ).scalar_one()
         or 0
     )
@@ -167,6 +174,8 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
             "referrer": (referrer or "")[:80] or None,
             "platform": platform_key or "",
             "platform_label": social.label(platform_key),
+            "platform_color": social.color(platform_key),
+            "platform_icon": social.icon(platform_key),
         }
         for code, device, blocked, ts, referrer, platform_key in db.execute(
             select(
@@ -179,20 +188,23 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         ).all()
     ]
 
+    # 近 14 天按本地日期分桶，和统计页保持同一口径
+    local_day = func.date(ClickEvent.ts, "localtime")
     daily_rows = (
         db.execute(
-            select(func.date(ClickEvent.ts), func.count(ClickEvent.id))
-            .where(ClickEvent.ts >= now - dt.timedelta(days=13))
-            .group_by(func.date(ClickEvent.ts))
-            .order_by(func.date(ClickEvent.ts))
+            select(local_day, func.count(ClickEvent.id))
+            .where(ClickEvent.ts >= now - dt.timedelta(days=13), ClickEvent.blocked.is_(False))
+            .group_by(local_day)
+            .order_by(local_day)
         )
         .all()
     )
+    today_local = now.astimezone().date()
     buckets: dict[str, int] = {}
     for i in range(14):
-        buckets[(now - dt.timedelta(days=13 - i)).date().isoformat()] = 0
+        buckets[(today_local - dt.timedelta(days=13 - i)).isoformat()] = 0
     for d, c in daily_rows:
-        key = d.isoformat() if hasattr(d, "isoformat") else str(d)
+        key = d.isoformat() if hasattr(d, "isoformat") else str(d)[:10]
         buckets[key] = int(c)
 
     return DashboardOut(
@@ -209,6 +221,7 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         pending_clicks=click_buffer.pending(),
         blocked_events=int(blocked_events),
         clicks_today=int(clicks_today),
+        total_events=int(total_events),
         top_links=top_links,
         recent_clicks=recent,
         daily=[{"date": k, "count": v} for k, v in buckets.items()],
@@ -308,7 +321,13 @@ def api_get_social_rules(request: Request, db: Session = Depends(get_db)):
         rules=rules,
         hint=guard.platform_notice(db),
         platforms=[
-            {"key": key, "label": name, "strategy": rules.get(key, social.DEFAULT_STRATEGY)}
+            {
+                "key": key,
+                "label": name,
+                "strategy": rules.get(key, social.DEFAULT_STRATEGY),
+                "color": social.color(key),
+                "icon": social.icon(key),
+            }
             for key, (name, _) in social.PLATFORMS.items()
         ],
     )
@@ -363,6 +382,8 @@ def api_blocked_events(
             "code": code,
             "platform": platform_key or "",
             "label": social.label(platform_key),
+            "color": social.color(platform_key),
+            "icon": social.icon(platform_key),
             "ua": (ua or "")[:90],
             "ts": ensure_iso(ts),
         }

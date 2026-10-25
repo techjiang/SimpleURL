@@ -189,7 +189,10 @@ def platform_hit_stats(db: Session, days: int = 14) -> list[dict]:
         item = agg.setdefault(key or "", {"key": key or "other", "count": 0, "blocked": 0})
         item["blocked" if blocked else "count"] += int(count)
     for item in agg.values():
-        item["label"] = social.label(None if item["key"] == "other" else item["key"])
+        key = None if item["key"] == "other" else item["key"]
+        item["label"] = social.label(key)
+        item["color"] = social.color(key)
+        item["icon"] = social.icon(key)
     return sorted(agg.values(), key=lambda i: i["count"] + i["blocked"], reverse=True)
 
 

@@ -117,8 +117,21 @@ def healthz(db: Session = Depends(get_db)):
 
 @router.api_route("/robots.txt", methods=["GET", "HEAD"], summary="爬虫协议")
 def robots():
-    body = "User-agent: *\nDisallow: /api/\nDisallow: /admin\n"
+    # 统计页与后台一样是私人数据，别让爬虫把「谁点了多少」收进索引
+    body = "User-agent: *\nDisallow: /api/\nDisallow: /admin\nDisallow: /s/\n"
     return HTMLResponse(content=body, media_type="text/plain; charset=utf-8")
+
+
+# 顺序要紧：这个路由必须写在 `/{code}` 之前。通配路由谁先注册谁先吃请求，
+# 写后面的话 `/tools` 会被当成一条短码，直接回「页面不存在」。
+@router.get("/tools", response_class=HTMLResponse, summary="接口与工具")
+def tools_page(request: Request, db: Session = Depends(get_db)):
+    """接口文档 + 可以直接点一次的试运行。
+
+    API 一直只有 README 里几行 curl，真要接进别人的系统时还是得翻源码。
+    文档放在站内还有个好处：Base URL 自动跟着部署域名走，不会写死。
+    """
+    return HTMLResponse(render("tools.html", request, db, endpoints=ENDPOINTS))
 
 
 @router.get("/{code}", summary="短链接跳转")
@@ -191,6 +204,36 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
     db.commit()
     logger.info("跳转 %s -> %s", code, target)
     return RedirectResponse(url=target, status_code=307)
+
+
+# 接口清单按「做什么」分组，不按 HTTP 方法。文档是写给人看的，
+# 人要找的永远是「我要建一条链接」而不是「POST 有哪些」。
+ENDPOINTS: dict[str, list[dict]] = {
+    "短链接": [
+        {"method": "POST", "path": "/api/links", "desc": "创建短链接，可用回执回看", "auth": ""},
+        {"method": "GET", "path": "/api/links", "desc": "链接库分页、搜索、筛选、排序", "auth": "管理员"},
+        {"method": "GET", "path": "/api/links/{code}", "desc": "单条详情", "auth": "管理员"},
+        {"method": "PATCH", "path": "/api/links/{code}", "desc": "改目标 / 标题 / 标签 / 过期时间", "auth": "管理员"},
+        {"method": "DELETE", "path": "/api/links/{code}", "desc": "删除", "auth": "管理员"},
+        {"method": "POST", "path": "/api/links/bulk", "desc": "批量启用 / 停用 / 删除", "auth": "管理员"},
+        {"method": "GET", "path": "/api/links/export", "desc": "按当前筛选导出 CSV", "auth": "管理员"},
+    ],
+    "统计与资源": [
+        {"method": "GET", "path": "/api/links/{code}/stats", "desc": "点击趋势、来源、设备、平台", "auth": "管理员 / 回执"},
+        {"method": "GET", "path": "/api/qr/{code}", "desc": "二维码 PNG", "auth": "管理员 / 回执"},
+        {"method": "GET", "path": "/api/stats/summary", "desc": "站点总览", "auth": ""},
+        {"method": "GET", "path": "/api/tags", "desc": "标签及出现次数", "auth": ""},
+        {"method": "GET", "path": "/api/access", "desc": "当前访问模式与站点信息", "auth": ""},
+    ],
+    "密钥与运维": [
+        {"method": "GET", "path": "/api/admin/session", "desc": "当前登录态", "auth": ""},
+        {"method": "POST", "path": "/api/admin/login", "desc": "后台登录", "auth": ""},
+        {"method": "GET", "path": "/api/admin/dashboard", "desc": "仪表盘数据", "auth": "管理员"},
+        {"method": "GET", "path": "/api/admin/runtime", "desc": "运行状态与部署自检", "auth": "管理员"},
+        {"method": "GET", "path": "/api/admin/audit", "desc": "操作留痕", "auth": "管理员"},
+        {"method": "GET", "path": "/healthz", "desc": "健康检查，含待结算与丢弃计数", "auth": ""},
+    ],
+}
 
 
 @router.get("/s/{code}", response_class=HTMLResponse, summary="统计页")
