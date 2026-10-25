@@ -817,9 +817,13 @@
         : '/api/links/' + encodeURIComponent(code) + '/self';
       try {
         if (btn.dataset.act === 'del') {
-          if (!confirm(`确定删除 /${code} ？该操作不可恢复`)) return;
+          // 管理员删的直接进回收站，30 天内能捞回来；访客自助删除仍是一次性的
+          const hint = access.is_admin
+            ? '（会先进回收站，30 天内可恢复）'
+            : '（不可恢复）';
+          if (!confirm(`确定删除 /${code} ？${hint}`)) return;
           await withToken(base, { method: 'DELETE' });
-          toast(`已删除 /${code}`);
+          toast(access.is_admin ? `/${code} 已进回收站` : `已删除 /${code}`);
         } else if (btn.dataset.act === 'edit') {
           if (!access.is_admin) { await openGuestEdit(code); return; }
           const detail = await withToken(base);

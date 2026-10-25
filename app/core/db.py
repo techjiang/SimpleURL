@@ -103,6 +103,8 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "claim_hash": "VARCHAR(64)",
         # 标题来源：fetched / fallback / manual
         "title_source": "VARCHAR(16)",
+        # 回收站：有值即已删除（软删），30 天后自动清掉
+        "deleted_at": "DATETIME",
     },
     "click_events": {
         "device": "VARCHAR(16)",
@@ -131,6 +133,8 @@ def _ensure_columns() -> None:
                     continue
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
                 logger.info("已为 %s 补列 %s", table, name)
+        # 刻意不给 deleted_at 建索引：一建，SQLite 就会在多条件查询里改走它，
+        # 把 clicks / created_at 的排序顺序打乱。回收站是低频页面，全扫也无所谓。
         if "click_events" in existing_tables:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_click_events_platform ON click_events (platform)"))
         if "audit_logs" in existing_tables:

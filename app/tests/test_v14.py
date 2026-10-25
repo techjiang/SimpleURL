@@ -22,13 +22,12 @@ class TestExpiryTimezone:
     def test_local_input_is_converted_from_process_zone(self, monkeypatch):
         from app.core import timeutil
 
+        # 用 monkeypatch 改完要让 pytest 自己回滚：手工 delenv 会把跑测试的人
+        # 原本设的 TZ（CI 里就是 Asia/Shanghai）一起丢掉，后面所有和「今天」
+        # 有关的用例就都按 UTC 算了——只在跨零点的那几个小时里露出来。
         monkeypatch.setenv("TZ", "Asia/Shanghai")
         time.tzset()
-        try:
-            got = timeutil.from_local_input(dt.datetime(2026, 12, 31, 23, 59))
-        finally:
-            monkeypatch.delenv("TZ", raising=False)
-            time.tzset()
+        got = timeutil.from_local_input(dt.datetime(2026, 12, 31, 23, 59))
         # 北京时间 23:59 == UTC 15:59 同一天
         assert got == dt.datetime(2026, 12, 31, 15, 59, tzinfo=dt.timezone.utc)
 
@@ -67,7 +66,7 @@ class TestExpiryTimezone:
 
             assert fmt_local(got) == "2026-12-31 23:59"
         finally:
-            monkeypatch.delenv("TZ", raising=False)
+            # TZ 由 monkeypatch 回滚，这里只要把 C 库缓存刷一下
             time.tzset()
 
     def test_past_expiry_still_rejected(self, client):

@@ -17,6 +17,7 @@
   <nav class="admin-tabs" id="admin-tabs">
     <button class="admin-tab active" data-tab="dash" type="button">仪表盘</button>
     <button class="admin-tab" data-tab="links" type="button">链接管理</button>
+    <button class="admin-tab" data-tab="trash" type="button">回收站</button>
     <button class="admin-tab" data-tab="guard" type="button">防洪 / UA 屏蔽</button>
     <button class="admin-tab" data-tab="qr" type="button">二维码</button>
     <button class="admin-tab" data-tab="keys" type="button">API 密钥</button>
@@ -39,8 +40,8 @@
     </div>
     <div class="chart-card" id="dash-expiring-card" hidden>
       <div class="chart-head">
-        <h2>即将过期</h2>
-        <span class="hint">7 天内到期，趁早续上</span>
+        <h2>即将过期 <span class="hint">7 天内到期，趁早续上</span></h2>
+        <button class="btn tiny ghost" id="notify-expiring" type="button">推送提醒</button>
       </div>
       <ul class="ref-list" id="dash-expiring"></ul>
     </div>
@@ -89,6 +90,8 @@
         <span id="admin-bulk-count">已选 0 条</span>
         <button class="btn tiny ghost" id="bulk-enable" type="button">批量启用</button>
         <button class="btn tiny ghost" id="bulk-disable" type="button">批量停用</button>
+        <button class="btn tiny ghost" id="bulk-renew" type="button">批量续期</button>
+        <button class="btn tiny ghost" id="bulk-tag" type="button">批量打标签</button>
         <button class="btn tiny danger" id="bulk-delete" type="button">批量删除</button>
         <button class="btn tiny ghost" id="bulk-clear" type="button">取消选择</button>
       </div>
@@ -109,6 +112,32 @@
         <button class="btn ghost" id="admin-prev" type="button">上一页</button>
         <span id="admin-page-info"></span>
         <button class="btn ghost" id="admin-next" type="button">下一页</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 回收站 -->
+  <div class="admin-panel" data-panel="trash">
+    <div class="chart-card">
+      <div class="chart-head">
+        <h2>回收站</h2>
+        <div class="board-tools">
+          <div class="search">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M21 21l-4.3-4.3M17 10a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <input id="trash-search" type="search" placeholder="搜索短码 / 目标 / 标题" />
+          </div>
+          <button class="btn tiny danger" id="trash-empty" type="button">清空回收站</button>
+        </div>
+      </div>
+      <p class="hint">删除不再直接抹掉，先进这里躺 <b id="trash-days">30</b> 天。期间短码仍算占用，恢复后原样可用；到期自动清理，也可以手动彻底删除。</p>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th class="col-code">短码</th><th class="col-target">目标</th><th class="col-clicks">点击</th><th class="col-exp">删除于</th><th class="col-exp">剩余</th><th class="col-ops">操作</th></tr>
+          </thead>
+          <tbody id="trash-body"></tbody>
+        </table>
+        <div class="empty" id="trash-empty-box" hidden><p>回收站是空的</p></div>
       </div>
     </div>
   </div>
@@ -220,6 +249,7 @@
       <div class="dash-actions">
         <button class="btn ghost" id="status-refresh" type="button">刷新</button>
         <button class="btn ghost" id="prune-events" type="button">清理过期点击明细</button>
+        <a class="btn ghost" id="download-backup" href="/api/admin/backup" download>下载数据库备份</a>
         <span class="status" id="status-msg" role="status"></span>
       </div>
       <p class="hint" id="status-note"></p>

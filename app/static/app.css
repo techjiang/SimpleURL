@@ -618,6 +618,11 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
     padding-top: 8px; margin-top: 2px; border-top: 1px solid rgba(255,255,255,0.06);
   }
   .table td[data-label="操作"] .btn { flex: 1 1 auto; padding: 6px 12px; text-align: center; }
+  /* 回收站的「剩余」列：窄屏上和删除时间挤在一处只会互相压扁，
+     而且真正要看的只有「还剩几天」——删于什么时候进详情再说 */
+  .table td[data-label="删除于"] { display: none; }
+  .table td[data-label="剩余"] { order: 2; flex: 0 0 auto; font-size: 0.78rem; white-space: nowrap; color: var(--text-dim); }
+  .table td[data-label="剩余"]::before { content: "剩 "; }
   /* 窄屏不展示点击/创建列：计数看板上另有，卡片里挤进去只会打断阅读 */
   .table td[data-label="点击"], .table td.clicks-cell, .table td[data-label="创建"], .table td.created-cell { display: none; }
 }

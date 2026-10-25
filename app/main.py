@@ -60,6 +60,15 @@ def _start_retention_job() -> threading.Timer | None:
                 prune_click_events(db, settings.retention_days)
         except Exception:  # noqa: BLE001 - 清理失败不该影响服务
             logger.exception("清理过期点击明细失败")
+        # 回收站也一起收：软删只是「先别真删」，不能变成永远堆着。
+        # 不清的话 links 表会一直长，而回收站里那些根本没人会再看。
+        try:
+            from app.services import purge_expired_trash
+
+            with session_scope() as db:
+                purge_expired_trash(db)
+        except Exception:  # noqa: BLE001
+            logger.exception("清理回收站失败")
 
     def _tick() -> None:
         _run()

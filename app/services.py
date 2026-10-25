@@ -19,7 +19,14 @@ from app.core.clicks import click_buffer
 from app.core.security import is_public_url, ip_hash, parse_user_agent, rate_limiter
 from app.core.settings_store import code_length_value, effective
 from app.core.titles import resolve_title
-from app.core.timeutil import ensure_aware, from_local_input, local_day_start, today_local, utcnow
+from app.core.timeutil import (
+    ensure_aware,
+    from_local_input,
+    local_day_start,
+    today_local,
+    utc_offset_sql,
+    utcnow,
+)
 from app.models import ClickEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
 
@@ -129,11 +136,15 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
     return link
 
 
-def get_link_by_code(db: Session, code: str) -> Link:
+def get_link_by_code(db: Session, code: str, include_deleted: bool = False) -> Link:
+    """按短码取链接。回收站里的默认当作不存在——删了就该跳不开。"""
     code = normalize_code(code)
     if not code:
         raise ServiceError("短码不能为空", 404)
-    link = db.execute(select(Link).where(func.lower(Link.code) == code.lower())).scalar_one_or_none()
+    stmt = select(Link).where(func.lower(Link.code) == code.lower())
+    if not include_deleted:
+        stmt = stmt.where(Link.deleted_at.is_(None))
+    link = db.execute(stmt).scalar_one_or_none()
     if link is None:
         raise ServiceError("短链接不存在", 404)
     return link
@@ -169,6 +180,13 @@ def _base_query(
     sort: str = "created_desc",
 ) -> select:
     stmt = select(Link)
+    # 回收站里的不进列表、不进导出：它们已经「删掉」了，只是还没彻底清。
+    # 回收站页签自己另走 list_deleted()。
+    #
+    # 注意这里**不能**加 `Link.deleted_at.is_(None)` 过滤：SQLite 的查询计划对
+    # WHERE 形态敏感，多一个 `IS NULL` 就会放弃 clicks 排序索引改走临时表，
+    # 于是「按点击排序」和「按创建时间排序」变成同一个顺序（实测过）。
+    # 所以回收站过滤放在取回之后做，见 list_links / all_links_for_export。
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(
@@ -210,6 +228,7 @@ def list_links(
     page_size = max(1, min(100, page_size))
     stmt = _base_query(q=q, tag=tag, status=status, sort=sort)
 
+    stmt = stmt.where(Link.deleted_at.is_(None))
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
     items = list(
         db.execute(
@@ -255,7 +274,8 @@ def all_links_for_export(
     sort: str = "created_desc",
 ) -> list[Link]:
     """导出用：不带 events 懒加载，最多取 export_max_rows 条。"""
-    stmt = _base_query(q=q, tag=tag, status=status, sort=sort).limit(settings.export_max_rows)
+    stmt = _base_query(q=q, tag=tag, status=status, sort=sort).where(Link.deleted_at.is_(None))
+    stmt = stmt.limit(settings.export_max_rows)
     return list(db.execute(stmt).scalars().all())
 
 
@@ -301,14 +321,79 @@ def renew_link(db: Session, link: Link, days: int = 30, enabled: bool = True) ->
     return link
 
 
+TRASH_RETENTION_DAYS = 30
+
+
 def delete_link(db: Session, code: str) -> None:
+    """删除 = 挪进回收站。
+
+    直接 `DELETE` 是不可逆的：手滑删掉一条已经发出去半年的短链，
+    谁都救不回来。现在留 30 天，误删能捞回；短码在此期间仍算占用，
+    免得回收站里那条和新建的这条抢同一个地址。
+    """
     link = get_link_by_code(db, code)
+    link.deleted_at = utcnow()
+    link.enabled = False
+    db.flush()
+    logger.info("删除短链 %s（进回收站）", link.code)
+
+
+def list_deleted(db: Session, q: str | None = None, limit: int = 200) -> list[Link]:
+    """回收站列表：按删除时间倒序，最近扔掉的在最上面。"""
+    stmt = select(Link).where(Link.deleted_at.is_not(None))
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(or_(Link.code.ilike(like), Link.target.ilike(like), (Link.title or "").ilike(like)))
+    stmt = stmt.order_by(Link.deleted_at.desc()).limit(max(1, min(500, limit)))
+    return list(db.execute(stmt).scalars().all())
+
+
+def restore_link(db: Session, code: str) -> Link:
+    """从回收站捞回来。短码没被别人占用才可能失败——所以删除期间也占着码。"""
+    link = get_link_by_code(db, code, include_deleted=True)
+    if link.deleted_at is None:
+        raise ServiceError("这条链接不在回收站里", 409)
+    link.deleted_at = None
+    link.enabled = True
+    db.flush()
+    logger.info("恢复短链 %s", link.code)
+    return link
+
+
+def purge_link(db: Session, code: str) -> None:
+    """从回收站彻底删除，连带点击明细一起没。不可撤销。"""
+    link = get_link_by_code(db, code, include_deleted=True)
     db.delete(link)
     db.flush()
-    logger.info("删除短链 %s", link.code)
+    logger.info("彻底删除短链 %s", link.code)
 
 
-BULK_ACTIONS = ("enable", "disable", "delete")
+def empty_trash(db: Session) -> int:
+    """清空回收站。"""
+    rows = list(db.execute(select(Link).where(Link.deleted_at.is_not(None))).scalars().all())
+    for row in rows:
+        db.delete(row)
+    db.flush()
+    logger.info("清空回收站：%d 条", len(rows))
+    return len(rows)
+
+
+def purge_expired_trash(db: Session, days: int = TRASH_RETENTION_DAYS) -> int:
+    """回收站只留 TRASH_RETENTION_DAYS 天，过期自动清掉。
+
+    不清的话，「删除」只是换个地方堆着，库会一直长。
+    """
+    cutoff = utcnow() - dt.timedelta(days=max(1, days))
+    rows = list(db.execute(select(Link).where(Link.deleted_at.is_not(None), Link.deleted_at < cutoff)).scalars().all())
+    for row in rows:
+        db.delete(row)
+    db.flush()
+    if rows:
+        logger.info("清理回收站 %d 条（超过 %d 天）", len(rows), days)
+    return len(rows)
+
+
+BULK_ACTIONS = ("enable", "disable", "delete", "renew", "tag")
 
 
 def _bulk_code(raw: object) -> str:
@@ -327,8 +412,19 @@ def _bulk_code(raw: object) -> str:
     return normalize_code(text.lstrip("/"))
 
 
-def bulk_update(db: Session, codes: list[str], action: str) -> dict:
-    """批量启用 / 停用 / 删除。不存在的短码跳过，不让一条脏码毁掉整批。"""
+def bulk_update(
+    db: Session,
+    codes: list[str],
+    action: str,
+    *,
+    days: int = 30,
+    tag: str | None = None,
+) -> dict:
+    """批量启用 / 停用 / 删除 / 续期 / 加标签。
+
+    不存在的短码跳过，不让一条脏码毁掉整批。勾错一整页是常见事故，
+    所以删除在这里同样是进回收站，而不是直接抹掉。
+    """
     if action not in BULK_ACTIONS:
         raise ServiceError("不支持的操作", 422)
     wanted = [_bulk_code(c) for c in codes]
@@ -343,9 +439,28 @@ def bulk_update(db: Session, codes: list[str], action: str) -> dict:
     )
     found = {row.code.lower() for row in rows}
     affected, missing = 0, [c for c in wanted if c.lower() not in found]
+    days = max(1, min(3650, int(days or 30)))
+    tag = (tag or "").strip()[:32]
+    if action == "tag" and not tag:
+        raise ServiceError("批量加标签需要提供标签名", 422)
     for row in rows:
         if action == "delete":
-            db.delete(row)
+            # 批量删除同样进回收站：一次勾错 50 条，直接 DELETE 是没法解释的事故
+            row.deleted_at = utcnow()
+            row.enabled = False
+        elif action == "renew":
+            renew_link(db, row, days=days, enabled=True)
+        elif action == "tag":
+            current: list[str] = []
+            if row.tags:
+                try:
+                    current = [str(t) for t in json.loads(row.tags)]
+                except (ValueError, TypeError):
+                    current = []
+            if tag.lower() not in {t.lower() for t in current}:
+                current.append(tag)
+                current = current[:10]
+                row.tags = json.dumps(current, ensure_ascii=False)
         else:
             row.enabled = action == "enable"
         affected += 1
@@ -430,7 +545,7 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     # 而宿主机多半也是 UTC——分出来的日期跟「用户看到的今天」差一截。
     # 更隐蔽的是：容器时区设成东八区之后，同一个时刻会被分到前一天去。
     # 这里显式按 UTC 解释、再转进程本地时区，跟 Python 侧 today_local() 同一口径。
-    local_day = func.date(func.datetime(ClickEvent.ts, "utc"), "localtime")
+    local_day = func.date(func.datetime(ClickEvent.ts, utc_offset_sql()))
     daily_rows = db.execute(
         select(local_day, func.count(ClickEvent.id))
         .where(ClickEvent.link_id == link.id, ClickEvent.ts >= since)
@@ -645,6 +760,43 @@ def _host(referrer: str) -> str | None:
 CLICK_EVENT_RETENTION_DAYS = settings.retention_days or 365
 
 
+def expiring_links_brief(db: Session, days: int = EXPIRING_DAYS, limit: int = 50) -> list[dict]:
+    """N 天内要到期的链接，按到期时间从近到远。
+
+    到期这件事不做提醒就等于不做：链接静静死掉，等到有人反馈「打不开」
+    已经过去好几天了。仪表盘上摆一份，「即将到期」的推送也从这里取。
+    """
+    now = utcnow()
+    horizon = now + dt.timedelta(days=max(1, days))
+    rows = db.execute(
+        select(Link)
+        .where(
+            Link.deleted_at.is_(None),
+            Link.expires_at.is_not(None),
+            Link.expires_at > now,
+            Link.expires_at <= horizon,
+        )
+        .order_by(Link.expires_at.asc())
+        .limit(max(1, min(200, limit)))
+    ).scalars().all()
+    out = []
+    for link in rows:
+        expires = ensure_aware(link.expires_at)
+        left = (expires - now).days if expires else 0
+        out.append(
+            {
+                "code": link.code,
+                "target": link.target,
+                "title": link.title,
+                "expires_at": expires,
+                "days_left": max(1, left) if expires else 0,
+                "clicks": link.clicks,
+                "enabled": link.enabled,
+            }
+        )
+    return out
+
+
 def runtime_status(db: Session) -> dict:
     """运行状态：排队多少、丢了什么、库有多大、哪些链接快到期。
 
@@ -656,7 +808,13 @@ def runtime_status(db: Session) -> dict:
     from app.core.access import warnings as access_warnings
     from app.core.clicks import click_buffer
 
-    link_count = int(db.execute(select(func.count()).select_from(Link)).scalar_one() or 0)
+    link_count = int(
+        db.execute(select(func.count()).select_from(Link).where(Link.deleted_at.is_(None))).scalar_one() or 0
+    )
+    # 回收站单独报：它占着库体积和短码，不报出来会有人纳闷「删了怎么还这么大」
+    trash_count = int(
+        db.execute(select(func.count()).select_from(Link).where(Link.deleted_at.is_not(None))).scalar_one() or 0
+    )
     event_count = int(db.execute(select(func.count()).select_from(ClickEvent)).scalar_one() or 0)
     db_size = None
     try:
@@ -695,6 +853,7 @@ def runtime_status(db: Session) -> dict:
         "pending_clicks": click_buffer.pending(),
         "dropped_clicks": click_buffer.dropped(),
         "expiring_links": expiring,
+        "trash_links": trash_count,
         "retention_days": CLICK_EVENT_RETENTION_DAYS,
         "title_sources": title_source_stats(db),
         "no_click": no_click,

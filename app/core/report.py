@@ -27,6 +27,8 @@ ACTIONS = {
     "settings": "修改设置",
     "flush": "结算点击",
     "claim": "回执换新",
+    "restore": "恢复链接",
+    "purge": "彻底删除",
 }
 
 MAX_ROWS = 2000

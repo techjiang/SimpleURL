@@ -101,6 +101,7 @@
       if (btn.dataset.tab === 'dash') loadDashboard();
       if (btn.dataset.tab === 'links') { loadAdminTags(); loadAdminLinks(); }
       if (btn.dataset.tab === 'keys') loadKeys();
+      if (btn.dataset.tab === 'trash') loadTrash();
       if (btn.dataset.tab === 'guard') loadGuard();
       if (btn.dataset.tab === 'audit') loadAudit();
       if (btn.dataset.tab === 'settings') loadSettings();
@@ -168,6 +169,96 @@
         : '<li><span>暂无访问</span><b>—</b></li>';
     } catch (err) { toast(err.message); }
   }
+
+  /* 到期提醒：把「7 天内到期」这批打包推到已配好的通道，
+     不用等后台线程那 5 分钟一次的快照 */
+  function bindExpiringNotify() {
+    const btn = $('#notify-expiring');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const r = await post('/api/admin/notify/expiring', {});
+        toast(r.message || '已推送');
+      } catch (err) { toast(err.message); }
+      finally { btn.disabled = false; }
+    });
+  }
+
+  /* ---------- 回收站 ---------- */
+  let trashQuery = '';
+
+  async function loadTrash() {
+    const body = $('#trash-body');
+    if (!body) return;
+    try {
+      const data = await api('/api/trash' + (trashQuery ? `?q=${encodeURIComponent(trashQuery)}` : ''));
+      const days = $('#trash-days');
+      if (days) days.textContent = data.retention_days;
+      body.innerHTML = (data.items || []).map((l) => `<tr>
+        <td class="col-code" data-label="短码"><a class="code-cell" href="/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
+        <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
+        <td class="clicks-cell col-clicks" data-label="点击">${l.clicks}</td>
+        <td class="exp-cell col-exp" data-label="删除于">${fmtStamp(l.deleted_at)}</td>
+        <td class="col-exp" data-label="剩余">${l.days_left} 天</td>
+        <td class="col-ops" data-label="操作"><div class="ops">
+          <button class="btn tiny primary" data-restore="${escapeHtml(l.code)}">恢复</button>
+          <button class="btn tiny danger" data-purge="${escapeHtml(l.code)}">彻底删除</button>
+        </div></td>
+      </tr>`).join('');
+      const box = $('#trash-empty-box');
+      if (box) box.hidden = (data.items || []).length > 0;
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindTrash() {
+    const body = $('#trash-body');
+    if (body) {
+      body.addEventListener('click', async (e) => {
+        const restore = e.target.closest('[data-restore]');
+        const purge = e.target.closest('[data-purge]');
+        try {
+          if (restore) {
+            await post(`/api/trash/${encodeURIComponent(restore.dataset.restore)}/restore`, {});
+            toast(`已恢复 /${restore.dataset.restore}`);
+          } else if (purge) {
+            const code = purge.dataset.purge;
+            if (!confirm(`彻底删除 /${code}？点击明细一并消失，不可恢复`)) return;
+            await api(`/api/trash/${encodeURIComponent(code)}`, { method: 'DELETE' });
+            toast(`/${code} 已彻底删除`);
+          } else {
+            return;
+          }
+          loadTrash();
+        } catch (err) { toast(err.message); }
+      });
+    }
+    const search = $('#trash-search');
+    if (search) {
+      let timer = null;
+      search.addEventListener('input', (e) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { trashQuery = e.target.value.trim(); loadTrash(); }, 260);
+      });
+    }
+    const empty = $('#trash-empty');
+    if (empty) empty.addEventListener('click', async () => {
+      if (!confirm('清空回收站：里面所有链接与点击明细都会被彻底删除，不可恢复')) return;
+      try {
+        const r = await post('/api/trash/empty', {});
+        toast(r.message || '已清空');
+        loadTrash();
+      } catch (err) { toast(err.message); }
+    });
+  }
+
+  const fmtStamp = (iso) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
 
   // 后台不加载 app.js，这段和前台 renderChart 里那份是一样的算法：
   // 柱子放得下就逐根标日期，放不下按宽度抽稀；纵轴给好看的整数刻度
@@ -413,10 +504,24 @@
 
   async function runBulk(action) {
     if (!picked.size) return;
-    const label = { enable: '启用', disable: '停用', delete: '删除' }[action];
-    if (action === 'delete' && !confirm(`确定删除选中的 ${picked.size} 条链接？该操作不可恢复`)) return;
+    const label = { enable: '启用', disable: '停用', delete: '删除', renew: '续期', tag: '打标签' }[action];
+    const body = { action, codes: [...picked] };
+    if (action === 'delete') {
+      if (!confirm(`确定删除选中的 ${picked.size} 条链接？\n它们会先进回收站，30 天内还能恢复。`)) return;
+    }
+    if (action === 'renew') {
+      const input = prompt('续期天数（从此刻或原到期时间取更晚的那个往后推）', '30');
+      if (input === null) return;
+      body.days = Math.max(1, Math.min(3650, Number(input) || 30));
+    }
+    if (action === 'tag') {
+      const tag = prompt('要加上的标签（已有同名标签会自动去重）', '');
+      if (tag === null) return;
+      if (!tag.trim()) { toast('标签不能为空'); return; }
+      body.tag = tag.trim();
+    }
     try {
-      const r = await post('/api/links/bulk', { action, codes: [...picked] });
+      const r = await post('/api/links/bulk', body);
       toast(r.message || `已${label} ${r.affected} 条`);
       picked.clear();
       loadAdminTags();
@@ -455,7 +560,8 @@
       allBox.indeterminate = false;
       syncBulkBar();
     });
-    [['#bulk-enable', 'enable'], ['#bulk-disable', 'disable'], ['#bulk-delete', 'delete']].forEach(([sel, act]) => {
+    [['#bulk-enable', 'enable'], ['#bulk-disable', 'disable'], ['#bulk-renew', 'renew'],
+     ['#bulk-tag', 'tag'], ['#bulk-delete', 'delete']].forEach(([sel, act]) => {
       const btn = $(sel);
       if (btn) btn.addEventListener('click', () => runBulk(act));
     });
@@ -473,10 +579,10 @@
           return;
         }
         if (btn.dataset.act === 'del') {
-          if (!confirm(`确定删除 /${code}？不可恢复`)) return;
+          if (!confirm(`确定删除 /${code}？\n会先进回收站，30 天内还能恢复。`)) return;
           await api('/api/links/' + encodeURIComponent(code), { method: 'DELETE' });
           picked.delete(code);
-          toast(`已删除 /${code}`);
+          toast(`/${code} 已进回收站`);
         } else {
           const cur = await api('/api/links/' + encodeURIComponent(code));
           await api('/api/links/' + encodeURIComponent(code), {
@@ -835,6 +941,8 @@
         ['待结算点击', s.pending_clicks],
         ['因超限丢弃', s.dropped_clicks],
         ['7 天内到期', s.expiring_links],
+        // 回收站单独列：删了怎么库还这么大，得有个答案
+        ['回收站', s.trash_links || 0],
         ['标题 · 抓取成功', ts.fetched || 0],
         ['标题 · URL 兜底', ts.fallback || 0],
         ['标题 · 人工填写', ts.manual || 0],
@@ -846,7 +954,7 @@
       $('#status-list').innerHTML = rows
         .map(([k, v]) => `<li><span>${k}</span><b>${escapeHtml(String(v))}</b></li>`)
         .join('');
-      $('#status-note').textContent = `点击明细保留 ${s.retention_days} 天，更早的明细可手动清理；累计点击数不受影响。`;
+      $('#status-note').textContent = `点击明细保留 ${s.retention_days} 天，更早的明细可手动清理；累计点击数不受影响。回收站里的链接保留 30 天，到期随每日清理一并彻底删除。`;
       // 丢了点击才是真问题：写库卡住时这个数字会往上涨
       if (s.dropped_clicks > 0) {
         $('#status-msg').textContent = '有点击因队列超限被丢弃，检查数据库写入是否卡住';
@@ -1069,6 +1177,7 @@
     bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
     bindBlockedFilter();
     bindMigrate(); bindSettings(); bindStatus(); bindQr(); bindNotify();
+    bindTrash(); bindExpiringNotify();
     await loadDashboard();
   }
 

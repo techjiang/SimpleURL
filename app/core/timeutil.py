@@ -49,17 +49,48 @@ def from_local_input(value: dt.datetime | None) -> dt.datetime | None:
     return value.astimezone(dt.timezone.utc)
 
 
+def _local_now() -> dt.datetime:
+    """现在的本地时间（aware）。
+
+    注意不能用 `utcnow().astimezone()`：那取的是**系统**时区，容器里通常是 UTC。
+    `TZ=Asia/Shanghai` 而系统偏移是 0 是最常见的部署组合，只看偏移会差 8 小时。
+    偏偏这种错只在跨零点的那几个小时里露出来——白天一切正常，凌晨的数据
+    全部落到「昨天」，属于最难复现的那一类。
+    """
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            return dt.datetime.now(dt.timezone.utc).astimezone(zone)
+        except Exception:  # noqa: BLE001 - 时区库异常就退回系统本地
+            pass
+    return dt.datetime.now(dt.timezone.utc).astimezone()
+
+
 def local_naive(value: dt.datetime | None) -> dt.datetime | None:
     """转成浏览器 datetime-local 输入框能吃的 naive 本地时间（YYYY-MM-DDTHH:mm）。"""
     aware = ensure_aware(value)
     if aware is None:
         return None
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            return aware.astimezone(zone).replace(tzinfo=None)
+        except Exception:  # noqa: BLE001
+            pass
     return aware.astimezone().replace(tzinfo=None)
 
 
 def fmt_local(value: dt.datetime | None, fmt: str = "%Y-%m-%d %H:%M") -> str:
     aware = ensure_aware(value)
-    return aware.astimezone().strftime(fmt) if aware else ""
+    if aware is None:
+        return ""
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            return aware.astimezone(zone).strftime(fmt)
+        except Exception:  # noqa: BLE001
+            pass
+    return aware.astimezone().strftime(fmt)
 
 
 def local_date(value: dt.datetime | None) -> dt.date | None:
@@ -70,7 +101,15 @@ def local_date(value: dt.datetime | None) -> dt.date | None:
     入库统一 UTC，出库统一本地，中间别再各写一遍。
     """
     aware = ensure_aware(value)
-    return aware.astimezone().date() if aware else None
+    if aware is None:
+        return None
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            return aware.astimezone(zone).date()
+        except Exception:  # noqa: BLE001
+            pass
+    return aware.astimezone().date()
 
 
 def local_day_start(day: dt.date) -> dt.datetime:
@@ -113,6 +152,27 @@ def _process_zone():
     return None
 
 
+def utc_offset_sql() -> str:
+    """当前本地时区相对 UTC 的偏移，SQLite 修饰符格式，如 `+8 hours` / `-5 hours`。
+
+    为什么不直接用 SQLite 的 `'localtime'`：它把查找时区的工作交给 C 库，
+    而 C 库那次初始化发生在**进程启动时**，之后 `TZ` 再怎么变它都不理会。
+    容器里「系统跑 UTC、应用配 TZ=Asia/Shanghai」是最常见的部署方式，
+    于是 `date(ts,'localtime')` 出来的还是 UTC 日期——统计图表上今天的柱子
+    永远是 0，而且只在本地零点之后的那几个小时里看得出来。
+
+    自己算偏移就没这问题：口径由 `_process_zone()` 决定，和 Python 侧的
+    `today_local()` / `local_day_start()` 完全一致。
+    """
+    hours = _local_now().utcoffset()
+    if hours is None:
+        return "+0 hours"
+    total = int(hours.total_seconds() // 60)
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    return f"{sign}{total // 60} hours" if total % 60 == 0 else f"{sign}{total // 60} hours {sign}{total % 60} minutes"
+
+
 def today_local() -> dt.date:
     """今天的本地日期。统计窗口、每日配额都按它切。"""
-    return dt.datetime.now(dt.timezone.utc).astimezone().date()
+    return _local_now().date()

@@ -33,6 +33,12 @@ class Link(Base):
     # 一次性领取码的哈希：开放模式下访客凭它回看自己建的那条链接
     claim_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
+    # 删除时间：有值即进了回收站。软删除而不是直接 DELETE，
+    # 因为「手滑删了一条发出去半年的短链」是不可逆事故——回收站留 30 天。
+    deleted_at: Mapped[Optional[dt.datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
     # 标题来源：fetched 抓回来的 / fallback URL 兜底 / manual 人工填的
     # 分不清这三者，后台就没法回答「自动取标题到底有没有在工作」
     title_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
@@ -49,6 +55,10 @@ class Link(Base):
     __table_args__ = (
         Index("ix_links_enabled_created", "enabled", "created_at"),
     )
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.deleted_at is not None
 
     @property
     def is_expired(self) -> bool:
@@ -76,6 +86,7 @@ class Link(Base):
             "expires_at": iso(self.expires_at),
             "expired": self.is_expired,
             "title_source": self.title_source,
+            "deleted_at": iso(self.deleted_at),
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
         }

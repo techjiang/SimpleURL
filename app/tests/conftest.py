@@ -29,9 +29,15 @@ def _isolate_clicks():
 
     click_buffer.reset()
     reset_guard()
+    # 跳转策略快照有 3 秒 TTL 且是进程级缓存：上一个用例把限速改小、
+    # 下一个用例照样读到旧值，测出来的就不是它自己那套配置
+    from app.core import policy
+
+    policy.invalidate()
     yield
     click_buffer.reset()
     reset_guard()
+    policy.invalidate()
 
 
 @pytest.fixture()
@@ -153,3 +159,25 @@ def db():
         yield session
     finally:
         session.close()
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_timezone():
+    """守住进程时区。
+
+    有些用例要 `monkeypatch.setenv("TZ", ...)` 再 `time.tzset()` 验证本地时间换算。
+    只要有一处写成 `delenv("TZ")`，跑测试的人原本设的 TZ（CI 与容器里就是
+    Asia/Shanghai）就被抹掉了，之后凡是跟「今天」「本地零点」有关的用例
+    都会按 UTC 算——而且只在跨零点的那几个小时里失败，非常难查。
+    这里在每条用例前后各刷一次 tzset，让时区始终回到环境变量说的那个。
+    """
+    import time as _time
+
+    saved = os.environ.get("TZ")
+    _time.tzset()
+    yield
+    if saved is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = saved
+    _time.tzset()

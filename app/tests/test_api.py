@@ -140,11 +140,13 @@ class TestList:
         client.patch("/api/links/off1", json={"enabled": False})
         assert client.get("/api/links?status=disabled").json()["total"] == 1
 
-    def test_sort_by_clicks(self, client):
+    def test_sort_by_clicks(self, client, flush_clicks):
         create(client, code="low")
         create(client, code="high")
         client.get("/high")
         client.get("/high")
+        # 点击是延迟计数：不先结算，两条的 clicks 都还是 0，排序断言等于没测
+        flush_clicks()
         items = client.get("/api/links?sort=clicks_desc").json()["items"]
         assert items[0]["code"] == "high"
 

@@ -24,7 +24,7 @@ from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip, rate_limiter
-from app.core.timeutil import local_day_start
+from app.core.timeutil import local_day_start, utc_offset_sql
 from app.core.settings_store import EDITABLE, code_length_value, effective, get_all, set_value
 from app.core.yourls import parse as parse_yourls
 from app.models import ApiKey, ClickEvent, Link, Setting
@@ -180,10 +180,14 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         or 0
     )
 
+    # 回收站里的不排进来：已经删掉的链接霸着 Top 榜，本身就是个 bug
     top_links = [
         {"code": code, "target": target, "clicks": int(clicks or 0)}
         for code, target, clicks in db.execute(
-            select(Link.code, Link.target, Link.clicks).order_by(Link.clicks.desc()).limit(8)
+            select(Link.code, Link.target, Link.clicks)
+            .where(Link.deleted_at.is_(None))
+            .order_by(Link.clicks.desc())
+            .limit(8)
         ).all()
     ]
 
@@ -213,7 +217,7 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
     # 近 14 天按本地日期分桶，和统计页保持同一口径。
     # 窗口同样按本地自然日切，否则最后一根柱子（今天）会是空的。
     # 与统计页同一口径：先按 UTC 解释再转本地，别用裸的 "localtime"
-    local_day = func.date(func.datetime(ClickEvent.ts, "utc"), "localtime")
+    local_day = func.date(func.datetime(ClickEvent.ts, utc_offset_sql()))
     daily_rows = (
         db.execute(
             select(local_day, func.count(ClickEvent.id))
@@ -612,6 +616,86 @@ def notify_sources(db: Session) -> list[dict]:
         {"key": "warnings", "label": "部署自检与配额告警", "desc": "运行状态里亮黄灯的那些，出现时推一条"},
         {"key": "digest", "label": "手动摘要", "desc": "随时把当前告警打包发一次"},
     ]
+
+
+@router.post("/notify/expiring", summary="推送即将到期的链接提醒")
+def api_notify_expiring(request: Request, days: int = Query(7, ge=1, le=30), db: Session = Depends(get_db)):
+    """把「N 天内到期」的链接打包推给所有配好的通道。
+
+    到期提醒以前只在仪表盘上摆着，得有人点开才看得见——而链接失效这件事，
+    恰恰是没人看的时候发生的。这里给一个手动出口，也能被 cron 直接调。
+    """
+    require_settings_admin(request)
+    from app.core import notify
+    from app.core.timeutil import fmt_local
+    from app.services import expiring_links_brief
+
+    rows = expiring_links_brief(db, days=days, limit=50)
+    if not rows:
+        return {"ok": True, "count": 0, "message": f"最近 {days} 天没有要到期的链接"}
+    lines = [f"站点：{settings.site_name}", "", f"以下 {len(rows)} 条将在 {days} 天内到期：", ""]
+    for row in rows:
+        when = fmt_local(row["expires_at"], "%m-%d %H:%M") if row.get("expires_at") else "—"
+        lines.append(f"· /{row['code']}  {when}  剩余 {row['days_left']} 天  {row['target'][:60]}")
+    lines += ["", "去后台「链接管理」勾选后可以批量续期：/admin"]
+    body = "\n".join(lines)
+    results = notify.broadcast(db, f"{settings.site_name}：{len(rows)} 条链接即将到期", body, level="warn")
+    db.commit()
+    if not results:
+        raise ServiceError("还没有任何通道配置完整，先在「通知」里填一个", 422)
+    sent = sum(1 for r in results if r["ok"])
+    return {
+        "ok": sent > 0,
+        "count": len(rows),
+        "message": f"{len(rows)} 条即将到期，{sent}/{len(results)} 个通道投递成功",
+        "results": results,
+    }
+
+
+@router.get("/trash", summary="回收站（后台）")
+def api_admin_trash(request: Request, q: str | None = Query(None), db: Session = Depends(get_db)):
+    require_admin(request)
+    from app.core.timeutil import ensure_aware, utcnow
+    from app.services import TRASH_RETENTION_DAYS, list_deleted
+
+    items = []
+    for link in list_deleted(db, q=q):
+        row = link.to_dict()
+        deleted = ensure_aware(link.deleted_at)
+        row["days_left"] = max(0, TRASH_RETENTION_DAYS - (utcnow() - deleted).days) if deleted else 0
+        items.append(row)
+    return {"items": items, "retention_days": TRASH_RETENTION_DAYS, "total": len(items)}
+
+
+@router.get("/backup", summary="下载 SQLite 库文件")
+def api_backup(request: Request, db: Session = Depends(get_db)):
+    """把库文件原样下载回去。
+
+    数据能自托管，前提是数据拿得走。导出 JSON / CSV 只覆盖链接，账号、
+    配置、点击明细还在库里；真要迁移或留底，得有一个「把整个库拿走」的口子。
+    只支持 SQLite：Postgres 请用 pg_dump。
+    """
+    require_settings_admin(request)
+    import datetime as _dt
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    url = settings.database_url
+    if not url.startswith("sqlite"):
+        raise ServiceError("当前使用 Postgres，请用 pg_dump 备份；这里只支持下载 SQLite 库文件", 422)
+    path = Path(url.split("sqlite:///")[-1].split("?")[0]).expanduser()
+    if not path.is_file():
+        raise ServiceError(f"库文件不存在：{path.name}（内存库无法备份）", 422)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M")
+    report.record(db, "settings", actor=require_settings_admin(request), detail="下载数据库备份", request=request)
+    db.commit()
+    return FileResponse(
+        path,
+        media_type="application/octet-stream",
+        filename=f"simpleurl-{stamp}.db",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/import/csv", summary="从 CSV 清单导入")

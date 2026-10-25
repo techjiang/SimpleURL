@@ -13,6 +13,7 @@ from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
+from app.core.timeutil import ensure_aware, utcnow
 from app.core.settings_store import effective
 from app.core.apikey import extract_key, touch, verify as verify_api_key
 from app.models import ClickEvent, Link
@@ -27,7 +28,11 @@ from app.services import (
     code_available,
     create_link,
     delete_link,
+    empty_trash,
     get_link_by_code,
+    list_deleted,
+    purge_link,
+    restore_link,
     get_stats,
     find_similar,
     links_to_csv,
@@ -359,7 +364,62 @@ def api_delete_link(code: str, request: Request, db: Session = Depends(get_db)):
     delete_link(db, code)
     report.record(db, "delete", actor=access_actor(request), code=code, request=request)
     db.commit()
-    return {"ok": True, "message": f"已删除 {code}"}
+    return {"ok": True, "message": f"已删除 {code}（已进回收站，30 天内可恢复）"}
+
+
+# ---------- 回收站 ----------
+# 删除改成软删之后，还得有一条「真的删掉」的路，否则回收站只是换个地方堆垃圾。
+# 三个动作：看、捞回来、彻底清。
+
+
+@router.get("/trash", summary="回收站列表")
+def api_trash(
+    request: Request,
+    q: str | None = Query(None, description="搜短码 / 目标 / 标题"),
+    db: Session = Depends(get_db),
+):
+    check_api_key(request, db)
+    require_manage(request, db)
+    from app.services import TRASH_RETENTION_DAYS
+
+    items = []
+    for link in list_deleted(db, q=q):
+        row = link.to_dict()
+        deleted = ensure_aware(link.deleted_at)
+        row["days_left"] = max(0, TRASH_RETENTION_DAYS - (utcnow() - deleted).days) if deleted else 0
+        items.append(row)
+    return {"items": items, "retention_days": TRASH_RETENTION_DAYS}
+
+
+@router.post("/trash/{code}/restore", summary="从回收站恢复")
+def api_trash_restore(code: str, request: Request, db: Session = Depends(get_db)):
+    check_api_key(request, db)
+    require_manage(request, db)
+    link = restore_link(db, code)
+    report.record(db, "restore", actor=access_actor(request), code=link.code, detail="从回收站恢复", request=request)
+    db.commit()
+    db.refresh(link)
+    return {"ok": True, "message": f"已恢复 /{link.code}", "item": _serialize(link, request).model_dump()}
+
+
+@router.delete("/trash/{code}", summary="彻底删除（不可撤销）")
+def api_trash_purge(code: str, request: Request, db: Session = Depends(get_db)):
+    check_api_key(request, db)
+    require_manage(request, db)
+    purge_link(db, code)
+    report.record(db, "purge", actor=access_actor(request), code=code, detail="彻底删除", request=request)
+    db.commit()
+    return {"ok": True, "message": f"/{code} 已彻底删除"}
+
+
+@router.post("/trash/empty", summary="清空回收站")
+def api_trash_empty(request: Request, db: Session = Depends(get_db)):
+    check_api_key(request, db)
+    require_manage(request, db)
+    removed = empty_trash(db)
+    report.record(db, "purge", actor=access_actor(request), detail=f"清空回收站 {removed} 条", request=request)
+    db.commit()
+    return {"ok": True, "removed": removed, "message": f"已清空回收站，{removed} 条彻底删除"}
 
 
 @router.post("/links/bulk", summary="批量启用 / 停用 / 删除")
@@ -370,16 +430,19 @@ def api_bulk(request: Request, payload: dict, db: Session = Depends(get_db)):
     if isinstance(codes, str):
         codes = [c for c in codes.replace(",", "\n").split() if c]
     action = str(payload.get("action") or "")
-    result = bulk_update(db, list(codes), action)
+    days = int(payload.get("days") or 30)
+    tag = str(payload.get("tag") or "")
+    result = bulk_update(db, list(codes), action, days=days, tag=tag)
+    labels = {"enable": "启用", "disable": "停用", "delete": "删除", "renew": "续期", "tag": "打标签"}
+    label = labels.get(action, action)
     report.record(
         db,
         "delete" if action == "delete" else "update",
         actor=access_actor(request),
-        detail=f"批量{'删除' if action == 'delete' else ('启用' if action == 'enable' else '停用')} {result['affected']} 条",
+        detail=f"批量{label} {result['affected']} 条",
         request=request,
     )
     db.commit()
-    label = {"enable": "启用", "disable": "停用", "delete": "删除"}.get(action, action)
     return {**result, "message": f"已{label} {result['affected']} 条"}
 
 
