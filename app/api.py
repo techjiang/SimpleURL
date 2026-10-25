@@ -124,6 +124,17 @@ def api_link_stats(
     return StatsOut(**get_stats(db, code, days=days))
 
 
+@router.get("/codes/{code}/available", summary="自定义短码可用性")
+def api_code_available(code: str, access: Access = Depends(get_access), db: Session = Depends(get_db)):
+    from app.services import code_available
+
+    if not access.is_admin and not access.can_create:
+        # 访客本来就不能创建，别把「已被占用」当成扫短码库的探测工具
+        return {"code": code, "available": True, "message": ""}
+    ok, message = code_available(db, code)
+    return {"code": code, "available": ok, "message": message}
+
+
 @router.get("/qr/{code}", summary="二维码 PNG")
 def api_qr(
     code: str,

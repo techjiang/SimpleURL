@@ -27,7 +27,8 @@
     <div class="row">
       <div class="field">
         <label for="code">自定义短码 <span class="hint">留空自动生成</span></label>
-        <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" />
+        <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" aria-describedby="code-status" />
+        <span class="field-status" id="code-status" role="status" aria-live="polite"></span>
       </div>
       <div class="field">
         <label for="title">标题 <span class="hint">可选</span></label>
@@ -49,6 +50,10 @@
       <span class="status" id="create-status" role="status" aria-live="polite"></span>
     </div>
   </form>
+  <div class="dup-hint" id="dup-hint" hidden>
+    <p class="dup-title">这个地址已经有短码了，直接复用更省事：</p>
+    <ul class="dup-list" id="dup-list"></ul>
+  </div>
   <div class="result" id="result" hidden>
     <div class="result-card">
       <p class="result-label">你的短链接</p>

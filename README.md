@@ -11,6 +11,7 @@
 - **安全可靠** — Argon2id 密钥哈希、CSP nonce、全套安全响应头、SSRF 防护、防刷限额
 - **访问统计** — 总点击 / 独立访客 / 30 天趋势图 / 来源 Top，按 IP 哈希脱敏
 - **二维码** — 每条链接自动生成 PNG 二维码
+- **创建前校验** — 自定义短码边打边查占用，目标地址重复时提示复用已有短码
 - **标签管理** — 标签检索、状态筛选、多字段搜索、多种排序
 - **链接控制** — 随时停用 / 启用 / 删除，支持设置过期时间
 - **管理后台** — `/admin` 六面板：仪表盘、链接管理、防洪/UA、API 密钥、数据迁移、设置
@@ -63,6 +64,8 @@ docker compose up -d         # 首次需构建
 | `PATCH` | `/api/links/{code}` | 更新（短码不可改） |
 | `DELETE` | `/api/links/{code}` | 删除 |
 | `GET` | `/api/links/{code}/stats` | 访问统计 |
+| `GET` | `/api/codes/{code}/available` | 自定义短码可用性预检 |
+| `GET` | `/api/admin/duplicate?target=` | 按目标地址查已有短码（管理员） |
 | `GET` | `/api/qr/{code}` | 二维码 PNG |
 | `GET` | `/api/stats/summary` | 总览 |
 | `GET` | `/{code}` | 跳转（307），自动记录点击 |
@@ -89,6 +92,16 @@ curl -X POST http://localhost:8000/api/links \
   -H 'Content-Type: application/json' \
   -d '{"target":"https://example.com/very/long/url","code":"my-link","tags":["文档"]}'
 ```
+
+### 创建前校验
+
+两条都是「顺手」而非「强制」，提交时后端仍会再校验一遍：
+
+- `GET /api/codes/{code}/available` — 短码能不能用。字符集、长度、大小写不敏感的重名都会先说清楚。
+  非管理员且当前模式下不可创建时，一律回「可以用」，避免这个接口变成短码库探测器。
+- `GET /api/admin/duplicate?target=` — 这个地址是不是已经有一条短码了。
+  比对时忽略协议差异、末尾斜杠与 `#` 片段，所以 `http://a.com/x`、`https://a.com/x/`
+  会被认成同一条；结果按点击量排序，直接复制复用即可。
 
 ## 防洪与微信 / QQ
 
@@ -213,10 +226,11 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-145 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计与二维码，
+156 个用例覆盖创建校验、跳转、停用/过期、列表筛选排序、更新删除、统计与二维码，
 三种访问模式、登录登出与鉴权绕过，安全加固专项（响应头、CSP nonce、Argon2id 哈希与降级、
 会话绑定与轮换、Cookie 属性、IP 信任边界、开放跳板），以及本轮新增的防洪专项：
-限速 429、UA 屏蔽不计数、微信/QQ 三种策略、延迟计数批量落库，后台各面板与运行配置。
+限速 429、UA 屏蔽不计数、微信/QQ 三种策略、延迟计数批量落库，后台各面板与运行配置，
+以及短码预检与目标查重（大小写、斜杠、片段归一化，访客不泄露占用情况）。
 
 ## 项目结构
 

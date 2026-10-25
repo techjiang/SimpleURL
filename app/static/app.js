@@ -153,6 +153,80 @@
   }
 
   /* ---------- 创建 ---------- */
+  function setCodeStatus(msg, kind) {
+    const el = $('#code-status');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.className = 'field-status' + (kind ? ' ' + kind : '');
+  }
+
+  // 输入短码边打边查重，别让人填完一整屏才被告知「已被占用」
+  function bindCodeCheck() {
+    const input = $('#code');
+    if (!input) return;
+    let timer = null;
+    let seq = 0;
+    input.addEventListener('input', () => {
+      const code = input.value.trim();
+      clearTimeout(timer);
+      if (!code) { setCodeStatus(''); return; }
+      // 本地先挡一遍明显不合法的，省掉一次请求
+      if (!/^[A-Za-z0-9_-]+$/.test(code)) { setCodeStatus('只能用字母、数字、- 和 _', 'err'); return; }
+      if (code.length < 3) { setCodeStatus('至少 3 个字符', 'err'); return; }
+      setCodeStatus('检查中…');
+      timer = setTimeout(async () => {
+        const mine = ++seq;
+        try {
+          const data = await api('/api/codes/' + encodeURIComponent(code) + '/available');
+          if (mine !== seq) return;
+          setCodeStatus(data.available ? '可以用 ✓' : data.message, data.available ? 'ok' : 'err');
+        } catch (err) {
+          if (mine === seq && err.status !== 401) setCodeStatus('', '');
+        }
+      }, 280);
+    });
+  }
+
+  // 目标地址查重：同一页面已有短码时给一条顺手的复用提示
+  function bindDupCheck() {
+    const input = $('#target');
+    const box = $('#dup-hint');
+    const list = $('#dup-list');
+    if (!input || !box || !list) return;
+    let timer = null;
+    let seq = 0;
+
+    const hide = () => { box.hidden = true; list.innerHTML = ''; };
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const value = input.value.trim();
+      if (value.length < 8) { hide(); return; }
+      timer = setTimeout(async () => {
+        const mine = ++seq;
+        try {
+          const data = await api('/api/admin/duplicate?target=' + encodeURIComponent(value));
+          if (mine !== seq) return;
+          if (!data.items || !data.items.length) { hide(); return; }
+          list.innerHTML = data.items.map((it) => `
+            <li>
+              <a class="mono" href="/${encodeURIComponent(it.code)}" target="_blank" rel="noopener">/${escapeHtml(it.code)}</a>
+              <span class="hint">${it.clicks} 次点击${it.expired ? ' · 已过期' : it.enabled ? '' : ' · 已停用'}</span>
+              <button class="btn tiny ghost" type="button" data-copy="${escapeHtml(location.origin + '/' + it.code)}">复制</button>
+            </li>`).join('');
+          box.hidden = false;
+        } catch (err) {
+          if (mine === seq) hide();  // 未登录 / 出错都不打扰
+        }
+      }, 500);
+    });
+    list.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-copy]');
+      if (!btn) return;
+      await copyText(btn.dataset.copy);
+      toast('已复制短链接');
+    });
+  }
+
   function bindCreate() {
     const form = $('#create-form');
     if (!form) return;
@@ -178,6 +252,9 @@
         showResult(link);
         setStatus('创建成功', 'ok');
         form.reset();
+        setCodeStatus('');
+        const dup = $('#dup-hint');
+        if (dup) dup.hidden = true;
         loadSummary();
         loadLinks();
       } catch (err) {
@@ -447,6 +524,7 @@
 
   document.addEventListener('DOMContentLoaded', () => {
     bindCreate(); bindCopy(); bindBoard(); bindConsole(); bindEditor();
+    bindCodeCheck(); bindDupCheck();
     const loginForm = $('#login-form');
     if (loginForm) {
       loginForm.addEventListener('submit', async (e) => {

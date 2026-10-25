@@ -92,6 +92,65 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
     return link
 
 
+def code_available(db: Session, raw: str) -> tuple[bool, str]:
+    """自定义短码可用性预检：给前端做实时校验，别等提交了才知道被占。"""
+    code = normalize_code(raw)
+    if not code:
+        return False, "短码不能为空"
+    ok, msg = validate_custom_code(code, settings.code_min_length, settings.code_max_length)
+    if not ok:
+        return False, msg
+    exists = db.execute(select(Link.id).where(func.lower(Link.code) == code.lower())).first()
+    if exists:
+        return False, "该短码已被占用"
+    return True, "可以用"
+
+
+def _url_key(url: str) -> str:
+    """归一化 URL 用于查重：忽略协议差异、末尾斜杠与 #片段。"""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return url.strip()
+    host = (parts.hostname or "").lower()
+    if parts.port and parts.port not in (80, 443):
+        host = f"{host}:{parts.port}"
+    path = parts.path.rstrip("/") or "/"
+    query = ("?" + parts.query) if parts.query else ""
+    return urlunsplit(("", host, path, query.lstrip("?"), ""))
+
+
+def find_similar(db: Session, target: str, limit: int = 5) -> list[dict]:
+    """找出指向同一地址的已有短码，按点击量从高到低。"""
+    from app.core.security import normalize_url
+
+    normalized = normalize_url(target) or target.strip()
+    key = _url_key(normalized)
+    if not key:
+        return []
+
+    rows = list(
+        db.execute(
+            select(Link).where(func.lower(Link.target).contains(key.split("/", 1)[0] or key)).limit(200)
+        ).scalars()
+    )
+    hits = [row for row in rows if _url_key(row.target) == key]
+    hits.sort(key=lambda r: (not r.enabled, -(r.clicks or 0)))
+    return [
+        {
+            "code": row.code,
+            "title": row.title,
+            "target": row.target,
+            "clicks": int(row.clicks or 0),
+            "enabled": row.enabled,
+            "expired": row.is_expired,
+        }
+        for row in hits[:limit]
+    ]
+
+
 def get_link_by_code(db: Session, code: str) -> Link:
     code = normalize_code(code)
     if not code:

@@ -70,23 +70,22 @@
       </select>
       <button class="btn tiny primary" type="submit">筛选</button>
       <button class="btn tiny ghost" id="export-json" type="button">导出 JSON</button>
-      {% if pages > 1 %}
       {% set qs = 'q=' ~ (q | urlencode) ~ '&status=' ~ (status or '') ~ '&sort=' ~ sort %}
-      <a class="btn tiny ghost" href="/admin/links?{{ qs }}&page={{ page - 1 if page > 1 else 1 }}">上一页</a>
+      <a class="btn tiny ghost{{ ' disabled' if page <= 1 else '' }}" href="/admin/links?{{ qs }}&page={{ page - 1 if page > 1 else 1 }}">上一页</a>
       <span class="hint">第 {{ page }}/{{ pages }} 页</span>
-      <a class="btn tiny ghost" href="/admin/links?{{ qs }}&page={{ page + 1 if page < pages else pages }}">下一页</a>
-      {% endif %}
+      <a class="btn tiny ghost{{ ' disabled' if page >= pages else '' }}" href="/admin/links?{{ qs }}&page={{ page + 1 if page < pages else pages }}">下一页</a>
     </form>
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th>短码</th><th>标题 / 目标</th><th>点击</th><th>状态</th><th>操作</th></tr></thead>
+        <thead><tr><th>短码</th><th>标题 / 目标</th><th>点击</th><th>过期</th><th>状态</th><th>操作</th></tr></thead>
         <tbody id="admin-links-body">
           {% for link in links %}
           <tr>
             <td><a class="code-cell" href="/s/{{ link.code }}">/{{ link.code }}</a></td>
             <td class="target-cell"><span class="title-cell">{{ link.title or '—' }}</span><br />{{ link.target }}</td>
             <td class="clicks-cell">{{ link.clicks }}</td>
-            <td>{% if link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
+            <td class="hint">{{ link.expires_at[:10] if link.expires_at else '—' }}</td>
+            <td>{% if link.expired %}<span class="badge exp">已过期</span>{% elif link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
             <td>
               <button class="btn tiny ghost" data-toggle="{{ link.code }}">{% if link.enabled %}停用{% else %}启用{% endif %}</button>
               <button class="btn tiny danger" data-del="{{ link.code }}">删除</button>

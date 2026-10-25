@@ -197,9 +197,14 @@ class TestAdminExtras:
         assert "fx1" in r.text
 
     def test_links_panel_paging(self, client):
+        for i in range(25):
+            make(client, f"pg{i:02d}")
         r = client.get("/admin/links?page=2")
         assert r.status_code == 200
-        assert "第 2 页" in r.text
+        assert "第 2/2 页" in r.text
+        # 越界页码要回夹到最后一页，而不是显示「第 99/2 页」
+        r = client.get("/admin/links?page=99")
+        assert "第 2/2 页" in r.text
 
     def test_dashboard_range(self, client):
         r = client.get("/admin?days=30")

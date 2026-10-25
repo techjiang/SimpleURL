@@ -125,7 +125,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .btn.tiny { padding: 6px 10px; font-size: 0.78rem; border-radius: 8px; }
 .btn.danger { color: var(--danger); border-color: rgba(255,107,129,0.35); background: rgba(255,107,129,0.1); }
 .btn.danger:hover { background: rgba(255,107,129,0.18); }
-.btn[disabled] { opacity: 0.55; cursor: not-allowed; transform: none; }
+.btn[disabled], .btn.disabled { opacity: 0.55; cursor: not-allowed; transform: none; pointer-events: none; }
 
 .status { font-size: 0.84rem; color: var(--text-dim); }
 .status.err { color: var(--danger); }
@@ -421,3 +421,25 @@ select option { background: var(--bg-soft); color: var(--text); }
 .danger-card .ref-list li { align-items: center; }
 .danger-card .ref-list li span { flex: 1 1 auto; }
 .board-tools form { display: flex; }
+
+/* ============ 创建表单：短码校验 / 重复提示 ============ */
+.field-status {
+  display: block; min-height: 1.15em; margin-top: 5px;
+  font-size: 0.76rem; color: var(--text-faint); transition: color .15s ease;
+}
+.field-status.ok { color: var(--accent); }
+.field-status.err { color: var(--danger); }
+
+.dup-hint {
+  margin-top: 14px; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: rgba(255, 196, 87, .08); border: 1px solid rgba(255, 196, 87, .26);
+}
+.dup-title { margin: 0 0 8px; font-size: 0.82rem; color: #ffd894; }
+.dup-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.dup-list li {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 0.82rem; padding: 4px 0;
+}
+.dup-list li a { font-weight: 600; }
+.dup-list li .hint { flex: 1 1 auto; font-size: 0.76rem; }
+.dup-list li .btn { padding: 3px 8px; font-size: 0.72rem; }

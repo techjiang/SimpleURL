@@ -82,12 +82,13 @@ def admin_page(
         context["guard_env"] = guard.env_snapshot()
     elif panel == "links":
         total, items = list_links(db, q=q, status=status, sort=sort, page=page, page_size=20)
+        pages = max(1, -(-total // 20))
         context.update(
             {
                 "total": total,
                 "links": [row.to_dict() for row in items],
-                "page": page,
-                "pages": max(1, -(-total // 20)),
+                "page": min(page, pages),  # 手写 ?page=99 时别显示「第 99/1 页」这种自相矛盾的文案
+                "pages": pages,
                 "q": q or "",
                 "status": status or "",
                 "sort": sort,
@@ -140,6 +141,15 @@ async def save_settings_api(request: Request):
         raise ServiceError("请求体应为对象", 400)
     applied = runtime.set_many(payload)
     return {"ok": True, "applied": applied, "values": runtime.snapshot()}
+
+
+@admin_api.get("/duplicate", summary="按目标地址查重")
+def duplicate_api(request: Request, target: str = Query(..., min_length=1), db: Session = Depends(get_db)):
+    """创建前查一下这个目标是否已经收录，避免同一页面存出好几条短码。"""
+    require(request)
+    from app.services import find_similar
+
+    return {"items": find_similar(db, target)}
 
 
 @admin_api.get("/keys", summary="API 密钥列表")
