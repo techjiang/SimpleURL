@@ -206,14 +206,17 @@ ACCESS_MODE=public ADMIN_TOKEN=$(openssl rand -hex 24) ./run.sh
 
 ## Logo
 
-位于 `app/static/logo/`，全部**无背景透明**：
+位于 `app/static/logo/`，全部**纯透明背景、无底板**，深浅底色都能直接用：
 
 - `icon.svg` / `icon-{16,32,48,64,96,128,180,192,256,512}.png` — 主图标
-- `favicon.svg` / `../favicon.ico` — 站点图标
+- `favicon.svg` / `../favicon.ico` — 站点图标（画布收窄，小尺寸更清楚）
 - `icon-mono.svg` — 单色版，用 `currentColor` 即可换色
 - `logo-horizontal.svg` — 图标 + 字标横版
 
-重新生成：
+造型是一条从右上绕回、再把去路折成箭头的折返线，讲的就是「长链接被绕短」。
+渐变沿对角线铺，折返处自然衔接深蓝 → 紫 → 品红。
+
+重新生成（需要 `cairosvg` + `Pillow`）：
 
 ```bash
 python scripts/gen_logo.py

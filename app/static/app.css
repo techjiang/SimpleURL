@@ -59,7 +59,7 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
   width: min(1080px, 92vw); margin: 0 auto; padding: 20px 0;
 }
 .brand { display: inline-flex; align-items: center; gap: 10px; }
-.brand img { border-radius: 9px; }
+.brand img { display: block; }
 .brand strong { font-size: 1.05rem; letter-spacing: -0.01em; }
 .brand em { font-style: normal; font-size: 0.7rem; color: var(--text-faint); letter-spacing: 0.14em; text-transform: uppercase; }
 .topnav { display: flex; gap: 4px; }
