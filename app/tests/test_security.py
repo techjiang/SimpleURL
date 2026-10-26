@@ -361,7 +361,7 @@ class TestRedirectSafety:
     def test_open_redirect_blocked(self, client, mode, secret_key):
         """短码目标必须被补成完整 URL，不能留成协议相对地址。"""
         mode("public")
-        # 协议相对地址会被补成绝对 https，落地明确
+        # 协议相对地址会被补成绝对 https，落地明确（纯数字短码会被当成端口号，这里不用）
         assert new_link(client, target="//evil.com/x", code="slashes")["target"] == "https://evil.com/x"
         assert new_link(client, target="evil.com/x", code="noproto")["target"] == "https://evil.com/x"
         # 但危险协议一律拒掉

@@ -13,12 +13,14 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
 from app.services import (
+    LinkUnavailable,
     ServiceError,
     get_link_by_code,
     get_stats,
     log_guard_event,
     record_click,
     resolve_redirect,
+    verify_pass,
 )
 from app.web import render, render_stats
 
@@ -53,12 +55,24 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         raise ServiceError("页面不存在", 404)
     try:
         link, target = resolve_redirect(db, code)
-    except ServiceError as exc:
-        # 未收录 / 已停用 / 已过期：给一个友好页面，而不是裸 JSON
+    except LinkUnavailable as exc:
+        # 未收录 / 已停用 / 已过期 / 点满：给一个说人话的页面，而不是裸 JSON
         return HTMLResponse(
-            render(request, "gone.html", code=code, message=exc.message),
+            render(request, "gone.html", code=code, message=exc.message, reason=exc.reason),
+            status_code=exc.status,
+        )
+    except ServiceError as exc:
+        return HTMLResponse(
+            render(request, "gone.html", code=code, message=exc.message, reason="missing"),
             status_code=exc.status if exc.status in (404, 410) else 404,
         )
+
+    if link.is_locked:
+        # 带口令的短码：先过验证页，跳转与计数都发生在验证通过之后。
+        # 口令正确时解锁接口会再 303 回来一次，这次带着 _su_ok 标记，直接放行——
+        # 不在浏览器里留长期通行证，一条链接一次一验。
+        if request.query_params.get("_su_ok") != "1":
+            return HTMLResponse(render(request, "unlock.html", code=link.code, link=link))
 
     ua = request.headers.get("user-agent")
     ip = client_ip(request)
@@ -134,6 +148,25 @@ def _blocked_context(verdict, target: str) -> tuple[dict, int]:
         },
         429,
     )
+
+
+@router.post("/{code}/unlock", response_class=HTMLResponse, summary="口令验证")
+async def unlock(code: str, request: Request, db: Session = Depends(get_db)):
+    """校验访问口令。成功后直接 303 跳到短码本体，由跳转流程统一计数与风控。
+
+    刻意不在这一步写 Cookie：一次性口令该一次一验，不该在浏览器里留下通行证。
+    """
+    link = get_link_by_code(db, code)
+    form = await request.form()
+    provided = form.get("password") or ""
+    if not auth.login_allowed(request, limit=20, window=300):
+        raise ServiceError("尝试过于频繁，请稍后再试", 429)
+    if not verify_pass(link, str(provided)):
+        return HTMLResponse(
+            render(request, "unlock.html", code=link.code, link=link, error="口令不正确"),
+            status_code=403,
+        )
+    return RedirectResponse(url=f"/{link.code}?_su_ok=1", status_code=303)
 
 
 @router.get("/s/{code}", response_class=HTMLResponse, summary="统计页")

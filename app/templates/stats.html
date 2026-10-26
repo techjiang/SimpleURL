@@ -11,11 +11,20 @@
     </div>
     <img src="/api/qr/{{ link.code }}" alt="二维码" width="120" height="120" class="qr" />
   </div>
+  <ul class="meta-chips">
+    <li class="chip chip-{{ link.state }}">
+      {{ {'active': '生效中', 'disabled': '已停用', 'expired': '已过期', 'exhausted': '次数已用完'}[link.state] }}
+    </li>
+    {% if link.locked %}<li class="chip">访问口令</li>{% endif %}
+    {% if link.max_clicks %}<li class="chip">限量 {{ link.max_clicks }} 次</li>{% endif %}
+    {% if link.expires_at %}<li class="chip">到期 {{ link.expires_at | dt('%Y-%m-%d %H:%M') }}</li>{% endif %}
+    <li class="chip">创建 {{ link.created_at | dt('%Y-%m-%d') }}</li>
+  </ul>
   <div class="stat-grid">
     <div class="stat-card"><span class="stat-label">总点击</span><strong>{{ data.clicks }}</strong></div>
     <div class="stat-card"><span class="stat-label">独立访客</span><strong>{{ data.unique_visitors }}</strong></div>
     <div class="stat-card"><span class="stat-label">近 30 天</span><strong>{{ data.daily | sum(attribute='count') }}</strong></div>
-    <div class="stat-card"><span class="stat-label">最近点击</span><strong>{{ data.last_click_at.strftime('%m-%d %H:%M') if data.last_click_at else '—' }}</strong></div>
+    <div class="stat-card"><span class="stat-label">最近点击</span><strong>{{ data.last_click_at | dt('%m-%d %H:%M') or '—' }}</strong></div>
   </div>
   <div class="chart-card">
     <div class="chart-head"><h2>每日点击趋势</h2><span class="hint">最近 30 天</span></div>
@@ -28,6 +37,22 @@
       <li><span>{{ r.source }}</span><b>{{ r.count }}</b></li>
       {% endfor %}
     </ul>
+  </div>
+  <div class="chart-card">
+    <div class="chart-head"><h2>最近访问</h2><span class="hint">最近 12 条</span></div>
+    {% if data.recent %}
+    <ul class="recent-list">
+      {% for r in data.recent %}
+      <li>
+        <span class="recent-time mono">{{ r.at | dt('%m-%d %H:%M') }}</span>
+        <span class="recent-src">{{ r.source }}</span>
+        <span class="recent-dev">{{ r.device }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="hint">还没有访问记录。</p>
+    {% endif %}
   </div>
 </section>
 <script nonce="{{ csp_nonce }}">

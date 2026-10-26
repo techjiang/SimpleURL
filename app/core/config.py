@@ -73,6 +73,23 @@ class Settings:
             p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(",") if p.strip()
         ]
 
+        # 后台会话的闲置超时（秒）。签名 Cookie 的总有效期仍是 7 天，
+        # 这里额外要求「最近一次操作」足够新鲜，避免公用电脑上一直不失效。
+        self.session_idle_timeout: int = max(300, _as_int("SESSION_IDLE_TIMEOUT", 7200))
+
+        # 反向代理注入的前缀头（CF-Connecting-IP 等）一律不采信：
+        # 直连即可伪造。真实客户端地址请挂 TRUSTED_PROXIES 后走 XFF。
+
+        # ---- 域名名单 ----
+        # 目标域名屏蔽名单（域名级，一处生效：创建、编辑、迁移、跳转全查）
+        self.blocked_hosts: list[str] = [
+            p.strip() for p in os.getenv("BLOCKED_HOSTS", "").split(",") if p.strip()
+        ]
+        # 目标域名允许名单：配了就只放行这些域名（及其子域）
+        self.allowed_hosts: list[str] = [
+            p.strip() for p in os.getenv("ALLOWED_HOSTS", "").split(",") if p.strip()
+        ]
+
         # 模板目录
         self.templates_dir = base_dir / 'app' / 'templates'
         self.static_dir = base_dir / 'app' / 'static'

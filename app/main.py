@@ -17,6 +17,7 @@ from app.core import auth, runtime
 from app.core.clickbuffer import click_buffer
 from app.core.config import settings
 from app.core.db import init_db
+from app.core.maintenance import maintenance
 from app.core.middleware import SecurityHeadersMiddleware
 from app.pages import router as pages_router
 from app.services import ServiceError
@@ -34,11 +35,13 @@ async def lifespan(_: FastAPI):
     init_db()
     runtime.load()
     click_buffer.start()
+    maintenance.start()
     logger.info("SimpleURL v%s 已启动", __version__)
     try:
         yield
     finally:
         # 退出前把缓冲里的点击结算掉，尽量不丢
+        maintenance.stop()
         click_buffer.stop()
         logger.info("SimpleURL 已关闭")
 

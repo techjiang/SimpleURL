@@ -216,6 +216,22 @@ select option { background: var(--bg-soft); color: var(--text); }
 .ref-list li { display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.88rem; }
 .ref-list b { font-variant-numeric: tabular-nums; }
 
+/* 统计页：状态徽标 / 最近访问 */
+.meta-chips { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; padding: 0; margin: 0 0 20px; }
+.chip-active { color: var(--accent); border-color: rgba(34,211,166,0.35); background: rgba(34,211,166,0.1); }
+.chip-disabled { color: var(--warn); border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.1); }
+.chip-expired, .chip-exhausted { color: var(--danger); border-color: rgba(255,107,129,0.35); background: rgba(255,107,129,0.1); }
+.recent-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.recent-list li {
+  display: grid; grid-template-columns: 92px 1fr auto; gap: 12px; align-items: center;
+  padding: 9px 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); font-size: 0.84rem;
+}
+.recent-time { color: var(--text-faint); font-size: 0.78rem; }
+.recent-src { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-dev { color: var(--text-dim); font-size: 0.76rem; }
+.status.error { color: var(--danger); font-size: 0.84rem; margin: 2px 0 0; }
+
 /* ============ Toast ============ */
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
@@ -443,3 +459,14 @@ select option { background: var(--bg-soft); color: var(--text); }
 .dup-list li a { font-weight: 600; }
 .dup-list li .hint { flex: 1 1 auto; font-size: 0.76rem; }
 .dup-list li .btn { padding: 3px 8px; font-size: 0.72rem; }
+
+@media (max-width: 520px) {
+  .recent-list li { grid-template-columns: 1fr auto; }
+  .recent-time { grid-column: 1 / -1; }
+  /* 统计页顶部：二维码先占一行，长地址必须能断行，否则 h1 的 grid 最小宽度会把整页撑出 30px */
+  .stats-page { overflow-x: hidden; }
+  .stats-hero { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  .stats-hero > div { min-width: 0; }
+  .stats-hero h1 { font-size: 1.5rem; word-break: break-all; }
+  .stats-hero .lede { overflow-wrap: anywhere; }
+}

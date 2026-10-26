@@ -22,7 +22,8 @@
   <form id="create-form" class="composer-form" autocomplete="off">
     <div class="field main">
       <label for="target">目标链接</label>
-      <input id="target" name="target" type="url" placeholder="https://example.com/very/long/url" required />
+      <input id="target" name="target" type="text" inputmode="url" autocomplete="url"
+             placeholder="https://example.com/very/long/url" required />
     </div>
     <div class="row">
       <div class="field">
@@ -43,6 +44,17 @@
       <div class="field">
         <label for="expires_at">过期时间 <span class="hint">可选，如 2026-12-31 23:59</span></label>
         <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
+      </div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="max_clicks">访问次数上限 <span class="hint">可选，点满即失效</span></label>
+        <input id="max_clicks" name="max_clicks" type="number" min="1" max="1000000" placeholder="不限" />
+      </div>
+      <div class="field">
+        <label for="password">访问口令 <span class="hint">可选，打开前需输口令</span></label>
+        <input id="password" name="password" type="password" maxlength="72"
+               autocomplete="new-password" placeholder="留空表示公开可访问" />
       </div>
     </div>
     <div class="composer-actions">
@@ -140,9 +152,20 @@
           <input id="edit-tags" type="text" maxlength="200" />
         </div>
       </div>
+      <div class="row">
+        <div class="field">
+          <label for="edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>
+          <input id="edit-expires" type="datetime-local" />
+        </div>
+        <div class="field">
+          <label for="edit-max-clicks">访问次数上限 <span class="hint">留空表示不限</span></label>
+          <input id="edit-max-clicks" type="number" min="1" max="1000000" placeholder="不限" />
+        </div>
+      </div>
       <div class="field main">
-        <label for="edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>
-        <input id="edit-expires" type="datetime-local" />
+        <label for="edit-password">访问口令 <span class="hint">设置后需口令才能打开</span></label>
+        <input id="edit-password" type="password" maxlength="72" autocomplete="new-password" />
+        <label class="check"><input id="edit-clear-password" type="checkbox" /> 清除口令</label>
       </div>
       <div class="composer-actions">
         <button class="btn primary" id="edit-save" type="submit">保存</button>

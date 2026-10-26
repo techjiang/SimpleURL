@@ -239,6 +239,9 @@
         title: $('#title').value.trim() || undefined,
         tags: $('#tags').value.trim() || undefined,
         expires_at: $('#expires_at').value || undefined,
+        password: ($('#password') && $('#password').value.trim()) || undefined,
+        max_clicks: ($('#max_clicks') && $('#max_clicks').value)
+          ? Number($('#max_clicks').value) : undefined,
       };
       if (!payload.target) { setStatus('请先粘贴一个链接', 'err'); return; }
       btn.disabled = true;
@@ -308,8 +311,17 @@
 
   /* ---------- 列表 ---------- */
   function badgeOf(link) {
-    if (link.expired) return '<span class="badge exp">已过期</span>';
-    return link.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>';
+    const map = {
+      active: '<span class="badge on">已启用</span>',
+      disabled: '<span class="badge off">已停用</span>',
+      expired: '<span class="badge exp">已过期</span>',
+      exhausted: '<span class="badge exp">次数用完</span>',
+    };
+    const state = link.state || (link.expired ? 'expired' : link.enabled ? 'active' : 'disabled');
+    const badge = map[state] || map.active;
+    const extra = [link.locked ? '🔒' : '', link.max_clicks ? `${link.clicks}/${link.max_clicks}` : '']
+      .filter(Boolean).join(' ');
+    return extra ? `${badge} <span class="hint">${extra}</span>` : badge;
   }
 
   function rowOf(link) {
@@ -423,6 +435,11 @@
     $('#edit-title').value = link.title || '';
     $('#edit-tags').value = (link.tags || []).join(', ');
     $('#edit-expires').value = link.expires_at ? link.expires_at.slice(0, 16) : '';
+    $('#edit-max-clicks').value = link.max_clicks || '';
+    $('#edit-password').value = '';
+    $('#edit-password').placeholder = link.locked ? '已设置口令，留空保持不变' : '留空表示不设口令';
+    $('#edit-clear-password').checked = false;
+    $('#edit-clear-password').disabled = !link.locked;
     $('#edit-status').textContent = '';
     modal.hidden = false;
     $('#edit-target').focus();
@@ -448,13 +465,21 @@
       e.preventDefault();
       if (!editing) return;
       const btn = $('#edit-save');
+      const expires = $('#edit-expires').value;
+      const maxClicks = $('#edit-max-clicks').value.trim();
+      const password = $('#edit-password').value.trim();
       const payload = {
         target: $('#edit-target').value.trim(),
         title: $('#edit-title').value.trim(),
         tags: $('#edit-tags').value.trim(),
-        // 清空过期时间要显式传 null，否则后端会当成「未提供」
-        expires_at: $('#edit-expires').value ? $('#edit-expires').value : null,
+        // 清空要显式说一声：只传 null 等于「设为无」，后端分不清「没动」
+        clear_expiry: !expires,
+        clear_max_clicks: !maxClicks,
+        clear_password: $('#edit-clear-password').checked,
       };
+      if (expires) payload.expires_at = expires;
+      if (maxClicks) payload.max_clicks = Number(maxClicks);
+      if (password) payload.set_password = password;
       btn.disabled = true;
       $('#edit-status').textContent = '保存中…';
       try {
@@ -472,6 +497,12 @@
     });
   }
 
+  const STATE_TEXT = { active: '已启用', disabled: '已停用', expired: '已过期', exhausted: '次数用完' };
+
+  function stateText(link) {
+    return STATE_TEXT[link.state || (link.expired ? 'expired' : link.enabled ? 'active' : 'disabled')] || '已启用';
+  }
+
   /* ---------- CSV 导出 ---------- */
   async function exportCsv() {
     const params = new URLSearchParams({ page: 1, page_size: 100, sort: state.sort });
@@ -482,7 +513,7 @@
       const head = ['短码', '目标地址', '标题', '标签', '点击', '状态', '创建时间'];
       const rows = data.items.map((l) => [
         l.code, l.target, l.title || '', (l.tags || []).join('|'),
-        l.clicks, l.expired ? '已过期' : l.enabled ? '已启用' : '已停用', fmtDate(l.created_at),
+        l.clicks, stateText(l), fmtDate(l.created_at),
       ]);
       const cell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
       const csv = [head, ...rows].map((r) => r.map(cell).join(',')).join('\r\n');
@@ -516,9 +547,8 @@
   }
 
   async function bootstrap() {
-    await loadAccess();
-    await loadSummary();
-    loadAnnouncement();
+    // 各块互不依赖，一个接口慢不该拖住整页；任何一个挂了也不影响其余部分
+    await Promise.allSettled([loadAccess(), loadSummary(), loadAnnouncement()]);
     if (access.is_admin) await loadLinks();
   }
 

@@ -51,17 +51,30 @@ def _sign(value: str) -> str:
     return crypto.sign(settings.secret_key, value)
 
 
-def _token(value: str, ttl: int) -> str:
+def _idle_ttl() -> int:
+    """会话闲置超时，且不长于 Cookie 总有效期。"""
+    return max(60, min(int(settings.session_idle_timeout), COOKIE_MAX_AGE))
+
+
+def _issued(value: str, ttl: int, now: int) -> str:
+    return _sign(f"{_SESSION_TOKEN_PREFIX}:{value}:{now}:{ttl}")
+
+
+def _token(value: str, ttl: int, issued_at: int | None = None) -> str:
     """由密钥派生、带时间戳的签名令牌，无需服务端存会话。
 
-    有效期 ttl 一并签进令牌：否则签发时声明的短有效期，
-    校验方可以拿一个更长的默认值把它「救活」。
+    - 时间戳里编了「签发时刻」，于是同一秒内多次签发的令牌完全相同——
+      浏览器里的 Cookie 不会因为刷新页面就变一次。
+    - 有效期 ttl 一并签进令牌：否则签发时声明的短有效期，
+      校验方可以拿一个更长的默认值把它「救活」。
+    - issued_at 用于续期：令牌原样重签，但把「最近活跃」推到现在。
     """
-    ts = int(time.time())
-    return f"{ts}.{_sign(f'{_SESSION_TOKEN_PREFIX}:{value}:{ts}:{ttl}')}"
+    ts = int(time.time()) if issued_at is None else int(issued_at)
+    return f"{ts}.{_issued(value, ttl, ts)}"
 
 
-def _token_valid(token: str | None, value: str, ttl: int) -> bool:
+def _token_fresh(token: str | None, value: str, ttl: int) -> bool:
+    """令牌本身有效（签名 + 签发时未过期），且最近 ttl 秒内活跃过。"""
     if not token or "." not in token:
         return False
     ts, sig = token.split(".", 1)
@@ -70,7 +83,37 @@ def _token_valid(token: str | None, value: str, ttl: int) -> bool:
     # ttl 既参与签名也参与过期判断，改任一边都验不过
     if int(ts) + ttl < int(time.time()):
         return False
-    return crypto.compare_digest(sig, _sign(f'{_SESSION_TOKEN_PREFIX}:{value}:{ts}:{ttl}'))
+    return crypto.compare_digest(sig, _issued(value, ttl, int(ts)))
+
+
+def _token_valid(token: str | None, value: str, ttl: int) -> bool:
+    """校验令牌，并按闲置超时收紧。
+
+    Cookie 的 7 天是「最迟什么时候彻底失效」，这里再叠一层闲置超时：
+    公用电脑上签完就走的会话不该一直活着。令牌每次校验通过后会被重签
+    （见 `refresh_session`），所以持续使用不会突然掉线。
+    """
+    if not _token_fresh(token, value, ttl):
+        return False
+    try:
+        issued = int(token.split(".", 1)[0])
+    except (ValueError, AttributeError):
+        return False
+    return issued + _idle_ttl() >= int(time.time())
+
+
+def refresh_session(token: str | None) -> str | None:
+    """闲置时间过半就发一张新的，返回需要写回 Cookie 的令牌，否则 None。"""
+    if not token or "." not in token:
+        return None
+    ts = token.split(".", 1)[0]
+    if not ts.isdigit():
+        return None
+    issued = int(ts)
+    now = int(time.time())
+    if now - issued < max(60, _idle_ttl() // 2):
+        return None
+    return _token(f"admin::{_admin_epoch()}", COOKIE_MAX_AGE, issued_at=now)
 
 
 def _secret_matches(secret: str | None) -> bool:
@@ -270,17 +313,54 @@ def api_key_required() -> bool:
     return runtime.get_bool("api_key_required")
 
 
-# ---- 简单的登录限速 ----
+# ---- 登录 / 口令验证限速 ----
 _login_hits: dict[str, list[float]] = {}
+_LOGIN_SWEEP_EVERY = 300
+_login_last_sweep = [0.0]
+
+
+def _sweep_login_hits(now: float) -> None:
+    """每 5 分钟清一次过期窗口。
+
+    不清的话这张表只涨不落：扫一遍不同来源就能把内存顶上去，而限速器
+    本身反而成了拒绝服务的入口。
+    """
+    if now - _login_last_sweep[0] < _LOGIN_SWEEP_EVERY:
+        return
+    _login_last_sweep[0] = now
+    for key in [k for k, v in _login_hits.items() if not v or now - v[-1] > 3600]:
+        _login_hits.pop(key, None)
 
 
 def login_allowed(request: Request, limit: int = 10, window: int = 300) -> bool:
-    key = client_ip(request) or "unknown"
+    # 与失败计数分开命名空间，否则同一份桶被两边共用，判据全是错的
+    key = "login:" + (client_ip(request) or "unknown")
     now = time.monotonic()
     bucket = [t for t in _login_hits.get(key, []) if now - t < window]
+    _sweep_login_hits(now)
     if len(bucket) >= limit:
         _login_hits[key] = bucket
         return False
     bucket.append(now)
     _login_hits[key] = bucket
     return True
+
+
+FAIL_KEY = "fail::{scope}"
+
+
+def _fail_key(request: Request, scope: str) -> str:
+    # 与登录限速分开记：错 9 次成功 1 次会把登录窗口刷空，失败次数不会
+    return f"fail:{scope}:{client_ip(request) or 'unknown'}"
+
+
+def note_login_failure(request: Request, scope: str = "admin") -> None:
+    _login_hits.setdefault(_fail_key(request, scope), []).append(time.monotonic())
+
+
+def too_many_failures(request: Request, limit: int = 20, window: int = 900, scope: str = "admin") -> bool:
+    key = _fail_key(request, scope)
+    now = time.monotonic()
+    bucket = [t for t in _login_hits.get(key, []) if now - t < window]
+    _login_hits[key] = bucket
+    return len(bucket) >= limit

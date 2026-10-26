@@ -53,9 +53,15 @@ def is_public_url(url: str) -> bool:
 
 
 def ip_hash(ip: str | None) -> str:
+    """访客 IP 的单向摘要。
+
+    加了 SECRET_KEY 当盐：没有盐的 SHA-256 前缀对 IP 来说等于没脱敏——
+    IPv4 空间只有 2^32，离线枚举一张表就能反查。改了 SECRET_KEY 等于历史
+    访客标识整体换一遍，独立访客会一次性重算，代价可接受。
+    """
     if not ip:
         return ""
-    return hashlib.sha256(f"simpleurl::{ip}".encode()).hexdigest()[:32]
+    return hashlib.sha256(f"simpleurl::{settings.secret_key}::{ip}".encode()).hexdigest()[:32]
 
 
 def client_ip(request) -> str | None:
@@ -103,3 +109,74 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter()
+
+
+# ---------------- 域名过滤（域名级防护）----------------
+_WILDCARD_RE = re.compile(r"^\*\.(.+)$")
+
+
+def _norm_host(host: str) -> str:
+    return (host or "").strip().lower().rstrip(".")
+
+
+def parse_rule_list(raw) -> list[str]:
+    """把多行 / 逗号分隔的文本拆成规则数组，顺手清掉重复。"""
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw]
+    else:
+        items = str(raw).replace(",", "\n").splitlines()
+    out: list[str] = []
+    for item in items:
+        rule = item.strip().lower()
+        if rule and rule not in out:
+            out.append(rule)
+    return out
+
+
+def host_match(host: str, rule: str) -> bool:
+    """域名匹配。`*.a.com` 只匹配子域，不匹配 a.com 本身——这点与 UA 通配不同。"""
+    host = _norm_host(host)
+    rule = _norm_host(rule)
+    if not host or not rule:
+        return False
+    wildcard = _WILDCARD_RE.match(rule)
+    if wildcard:
+        suffix = wildcard.group(1)
+        return host != suffix and host.endswith("." + suffix)
+    # 裸域名覆盖它自己和所有子域：屏蔽 evil.com 却放过 a.evil.com 是自欺欺人
+    return host == rule or host.endswith("." + rule)
+
+
+def host_in(url: str, rules: list[str]) -> str | None:
+    """URL 的主机命中任一规则就返回命中的那条规则。"""
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        return None
+    for rule in rules:
+        if host_match(host, rule):
+            return rule
+    return None
+
+
+# ---------------- 短链目标的黑白名单 ----------------
+LIST_MODE_OFF = "off"
+LIST_MODE_BLOCK = "block"
+LIST_MODE_ALLOW = "allow"
+
+
+def target_policy(url: str, block: list[str], allow: list[str], mode: str) -> str | None:
+    """判断目标域名是否符合站点名单。命中限制则返回人话原因。"""
+    try:
+        host = _norm_host(urlparse(url).hostname or "")
+    except ValueError:
+        return "地址不合法"
+    if not host:
+        return "地址缺少域名"
+    if block and host_in(url, block):
+        return f"{host} 已列入屏蔽名单"
+    if mode == LIST_MODE_ALLOW and allow and not host_in(url, allow):
+        return f"{host} 不在允许名单内"
+    return None

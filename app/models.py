@@ -30,6 +30,11 @@ class Link(Base):
     # 可选过期时间（UTC）
     expires_at: Mapped[Optional[dt.datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # 设了口令的短码在跳转前要先过一张验证页，适合不该被随手转发的链接
+    pass_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # 点击数上限：归零后不再跳转。做限量领券、限量报名时不用自己盯着
+    max_clicks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
@@ -47,6 +52,25 @@ class Link(Base):
     def is_expired(self) -> bool:
         expires = ensure_aware(self.expires_at)
         return bool(expires and expires <= utcnow())
+
+    @property
+    def exhausted(self) -> bool:
+        return bool(self.max_clicks is not None and (self.clicks or 0) >= self.max_clicks)
+
+    @property
+    def is_locked(self) -> bool:
+        return bool(self.pass_hash)
+
+    @property
+    def state(self) -> str:
+        """状态机的唯一出口：列表、统计页、跳转、后台展示都用它，避免各处各判一套。"""
+        if not self.enabled:
+            return "disabled"
+        if self.is_expired:
+            return "expired"
+        if self.exhausted:
+            return "exhausted"
+        return "active"
 
     def to_dict(self) -> dict:
         tags = []
@@ -68,6 +92,10 @@ class Link(Base):
             "enabled": self.enabled,
             "expires_at": iso(self.expires_at),
             "expired": self.is_expired,
+            "locked": self.is_locked,
+            "max_clicks": self.max_clicks,
+            "exhausted": self.exhausted,
+            "state": self.state,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
         }

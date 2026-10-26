@@ -7,8 +7,18 @@ from starlette.requests import Request
 
 from app.core import auth
 from app.core.config import settings
+from app.core.timeutil import ensure_aware
 
 templates = Jinja2Templates(directory=str(settings.templates_dir))
+
+
+def _dt(value, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """模板里的时间一律走这里：SQLite 读回的是 naive，直接 strftime 会把 UTC 当本地时间。"""
+    aware = ensure_aware(value)
+    return aware.strftime(fmt) if aware else ""
+
+
+templates.env.filters["dt"] = _dt
 templates.env.globals.update(
     site_name=settings.site_name,
     auth_enabled=auth.admin_enabled(),

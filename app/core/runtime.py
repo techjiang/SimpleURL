@@ -85,6 +85,12 @@ OPTIONS: tuple[Option, ...] = (
            help="开启后所有 /api/* 请求必须带 X-Api-Key"),
     Option("auto_title", "自动获取标题", "bool", True, help="创建时抓目标页 <title>，抓不到用 URL 兜底"),
     _s("announcement", "站点公告", "", help="留空则不显示；显示在首页顶部"),
+    _s("blocked_hosts", "目标域名屏蔽名单", "",
+       help="每行一条，a.com 连同其子域一起屏蔽，*.a.com 只屏蔽子域"),
+    _s("allowed_hosts", "目标域名允许名单", "",
+       help="填了就只放行这些域名（含子域），留空表示不限制"),
+    Option("retention_days", "点击明细保留天数", "int", 180, lo=0, hi=3650,
+           help="超期明细由后台每小时自动清理，只保留累计点击数；0 表示永久保留"),
 )
 
 BY_KEY = {o.key: o for o in OPTIONS}
@@ -155,9 +161,11 @@ def get(key: str) -> Any:
     option = BY_KEY.get(key)
     if option is None:
         raise KeyError(key)
-    if key in _cache:
-        return _cache[key]
-    return _default_of(option)
+    if key not in _cache:
+        # 首请求就把默认值算一次存起来：像域名名单这种由线程池处理的请求，
+        # 不该每次穿透回环境变量，也不该依赖「谁先读谁负责缓存」。
+        _cache[key] = _default_of(option)
+    return _cache[key]
 
 
 def get_int(key: str) -> int:
@@ -219,6 +227,27 @@ def describe() -> list[dict]:
 
 def reset() -> None:
     _cache.clear()
+
+
+def blocked_hosts() -> list[str]:
+    """生效的目标域名黑名单：环境变量与后台配置合并。"""
+    from app.core.security import parse_rule_list
+
+    merged = parse_rule_list(settings.blocked_hosts)
+    for rule in parse_rule_list(get_str("blocked_hosts")):
+        if rule not in merged:
+            merged.append(rule)
+    return merged
+
+
+def allowed_hosts() -> list[str]:
+    from app.core.security import parse_rule_list
+
+    merged = parse_rule_list(settings.allowed_hosts)
+    for rule in parse_rule_list(get_str("allowed_hosts")):
+        if rule not in merged:
+            merged.append(rule)
+    return merged
 
 
 def ua_list() -> list[str]:

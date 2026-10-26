@@ -221,24 +221,32 @@ def api_login(
     # 那等于把钥匙抄在门上，所以这里明确不接受。
     if not secret:
         raise auth.AuthError("请通过 X-Admin-Token 请求头提供管理密钥", 400)
-    if access.is_admin:
-        return {"ok": True, "is_admin": True}
     if not auth.admin_enabled():
         raise auth.AuthError("服务端未配置管理密钥，无法登录", 400)
+    # 先验密钥再谈身份：带错密钥的请求不该被现有 Cookie 放行，
+    # 否则「猜密钥」和「校验密钥」就是两条不同的路，失败次数也统计不到。
+    if auth.too_many_failures(request):
+        raise auth.AuthError("失败次数过多，请稍后再试", 429)
     if not auth.login_allowed(request):
         raise auth.AuthError("尝试过于频繁，请稍后再试", 429)
     if not auth.admin_password_ok(secret):
         # 不区分「密钥错」和「没配密钥」，避免探测站点状态
+        auth.note_login_failure(request)
         logger.warning("管理密钥校验失败，来源 IP %s", client_ip(request) or "unknown")
         raise auth.AuthError("管理密钥不正确", 401)
+    if access.is_admin:
+        return {"ok": True, "is_admin": True}
     _set_session(request, response, auth.ADMIN_COOKIE, auth.admin_session())
     return {"ok": True, "is_admin": True}
 
 
 @router.post("/admin/logout", summary="退出登录")
 def api_logout(response: Response):
-    response.delete_cookie(auth.ADMIN_COOKIE)
-    response.delete_cookie(auth.INVITE_COOKIE)
+    # 显式带 path="/" 删除；同时把值置空、Max-Age=0，双保险应对个别反代改写路径
+    for name in (auth.ADMIN_COOKIE, auth.INVITE_COOKIE):
+        response.delete_cookie(name, path="/")
+        response.set_cookie(name, "", max_age=0, path="/", httponly=True, samesite="lax")
+    response.headers["Clear-Site-Data"] = '"cache"'
     return {"ok": True, "is_admin": False}
 
 

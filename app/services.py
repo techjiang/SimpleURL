@@ -16,6 +16,7 @@ from app.core.codes import generate_unique_code, normalize_code, validate_custom
 from app.core.config import settings
 from app.core.fetcher import fetch_title
 from app.core.security import is_public_url, ip_hash, rate_limiter
+from app.core.db import session_scope
 from app.core.timeutil import ensure_aware, utcnow
 from app.models import ClickEvent, GuardEvent, Link
 from app.schemas import LinkCreate, LinkUpdate
@@ -32,9 +33,23 @@ class ServiceError(Exception):
         self.status = status
 
 
+def check_target_policy(url: str) -> None:
+    """目标域名是否符合站点的黑白名单。创建、编辑、迁移、跳转都走这里。
+
+    统一在一个函数里判断，是为了避免「创建时拦住、编辑时能绕过去」这种只堵一半的洞。
+    """
+    from app.core.security import LIST_MODE_ALLOW, target_policy
+
+    mode = LIST_MODE_ALLOW if runtime.allowed_hosts() else "off"
+    reason = target_policy(url, runtime.blocked_hosts(), runtime.allowed_hosts(), mode)
+    if reason:
+        raise ServiceError(f"目标地址不受支持：{reason}", 422)
+
+
 def _ensure_target(url: str) -> str:
     if not is_public_url(url):
         raise ServiceError("目标地址不合法：仅支持 http/https 且可解析的公开地址", 422)
+    check_target_policy(url)
     return url
 
 
@@ -48,6 +63,11 @@ def _expiry_guard(value: dt.datetime | None) -> dt.datetime | None:
 
 
 def check_create_quota(ip: str | None) -> None:
+    """单 IP 每日创建配额（内存滑动窗口）。
+
+    窗口从第一次创建算起满 24 小时，不是自然日；跨天不清零但会自然滑出。
+    代价是进程重启会重置计数——创建滥用本来就是「防毛毛雨」，不值得为它上库。
+    """
     limit = runtime.get_int("create_daily_limit")
     if not ip or limit <= 0:
         return
@@ -69,6 +89,10 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         if exists:
             raise ServiceError("该短码已被占用，换一个试试", 409)
 
+    # 自定义短码为纯数字时会被浏览器 / 手机识别成端口号，粘贴即失效
+    if custom and custom.isdigit():
+        raise ServiceError("纯数字短码会被当成端口号，请含至少一个字母", 422)
+
     code = custom or generate_unique_code(runtime.get_int("code_length"))
     title = payload.title
     if not title and runtime.get_bool("auto_title"):
@@ -81,6 +105,8 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         note=payload.note,
         tags=json.dumps(payload.tags, ensure_ascii=False) if payload.tags else None,
         expires_at=expires_at,
+        max_clicks=payload.max_clicks,
+        pass_hash=hash_pass(payload.password),
     )
     db.add(link)
     try:
@@ -203,22 +229,58 @@ def list_links(
 
 def update_link(db: Session, code: str, payload: LinkUpdate) -> Link:
     link = get_link_by_code(db, code)
-    data = payload.model_dump(exclude_unset=True)
+    data = payload.model_dump(
+        exclude_unset=True, exclude={"set_password", "clear_password", "clear_expiry", "clear_max_clicks"}
+    )
 
     if "target" in data and data["target"] is not None:
         data["target"] = _ensure_target(data["target"])
     if "expires_at" in data:
         data["expires_at"] = _expiry_guard(data["expires_at"])
+    if payload.clear_expiry:
+        data["expires_at"] = None
     if "tags" in data:
         data["tags"] = json.dumps(data["tags"], ensure_ascii=False) if data["tags"] else None
-    if "code" in data:
-        del data["code"]
+    data.pop("code", None)
 
     for key, value in data.items():
         setattr(link, key, value)
+
+    if payload.set_password:
+        link.pass_hash = hash_pass(payload.set_password)
+    elif payload.clear_password:
+        link.pass_hash = None
+    if payload.clear_max_clicks:
+        link.max_clicks = None
+
     db.flush()
     logger.info("更新短链 %s", link.code)
     return link
+
+
+def hash_pass(raw: str | None) -> str | None:
+    """访问口令按密钥同规格哈希，库里永远没有明文。"""
+    from app.core import crypto
+
+    if not raw:
+        return None
+    return crypto.hash_secret(raw)
+
+
+def verify_pass(link: Link, raw: str | None) -> bool:
+    from app.core import crypto
+
+    if not link.pass_hash:
+        return True
+    return crypto.verify_secret((raw or "").strip(), link.pass_hash)
+
+
+class LinkUnavailable(ServiceError):
+    """链接不可用；附带原因代码，便于页面区分文案。"""
+
+    def __init__(self, message: str, reason: str, status: int = 410):
+        super().__init__(message, status)
+        self.reason = reason
 
 
 def delete_link(db: Session, code: str) -> None:
@@ -229,14 +291,21 @@ def delete_link(db: Session, code: str) -> None:
 
 
 def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
-    """返回 (链接, 目标地址)。已停用/过期/无效都抛错。"""
+    """返回 (链接, 目标地址)。已停用 / 过期 / 点满 / 无效都抛 LinkUnavailable。"""
     link = get_link_by_code(db, code)
     if not link.enabled:
-        raise ServiceError("该短链接已停用", 410)
+        raise LinkUnavailable("该短链接已停用", "disabled")
     if link.is_expired:
-        raise ServiceError("该短链接已过期", 410)
+        raise LinkUnavailable("该短链接已过期", "expired")
+    if link.exhausted:
+        raise LinkUnavailable("该短链接的访问次数已用完", "exhausted")
     if not is_public_url(link.target):
-        raise ServiceError("目标地址已失效", 410)
+        raise LinkUnavailable("目标地址已失效", "invalid")
+    try:
+        check_target_policy(link.target)
+    except ServiceError as exc:
+        # 事后被拉黑的域名不该继续靠旧短码跳转，否则屏蔽名单形同虚设
+        raise LinkUnavailable("该短链接已不可用", "blocked") from exc
     return link, link.target
 
 
@@ -267,6 +336,25 @@ def log_guard_event(db: Session, code: str | None, kind: str, ua: str | None,
         logger.warning("写防洪日志失败：%s", exc)
 
 
+def purge_old_clicks(days: int | None = None) -> int:
+    """按保留期清理点击明细，只留累计点击数。
+
+    短链服务的明细表是最容易失控的一张表：一条热链一年就能堆几十万行，
+    而 30 天以外的明细除了占空间几乎没有用处。
+    """
+    from app import admin_service
+
+    keep = runtime.get_int("retention_days") if days is None else days
+    if keep <= 0:
+        return 0
+    with session_scope() as db:
+        removed = admin_service.purge_clicks(db, before_days=keep)
+        db.commit()
+    if removed:
+        logger.info("清理 %d 天前的点击明细：%d 条", keep, removed)
+    return removed
+
+
 def get_stats(db: Session, code: str, days: int = 30) -> dict:
     link = get_link_by_code(db, code)
     days = max(1, min(365, days))
@@ -277,17 +365,22 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         select(func.date(ClickEvent.ts), func.count(ClickEvent.id))
         .where(ClickEvent.link_id == link.id, ClickEvent.ts >= since)
         .group_by(func.date(ClickEvent.ts))
-        .order_by(func.date(ClickEvent.ts))
     ).all()
 
-    # 补全缺失日期
+    # 补全缺失日期。天从旧到新排列：直接改 dict 插入顺序就等于排好序，
+    # 不用再依赖 SQL 的 date() 排序（SQLite 与 Postgres 对 date 的返回类型并不一致）。
     buckets: dict[str, int] = {}
     for i in range(days):
         d = (now - dt.timedelta(days=days - 1 - i)).date().isoformat()
         buckets[d] = 0
     for d, c in daily_rows:
         key = d.isoformat() if hasattr(d, "isoformat") else str(d)
-        buckets[key] = int(c)
+        if key in buckets:
+            buckets[key] = int(c)
+        else:
+            # 万一时区导致多出一天，按日期插到末尾也无害
+            buckets[key] = int(c)
+    buckets = dict(sorted(buckets.items()))
 
     referrer_rows = (
         db.execute(
@@ -317,6 +410,13 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         select(func.max(ClickEvent.ts)).where(ClickEvent.link_id == link.id)
     ).scalar_one_or_none()
 
+    recent = db.execute(
+        select(ClickEvent.ts, ClickEvent.referrer, ClickEvent.ua)
+        .where(ClickEvent.link_id == link.id)
+        .order_by(ClickEvent.ts.desc())
+        .limit(12)
+    ).all()
+
     return {
         "code": link.code,
         "clicks": link.clicks or 0,
@@ -325,7 +425,28 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         "last_click_at": last_click,
         "daily": [{"date": k, "count": v} for k, v in buckets.items()],
         "top_referrers": top,
+        "recent": [
+            {
+                "at": ts,
+                "source": _host(ref) or "直接访问",
+                "device": device_label(ua),
+            }
+            for ts, ref, ua in recent
+        ],
     }
+
+
+def device_label(ua: str | None) -> str:
+    """把 UA 归成三类：桌面 / 移动 / 机器人。够用，不去猜操作系统。"""
+    from app.core.guard import is_bot
+
+    if is_bot(ua):
+        return "机器人"
+    low = (ua or "").lower()
+    if not low:
+        return "未知"
+    mobile = ("mobile", "android", "iphone", "ipad", "ipod", "micromessenger", "mqqbrowser")
+    return "移动端" if any(m in low for m in mobile) else "桌面端"
 
 
 def _host(referrer: str) -> str | None:

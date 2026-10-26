@@ -60,6 +60,26 @@ def build_csp(nonce: str | None) -> str:
     return "; ".join(f"{k} {v}" for k, v in directives.items())
 
 
+def _session_cookie(request: Request) -> bool:
+    return bool(request.cookies.get("su_admin") or request.cookies.get("su_invite_key"))
+
+
+def _no_store(request: Request, response: Response) -> None:
+    """给「因人而异」的响应打上不缓存标记。
+
+    页面（要带 CSP nonce，本来就不该复用）、/api/*、以及任何带着登录
+    Cookie 的响应都算。静态资源有自己的 Cache-Control，不在这里改。
+    """
+    is_document = "text/html" in response.headers.get("content-type", "")
+    path = request.url.path
+    if is_document or path.startswith("/api/") or _session_cookie(request):
+        # 二维码这类由接口自己定了缓存策略的，别覆盖它
+        if response.headers.get("Cache-Control"):
+            return
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers.setdefault("Pragma", "no-cache")
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """给所有响应补安全头，并注入 CSP nonce 与请求 ID。"""
 
@@ -72,6 +92,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         started = time.perf_counter()
         response = await call_next(request)
         elapsed_ms = (time.perf_counter() - started) * 1000
+        path = request.url.path
 
         # 静态资源和 API 不需要 nonce，用收紧版策略即可
         is_document = "text/html" in response.headers.get("content-type", "")
@@ -85,6 +106,29 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if is_https:
             for key, value in _HSTS.items():
                 response.headers[key] = value
+
+        # 带身份的响应不能被任何中间层缓存，否则缓存一份就是串号
+        _no_store(request, response)
+
+        # 会话闲置续期：用着就一直活着，撂下不管就按 SESSION_IDLE_TIMEOUT 掉线。
+        # 退出登录时不要续期，否则刚退出又被写回一张有效 Cookie。
+        from app.core import auth
+
+        logging_out = path.endswith("/logout")
+        fresh = None if logging_out else auth.refresh_session(request.cookies.get(auth.ADMIN_COOKIE))
+        if fresh:
+            is_https = request.url.scheme == "https" or request.headers.get(
+                "x-forwarded-proto", ""
+            ).split(",")[0].strip().lower() == "https"
+            response.set_cookie(
+                auth.ADMIN_COOKIE,
+                fresh,
+                max_age=auth.COOKIE_MAX_AGE,
+                httponly=True,
+                samesite="lax",
+                secure=is_https,
+                path="/",
+            )
 
         response.headers["X-Request-ID"] = request_id
         if settings.debug:

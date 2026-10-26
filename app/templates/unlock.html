@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ site_name }} · 需要口令{% endblock %}
+{% block content %}
+<section class="gate">
+  <div class="gate-card">
+    <img src="/static/logo/icon.svg" alt="" width="44" height="44" />
+    <p class="kicker mono">/{{ code }}</p>
+    <h1>这条短链需要口令</h1>
+    <p class="gate-tip">创建者为它设了访问口令，输入正确口令后才能继续跳转。</p>
+    <form method="post" action="/{{ code }}/unlock" autocomplete="off">
+      <div class="field main">
+        <label for="unlock-password">访问口令</label>
+        <input id="unlock-password" name="password" type="password" placeholder="请输入口令"
+               required autofocus maxlength="72" {% if error %}aria-invalid="true"{% endif %} />
+      </div>
+      {% if error %}<p class="status error" role="alert">{{ error }}</p>{% endif %}
+      <div class="composer-actions">
+        <button type="submit" class="btn primary">继续访问</button>
+      </div>
+    </form>
+    <div class="gate-back"><a class="btn tiny ghost" href="/">← 返回 {{ site_name }}</a></div>
+  </div>
+</section>
+{% endblock %}

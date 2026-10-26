@@ -35,6 +35,10 @@ class LinkCreate(BaseModel):
     note: Optional[str] = Field(None, max_length=1000)
     tags: Optional[list[str] | str] = Field(default=None)
     expires_at: Optional[dt.datetime] = None
+    # 设了访问口令的短码，跳转前要先在验证页输入口令
+    password: Optional[str] = Field(None, max_length=72)
+    # 点击数上限，点满即失效；留空表示不限
+    max_clicks: Optional[int] = Field(None, ge=1, le=1_000_000)
 
     @field_validator("target")
     @classmethod
@@ -67,9 +71,21 @@ class LinkCreate(BaseModel):
         v = str(v).strip()
         return v or None
 
+    @field_validator("password", mode="before")
+    @classmethod
+    def _v_password(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
+
 
 class LinkUpdate(BaseModel):
-    """更新短链接。"""
+    """更新短链接。
+
+    口令与点击数上限三态：字段不传＝不动，传 null＝清除，传值＝设置。
+    用 `model_fields_set` 区分「没传」和「传了 null」，否则永远清不掉口令。
+    """
 
     target: Optional[str] = None
     title: Optional[str] = None
@@ -77,6 +93,19 @@ class LinkUpdate(BaseModel):
     tags: Optional[list[str] | str] = None
     enabled: Optional[bool] = None
     expires_at: Optional[dt.datetime] = None
+    set_password: Optional[str] = Field(None, max_length=72, description="设置新口令")
+    clear_password: bool = Field(False, description="清除访问口令")
+    clear_expiry: bool = Field(False, description="清除过期时间")
+    max_clicks: Optional[int] = Field(None, ge=1, le=1_000_000)
+    clear_max_clicks: bool = Field(False, description="取消点击上限")
+
+    @field_validator("set_password", mode="before")
+    @classmethod
+    def _v_set_password(cls, v):
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
     @field_validator("target")
     @classmethod
@@ -115,6 +144,10 @@ class LinkOut(BaseModel):
     updated_at: Optional[dt.datetime] = None
     short_url: str = ""
     expired: bool = False
+    locked: bool = False
+    max_clicks: Optional[int] = None
+    exhausted: bool = False
+    state: str = "active"
 
 
 class LinkListOut(BaseModel):
