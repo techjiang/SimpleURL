@@ -57,10 +57,31 @@ class TestCodeUniqueness:
     """域名不区分大小写，`Abc` 和 `abc` 落到同一个地址。"""
 
     def test_custom_code_case_insensitive(self, client):
-        create(client, code="AbCd")
-        r = client.post("/api/links", json={"target": "https://x.com", "code": "abcd", "fetch_title": False})
-        assert r.status_code == 409
-        assert "不区分大小写" in r.json()["message"]
+        """大小写撞车不再报错，而是换码并在响应里说明。
+
+        `AbCd` 和 `abcd` 在域名上根本就是同一个地址，谁后写谁赢——
+        所以必须先建的那个保住原码，后来者拿一个新码，同时被告知原码没用上。
+        """
+        first = create(client, code="AbCd")
+        assert first["code"] == "AbCd"
+        r = client.post(
+            "/api/links", json={"target": "https://x.com/other", "code": "abcd", "fetch_title": False}
+        )
+        assert r.status_code == 201
+        body = r.json()
+        assert body["swapped_from"] == "abcd"
+        assert body["code"].lower() != "abcd"
+        # 原码仍归先建的那条
+        assert client.get("/api/links/AbCd").json()["code"] == "AbCd"
+
+    def test_swapped_code_is_never_case_variant(self, client):
+        """换出来的码也不能跟已有的只差大小写，否则同样的坑换个位置又踩一次。"""
+        create(client, code="QwEr")
+        r = client.post(
+            "/api/links", json={"target": "https://x.com/other", "code": "qwer", "fetch_title": False}
+        )
+        assert r.status_code == 201
+        assert r.json()["code"].lower() != "qwer"
 
     def test_auto_code_never_collides_with_existing_mixed_case(self, client):
         from app.core.codes import code_exists, random_code

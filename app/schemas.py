@@ -180,6 +180,8 @@ class LinkOut(BaseModel):
     stats_url: Optional[str] = None
     # 这个短码是不是「目标已存在，直接复用」来的
     reused: bool = False
+    # 自定义短码撞了（大小写不敏感）之后自动换成的码，原样带回给前端说明
+    swapped_from: Optional[str] = None
     # 还在内存缓冲里没落库的点击数。clicks 已经把这一份加进去了，
     # 单独给一个是让界面能说「其中 N 次待结算」，而不是让人怀疑数字跳变。
     pending_clicks: int = 0

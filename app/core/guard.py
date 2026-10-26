@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import fnmatch
 import logging
+import time
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -129,7 +130,7 @@ def platform_hit(platform: str | None, rules: dict[str, str]) -> str | None:
     return platform if rules.get(platform) == "block" else None
 
 
-def _client_key(ip: str | None) -> str | None:
+def _client_key(ip: str | None) -> str:
     """限速用的客户端标识。
 
     不给 IP 就退化成「同一个人」——所有没有地址的请求共用一份配额。
@@ -137,6 +138,20 @@ def _client_key(ip: str | None) -> str | None:
     限速会静默失效，而人还在以为有保护。
     """
     return ip or "unknown"
+
+
+def _minute_key(ip: str | None, stamp: float) -> str:
+    """把「这一分钟」编进限速 key。
+
+    不带分钟号的话，bucket 里那条满额记录永远不会被清空：
+    窗口算的是「最近 60 秒来过几次」，只要最近一分钟满额、之后没人再来，
+    这条记录就一直停在那儿——**下一位访客**照样被拒。
+    一条被分享出去的短链，任何人刷 120 次就能让后面的人看一分钟 429。
+
+    每根柱子按分钟分开计，上一分钟的账不清也能自然翻篇。
+    key 因此每分钟换一个，靠 `_sweep` 按小时回收，内存不会失控。
+    """
+    return f"{_client_key(ip)}:{int(stamp // 60)}"
 
 
 def check_redirect_quota(db: Session, ip: str | None, snapshot: dict | None = None) -> tuple[bool, str | None]:
@@ -148,7 +163,7 @@ def check_redirect_quota(db: Session, ip: str | None, snapshot: dict | None = No
         per_minute = effective(db, "redirect_rate_limit")
     if not per_minute or per_minute <= 0:
         return True, None
-    if not rate_limiter.allow(f"redirect:{_client_key(ip)}", per_minute, 60):
+    if not rate_limiter.allow(f"redirect:{_minute_key(ip, time.time())}", per_minute, 60):
         return False, f"访问过于频繁（每分钟上限 {per_minute} 次），请稍后再试"
     return True, None
 

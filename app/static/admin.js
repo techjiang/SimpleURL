@@ -263,16 +263,26 @@
   };
 
   // 后台不加载 app.js，这段和前台 renderChart 里那份是一样的算法：
-  // 柱子放得下就逐根标日期，放不下按宽度抽稀；纵轴给好看的整数刻度
-  function axisTicks(max, count = 3) {
-    const raw = Math.max(1, max) / count;
-    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-    const norm = raw / mag;
-    const step = Math.max(1, Math.round((norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag));
-    const top = Math.ceil(Math.max(1, max) / step) * step;
+  // 柱子放得下就逐根标日期，放不下按宽度抽稀；纵轴给好看的整数刻度。
+  // 改动时两边要一起改——后台这张图和统计页那张必须一个口径，
+  // 否则同一个数字在两个页面上高度不一样。
+  function axisTicks(max, count = 4) {
+    const value = Math.max(1, Math.ceil(max));
+    const nice = [1, 2, 5, 10];
+    for (let mag = 1; mag <= 1e12; mag *= 10) {
+      for (const n of nice) {
+        const candidate = n * mag;
+        const span = Math.ceil(value / candidate) * candidate;
+        if (span / candidate <= count) return { top: span, ticks: buildTicks(span, candidate) };
+      }
+    }
+    return { top: value, ticks: buildTicks(value, value) };
+  }
+
+  function buildTicks(top, step) {
     const ticks = [];
-    for (let v = 0; v <= top; v += step) ticks.push(v);
-    return { top, ticks };
+    for (let v = 0; v <= top + 1e-9; v += step) ticks.push(Math.round(v));
+    return ticks;
   }
 
   function renderChart(el, daily) {
@@ -287,8 +297,9 @@
     const showAt = (i) => dense || i === 0 || i === last || i % step === 0;
     const bars = daily
       .map((d, i) => {
-        // 有数据的柱子留个下限高度，1 次和 0 次不该长得一样
-        const h = d.count ? Math.max(4, (d.count / top) * 100) : 0;
+        // 有数据的柱子留个下限高度，1 次和 0 次不该长得一样；
+        // 但别保太多，否则几次点击的柱子和十几次的一模一样高
+        const h = d.count ? Math.max(2, (d.count / top) * 100) : 0;
         return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count}"><i style="height:${h}%"></i><b>${showAt(i) ? d.date.slice(5) : ''}</b></div>`;
       })
       .join('');

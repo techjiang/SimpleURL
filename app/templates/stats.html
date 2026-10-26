@@ -34,8 +34,10 @@
        用户只会看到「今天」那根，以为前面 20 天全是零。 #}
     <p class="chart-swipe hint" hidden>← 左右滑动看完整 30 天</p>
     {# 趋势图是脚本画的，读屏软件和「Ctrl+A 复制出来」都拿不到数字。
-       这里留一份纯文本视图：看清哪天点了多少次，也不用等脚本。 #}
-    <details class="chart-table">
+       这里留一份纯文本视图：看清哪天点了多少次，也不用等脚本。
+       默认展开——它是图表唯一的无障碍入口，藏在 details 后面
+       等于对读屏用户和禁用脚本的人不可达。 #}
+    <details class="chart-table" open>
       <summary>逐日明细</summary>
       <ul>
         {% for d in data.daily | reverse %}

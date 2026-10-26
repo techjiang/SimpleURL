@@ -62,11 +62,19 @@ class TestTrash:
         assert client.post("/api/trash/back3/restore").status_code == 409
 
     def test_code_stays_taken_while_in_trash(self, client):
-        """回收站里的短码仍然占用：否则恢复时会跟新建的撞车。"""
+        """回收站里的短码仍然占用：否则恢复时会跟新建的撞车。
+
+        占用这件事现在表现为「换码」，不是「报错」——但原码必须一条都没被抢走。
+        """
         create(client, code="held")
         client.delete("/api/links/held")
         r = client.post("/api/links", json={"target": "https://example.com/x", "code": "held", "fetch_title": False})
-        assert r.status_code == 409
+        assert r.status_code == 201
+        body = r.json()
+        assert body["swapped_from"] == "held"
+        assert body["code"] != "held"
+        # 恢复回来还是原来那条
+        assert client.post("/api/trash/held/restore").json()["item"]["code"] == "held"
 
     def test_purge_is_permanent(self, client):
         create(client, code="burn")

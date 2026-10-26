@@ -24,7 +24,7 @@ from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip, rate_limiter
-from app.core.timeutil import local_day_start, utc_offset_sql
+from app.core.timeutil import local_day_sql, local_day_start
 from app.core.settings_store import EDITABLE, code_length_value, effective, get_all, set_value
 from app.core.yourls import parse as parse_yourls
 from app.models import ApiKey, ClickEvent, Link, Setting
@@ -231,7 +231,7 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
     # 近 14 天按本地日期分桶，和统计页保持同一口径。
     # 窗口同样按本地自然日切，否则最后一根柱子（今天）会是空的。
     # 与统计页同一口径：先按 UTC 解释再转本地，别用裸的 "localtime"
-    local_day = func.date(func.datetime(ClickEvent.ts, utc_offset_sql()))
+    local_day = local_day_sql(ClickEvent.ts)
     daily_rows = (
         db.execute(
             select(local_day, func.count(ClickEvent.id))

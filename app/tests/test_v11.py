@@ -184,7 +184,8 @@ class TestAxisTicks:
         const fs = require('fs');
         const src = fs.readFileSync('app/static/app.js', 'utf8');
         const m = src.match(/function axisTicks\\([\\s\\S]*?\\n  }/);
-        eval(m[0]);
+        const b = src.match(/function buildTicks\\([\\s\\S]*?\\n  }/);
+        eval(m[0] + '\\n' + (b ? b[0] : ''));
         console.log(JSON.stringify([axisTicks(0), axisTicks(3), axisTicks(47), axisTicks(1e5)]));
         """
         out = subprocess.run(
@@ -200,3 +201,20 @@ class TestAxisTicks:
             assert list(steps)[0] in {1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000,
                                       20000, 50000, 100000}
         assert three["top"] >= 3 and mid["top"] >= 47 and big["top"] >= 1e5
+
+
+def test_both_charts_share_axis_algorithm():
+    """前台和后台的刻度必须同一套算法。
+
+    两份实现各自演进过一次：统计页已经改成四段步长，后台还停在三段，
+    于是同一个数字在两个页面上画出来的高度不同。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    app_js = (root / "app/static/app.js").read_text(encoding="utf-8")
+    admin_js = (root / "app/static/admin.js").read_text(encoding="utf-8")
+    assert "count = 4" in app_js and "count = 4" in admin_js
+    # 旧的「四舍五入取步长」写法在两处都不能再出现：峰值 55 会被画成满格
+    assert "Math.round((norm <= 1" not in app_js
+    assert "Math.round((norm <= 1" not in admin_js

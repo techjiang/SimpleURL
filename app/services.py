@@ -25,7 +25,7 @@ from app.core.timeutil import (
     from_local_input,
     local_day_start,
     today_local,
-    utc_offset_sql,
+    local_day_sql,
     utcnow,
 )
 from app.models import ClickEvent, Link
@@ -99,15 +99,18 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
     check_create_quota(db, ip)
 
     custom = normalize_code(payload.code) if payload.code else None
+    swapped_from: str | None = None
     if custom:
         ok, msg = validate_custom_code(custom, settings.code_min_length, settings.code_max_length)
         if not ok:
             raise ServiceError(msg, 422)
-        # 库里已有同码时，大小写不同也要拦：域名不区分大小写，`Abc` 和 `abc`
-        # 落到同一个地址上，谁后写谁赢，先建的人凭空被顶掉
-        exists = db.execute(select(Link.code).where(func.lower(Link.code) == custom.lower())).first()
-        if exists:
-            raise ServiceError(f"短码 {custom} 已被占用（不区分大小写），换一个试试", 409)
+        # 大小写撞车要拦：域名不区分大小写，`Abc` 和 `abc` 落到同一个地址，
+        # 谁后写谁赢，先建的人凭空被顶掉。但这里不直接报错——真撞上了就顺手换个码，
+        # 把「撞了」这件事一起带回去给前端说明。
+        # 用户想要的往往只是「这个名字」，大小写本来就是顺手打的。
+        if _code_taken(db, custom):
+            swapped_from = custom
+            custom = generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
 
     code = custom or generate_unique_code(code_length_value(db), settings.code_no_ambiguous)
     link = Link(
@@ -125,6 +128,9 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         db.rollback()
         raise ServiceError("该短码已被占用，换一个试试", 409) from exc
 
+    if swapped_from:
+        # 调用方要能把「换码」这件事说出来，否则用户会以为自己填的码建成了
+        link.swapped_from = swapped_from  # type: ignore[attr-defined]
     logger.info("创建短链 %s -> %s", link.code, link.target)
     return link
 
@@ -396,17 +402,25 @@ def trash_count(db: Session) -> int:
 def purge_link(db: Session, code: str) -> None:
     """从回收站彻底删除，连带点击明细一起没。不可撤销。"""
     link = get_link_by_code(db, code, include_deleted=True)
+    link_id = link.id
     db.delete(link)
     db.flush()
+    # 缓冲里可能还压着这条链接最后一秒的点击：不清掉的话，flush 时那条
+    # `link_id` 已经指向空气——SQLite 会把号让给下一条新链接，
+    # 于是新链接一建出来就「自带」几次点击。清掉时顺手把那批账也退回来。
+    click_buffer.discard(link_id)
     logger.info("彻底删除短链 %s", link.code)
 
 
 def empty_trash(db: Session) -> int:
     """清空回收站。"""
     rows = list(db.execute(select(Link).where(Link.deleted_at.is_not(None))).scalars().all())
+    ids = [row.id for row in rows]
     for row in rows:
         db.delete(row)
     db.flush()
+    for link_id in ids:
+        click_buffer.discard(link_id)
     logger.info("清空回收站：%d 条", len(rows))
     return len(rows)
 
@@ -418,9 +432,12 @@ def purge_expired_trash(db: Session, days: int = TRASH_RETENTION_DAYS) -> int:
     """
     cutoff = utcnow() - dt.timedelta(days=max(1, days))
     rows = list(db.execute(select(Link).where(Link.deleted_at.is_not(None), Link.deleted_at < cutoff)).scalars().all())
+    ids = [row.id for row in rows]
     for row in rows:
         db.delete(row)
     db.flush()
+    for link_id in ids:
+        click_buffer.discard(link_id)
     if rows:
         logger.info("清理回收站 %d 条（超过 %d 天）", len(rows), days)
     return len(rows)
@@ -530,17 +547,20 @@ def record_click(
 
     社交平台策略里的 silent 在这里生效：照常跳转、只记不算。
     返回 {'recorded': bool, 'blocked': bool, 'platform': str | None}
+
+    只有真正算进点击的那一路会触发「稍后落库」，被拦下的几种都只入队：
+    否则一次刷量请求就能把落库唤醒一次，延迟计数的意义就没了。
     """
     platform = social.detect(ua, referrer)
     snap = snapshot or policy.snapshot(db)
     if blocked:
         # 社交平台策略直接拦下的访问：只留痕，不算点击
-        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL)
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL, schedule=False)
         return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_SOCIAL}
 
     blocked_rule = guard.is_ua_blocked(ua, snap.get("ua_rules") or [])
     if blocked_rule:
-        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_UA)
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_UA, schedule=False)
         logger.info("UA 屏蔽命中 %s -> %s", link.code, blocked_rule)
         return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_UA}
 
@@ -549,13 +569,13 @@ def record_click(
         # 这一条原来连留痕都没有：跳转照常 307，库里一行记录都不落，
         # 于是「今天的点击数为什么比实际访问少了一大截」在界面上无从解释。
         # 现在同样入库（blocked + quota），只是不计入点击数。
-        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_QUOTA)
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_QUOTA, schedule=False)
         logger.info("点击配额拦截 %s -> %s", link.code, reason)
         return {"recorded": False, "blocked": True, "reason": reason, "platform": platform, "block_reason": NO_CLICK_QUOTA}
 
     if platform and snap.get("social_guard") and (snap.get("platforms") or {}).get(platform) == "silent":
         # 放行不计数：怀疑被刷量的平台上，真实用户照样能打开，只是不进统计
-        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL_SILENT)
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL_SILENT, schedule=False)
         return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_SOCIAL_SILENT}
 
     click_buffer.add(db, link.id, referrer, ua, ip, platform=platform)
@@ -578,7 +598,7 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     # 而宿主机多半也是 UTC——分出来的日期跟「用户看到的今天」差一截。
     # 更隐蔽的是：容器时区设成东八区之后，同一个时刻会被分到前一天去。
     # 这里显式按 UTC 解释、再转进程本地时区，跟 Python 侧 today_local() 同一口径。
-    local_day = func.date(func.datetime(ClickEvent.ts, utc_offset_sql()))
+    local_day = local_day_sql(ClickEvent.ts)
     daily_rows = db.execute(
         select(local_day, func.count(ClickEvent.id))
         .where(ClickEvent.link_id == link.id, ClickEvent.ts >= since)
@@ -726,9 +746,13 @@ def links_to_csv(links: list[Link], base_url: str = "") -> str:
         if not link.tags:
             return ""
         try:
-            return ", ".join(json.loads(link.tags))
+            items = json.loads(link.tags)
         except (ValueError, TypeError):
             return ""
+        # 标签是列表时才拼；单个字符串会变成 "a, b, c" 被逐字符拆开
+        if not isinstance(items, list):
+            return str(items)
+        return ", ".join(str(i) for i in items)
 
     def _status(link: Link) -> str:
         if link.is_expired:
@@ -737,26 +761,28 @@ def links_to_csv(links: list[Link], base_url: str = "") -> str:
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(EXPORT_HEADER)
+    # 表头也是单元格，跟着走同一条中和规则：以后加个以 `-` 开头的列名就自动安全
+    writer.writerow([_safe_cell(h) for h in EXPORT_HEADER])
     for link in links:
         created = ensure_aware(link.created_at)
         expires = ensure_aware(link.expires_at)
-        writer.writerow(
-            [
-                _safe_cell(link.code),
-                # 「短链接」这一列以前也填短码，导出来只看到 `abc1`，
-                # 发给别人还得自己拼域名。这里补成完整地址
-                _safe_cell(f"{base_url}/{link.code}" if base_url else f"/{link.code}"),
-                _safe_cell(link.target),
-                _safe_cell(link.title or ""),
-                _safe_cell(link.note or ""),
-                _safe_cell(_tags(link)),
-                link.clicks or 0,
-                _status(link),
-                expires.strftime("%Y-%m-%d %H:%M") if expires else "",
-                created.strftime("%Y-%m-%d %H:%M") if created else "",
-            ]
-        )
+        row = [
+            link.code,
+            # 「短链接」这一列以前也填短码，导出来只看到 `abc1`，
+            # 发给别人还得自己拼域名。这里补成完整地址
+            f"{base_url}/{link.code}" if base_url else f"/{link.code}",
+            link.target,
+            link.title or "",
+            link.note or "",
+            _tags(link),
+            link.clicks or 0,
+            _status(link),
+            expires.strftime("%Y-%m-%d %H:%M") if expires else "",
+            created.strftime("%Y-%m-%d %H:%M") if created else "",
+        ]
+        # 整行统一过一遍。以前是逐格手写 _safe_cell，漏一格就等于没做：
+        # 标题是访客能填的字段，漏了它，`=HYPERLINK(...)` 就在同事的 Excel 里跑起来了
+        writer.writerow([_safe_cell(v) for v in row])
     return buf.getvalue()
 
 

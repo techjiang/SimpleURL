@@ -164,13 +164,73 @@ def utc_offset_sql() -> str:
     自己算偏移就没这问题：口径由 `_process_zone()` 决定，和 Python 侧的
     `today_local()` / `local_day_start()` 完全一致。
     """
-    hours = _local_now().utcoffset()
-    if hours is None:
+    return _offset_sql_at(_local_now())
+
+
+def _offset_sql_at(moment: dt.datetime) -> str:
+    """某个时刻在当前本地时区下的偏移。
+
+    先把时刻换算到本地时区再取 `utcoffset()`：对一个 `UTC` 时区对象来说，
+    它永远是 0——直接调等于什么都没算，夏令时地区一年到头都拿不到正确的偏移。
+    """
+    zone = _process_zone()
+    if zone is not None:
+        try:
+            moment = moment.astimezone(zone)
+        except Exception:  # noqa: BLE001 - 时区库异常就退回系统本地
+            moment = moment.astimezone()
+    else:
+        moment = moment.astimezone()
+    offset = moment.utcoffset()
+    if offset is None:
         return "+0 hours"
-    total = int(hours.total_seconds() // 60)
+    total = int(offset.total_seconds() // 60)
     sign = "+" if total >= 0 else "-"
     total = abs(total)
     return f"{sign}{total // 60} hours" if total % 60 == 0 else f"{sign}{total // 60} hours {sign}{total % 60} minutes"
+
+
+def _day_sql(column, offset: str):
+    """UTC 时间列按给定偏移切日期：先把 naive 字符串标成 UTC，再平移。"""
+    from sqlalchemy import func
+
+    return func.date(func.datetime(column, offset))
+
+
+def local_day_sql(column):
+    """把 UTC 时间列按当前本地时区切成日期。
+
+    不能拿 `utc_offset_sql()` 一条偏移套一年：夏令时地区一年里换两次偏移，
+    3 月到 11 月之间分组出来全是差一小时的错位——图表上看着正常，
+    只是跨零点那部分点击被算进了前一天或后一天，谁也说不清少的那几笔去哪了。
+    这里按日期用 `CASE WHEN` 逐日算偏移：三百多个分支看着多，都是常量比较，
+    SQLite 跑起来和单个 CASE 差不多，而结果每天都是对的，包括换季那天。
+    """
+    from zoneinfo import ZoneInfoNotFoundError
+
+    from sqlalchemy import case
+
+    try:
+        today = today_local()
+        # 逐日算偏移的输入只有「今天」和时区，两样都正常才值得展开这三百个分支
+        local_day_start(today)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # 镜像里连时区库都没有时退回单条偏移：每年差一小时也好过整页报错
+        return _day_sql(column, utc_offset_sql())
+    branches = [
+        (
+            (today + dt.timedelta(days=delta)).isoformat(),
+            _offset_sql_at(local_day_start(today + dt.timedelta(days=delta))),
+        )
+        for delta in range(-2, 367)
+    ]
+    first_label, first_offset = branches[0]
+    rest = branches[1:]
+    return case(
+        *[(column < first_label, _day_sql(column, first_offset))]
+        + [(column < label, _day_sql(column, offset)) for label, offset in rest],
+        else_=_day_sql(column, rest[-1][1]),
+    )
 
 
 def today_local() -> dt.date:

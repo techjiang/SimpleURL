@@ -355,6 +355,7 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
 
     out = _serialize(link, request, token)
     out.reused = existed
+    out.swapped_from = getattr(link, "swapped_from", None)
     return out
 
 

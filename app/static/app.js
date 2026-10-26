@@ -331,30 +331,18 @@
       };
       if (!payload.target) { setStatus('请先粘贴一个链接', 'err'); return; }
       // 短码被占这件事，边打边查时就已经告诉过他了。真正提交到这里时
-      // 不该一整屏都白填 —— 给他换一个可用短码，回头再改也行
-      const retryPayload = { ...payload };
-      delete retryPayload.code;
+      // 不该一整屏都白填 —— 后端现在自己换码并把原码带回来（swapped_from），
+      // 这里只负责说清楚「换过了」
       btn.disabled = true;
       setStatus('正在生成…');
       try {
-        let link;
-        try {
-          link = await withToken('/api/links', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-        } catch (err) {
-          const taken = payload.code && /已被占用/.test(err.message || '');
-          if (!taken) throw err;
-          // 先按原样建一条会被拒，这里改成自动短码，并明确告诉用户换过码
-          link = await withToken('/api/links', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(retryPayload),
-          });
-          link._code_swapped = payload.code;
-        }
+        const link = await withToken('/api/links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        // 兼容旧后端：换码信息优先取服务端的 swapped_from
+        link._code_swapped = link.swapped_from || link._code_swapped;
         showResult(link);
         rememberClaimCode(link.code);
         loadGuestLinks();
@@ -986,15 +974,33 @@
   // 纵轴刻度：原来只画柱子，不给任何量纲。1 次和 100 次看起来是同一种东西，
   // 一根顶天的柱子到底是 3 还是 300，只能靠 hover 猜。
   // 刻度用「好看的步长」（1/2/5×10ⁿ），上限永远包住最大值。
-  function axisTicks(max, count = 3) {
-    const raw = Math.max(1, max) / count;
-    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
-    const norm = raw / mag;
-    const step = Math.max(1, Math.round((norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag));
-    const top = Math.ceil(Math.max(1, max) / step) * step;
+  // 原来固定 3 段 + Math.round 取步长：峰值 55 会算成 60，最高的柱子直接顶满，
+  // 和 60 长得一模一样，只能靠 hover 才知道差 5。现在步长只从 1/2/5/10 里取
+  // （取不小于的档，不四舍五入），并且必须让 max 装进 ≤ count 段里。
+  function axisTicks(max, count = 4) {
+    const value = Math.max(1, Math.ceil(max));
+    const nice = [1, 2, 5, 10];
+    let step = 1;
+    let top = 1;
+    // 从小到大试：第一个「段数不超过 count」的组合就是想要的
+    for (let mag = 1; mag <= 1e12; mag *= 10) {
+      for (const n of nice) {
+        const candidate = n * mag;
+        const span = Math.ceil(value / candidate) * candidate;
+        if (span / candidate <= count) {
+          step = candidate;
+          top = span;
+          return { top, ticks: buildTicks(top, step) };
+        }
+      }
+    }
+    return { top: value, ticks: buildTicks(value, value) };
+  }
+
+  function buildTicks(top, step) {
     const ticks = [];
-    for (let v = 0; v <= top; v += step) ticks.push(v);
-    return { top, ticks };
+    for (let v = 0; v <= top + 1e-9; v += step) ticks.push(Math.round(v));
+    return ticks;
   }
 
   function renderChart(el, daily) {
@@ -1005,9 +1011,9 @@
     // 加上坐标轴之后数字会和视觉对不上
     const bars = daily
       .map((d, i) => {
-        // 只点了一次的柱子按比例算出来不到 3%，在 140px 高度里就是一条线，
-        // 看着和「完全没有」没区别。给有数据的柱子一个下限高度。
-        const h = d.count ? Math.max(4, (d.count / top) * 100) : 0;
+        // 有数据的柱子保底 2%：1 次点击在 144px 高的柱区里只有 2.4px，
+        // 刚好看得见；保底再放大就会失真——几次点击的柱子和十几次的一样高
+        const h = d.count ? Math.max(2, (d.count / top) * 100) : 0;
         return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${labels.get(i) || ''}</b></div>`;
       })
       .join('');

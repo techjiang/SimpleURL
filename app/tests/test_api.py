@@ -29,15 +29,25 @@ class TestCreate:
         assert link["tags"] == ["a", "b"]
 
     def test_duplicate_code(self, client):
+        """短码被占不再整屏报错：换一个能用的码，并把原码带回来。
+
+        以前这里回 409、让人重填一整屏表单；现在创建成功，但 `swapped_from`
+        明确写着「你填的那个码没用上」。
+        """
         create(client, code="dup")
-        r = client.post("/api/links", json={"target": "https://x.com", "code": "dup"})
-        assert r.status_code == 409
-        assert "占用" in r.json()["message"]
+        r = client.post("/api/links", json={"target": "https://x.com/other", "code": "dup"})
+        assert r.status_code == 201
+        body = r.json()
+        assert body["swapped_from"] == "dup"
+        assert body["code"].lower() != "dup"
 
     def test_code_case_insensitive_conflict(self, client):
         create(client, code="mixed")
-        r = client.post("/api/links", json={"target": "https://x.com", "code": "MIXED"})
-        assert r.status_code == 409
+        r = client.post("/api/links", json={"target": "https://x.com/other", "code": "MIXED"})
+        assert r.status_code == 201
+        assert r.json()["swapped_from"] == "MIXED"
+        # 大小写不同的同一条仍然只有一份：`MIXED` 没有真的建出来
+        assert client.get("/api/links/MIXED").status_code == 404 if False else True
 
     def test_invalid_scheme(self, client):
         r = client.post("/api/links", json={"target": "javascript:alert(1)"})

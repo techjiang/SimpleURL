@@ -22,6 +22,11 @@ from app.models import ClickEvent, Link
 
 logger = logging.getLogger("simpleurl")
 
+# 队列里出现第一条点击后，最多再等这么久就把这一批写掉。
+# 定时器是「多久检查一次」，不等于「多久落一次库」：只靠周期的话，
+# 一条冷门链接的点击要等到下一个整点周期才可见，中间刷新页面看到的是 0。
+DELAYED_FLUSH_SECONDS = 0.5
+
 
 class _Pending:
     """一条待写入的点击。"""
@@ -49,6 +54,8 @@ class ClickBuffer:
         self._counts: dict[int, int] = {}
         self._dropped = 0
         self._timer: threading.Timer | None = None
+        self._delay_timer: threading.Timer | None = None
+        self._flush_lock = threading.Lock()
         self._running = False
 
     # ---------- 生产 ----------
@@ -62,8 +69,14 @@ class ClickBuffer:
         blocked: bool = False,
         platform: str | None = None,
         reason: str | None = None,
+        schedule: bool = True,
     ) -> bool:
-        """入队一条点击；队列满时丢弃并返回 False。"""
+        """入队一条点击；队列满时丢弃并返回 False。
+
+        `schedule=False` 不排「稍后落库」：只有真正走完跳转的请求才需要
+        立刻让数字可见。被拦下的访问本来就不进点击数，为它们多排一次
+        落库，等于给刷量的人开了一条「每来一次就唤醒一次写库」的路。
+        """
         from app.core.security import parse_user_agent
 
         _, device = parse_user_agent(ua)
@@ -88,6 +101,8 @@ class ClickBuffer:
             # 被 UA 屏蔽 / 平台拦截 / 超出配额的事件只留痕、不算点击
             if not blocked and not reason:
                 self._counts[link_id] = self._counts.get(link_id, 0) + 1
+        if schedule:
+            self._schedule_delayed()
         return True
 
     # ---------- 观测 ----------
@@ -104,9 +119,34 @@ class ClickBuffer:
         with self._lock:
             return self._dropped
 
+    # ---------- 清理 ----------
+    def discard(self, link_id: int) -> int:
+        """丢掉某条链接还没落库的点击，返回丢掉几条。
+
+        用在彻底删除之后：缓冲里那些事件指向的 `link_id` 已经不存在了，
+        而 SQLite 会把让出来的号发给下一条新链接——不清的话，新建的短链
+        一出来就带着几次别人的点击，统计页上的来源也对不上。
+        """
+        with self._lock:
+            before = len(self._queue)
+            self._queue = [item for item in self._queue if item.link_id != link_id]
+            dropped = before - len(self._queue)
+            self._counts.pop(link_id, None)
+        return dropped
+
     # ---------- 落库 ----------
     def flush(self) -> int:
-        """把缓冲一次性写进数据库，返回写入条数。"""
+        """把缓冲一次性写进数据库，返回写入条数。
+
+        全程持 `_flush_lock`：定时器、延迟合并、后台「立即结算」按钮、
+        退出结算可能同时触发。两批并发写库不会丢数据（失败那批会退回队列），
+        但会把同一个链接的两笔 `clicks = clicks + n` 拆成两个事务——
+        SQLite 上就是多一次写锁争抢，而写锁正是这套设计要避开的东西。
+        """
+        with self._flush_lock:
+            return self._flush_locked()
+
+    def _flush_locked(self) -> int:
         with self._lock:
             batch = self._queue
             self._queue = []
@@ -170,6 +210,32 @@ class ClickBuffer:
         return total
 
     # ---------- 定时任务 ----------
+    def _schedule_delayed(self) -> None:
+        """第一条点击入队时排一次「稍后落库」。
+
+        同一个窗口里再来多少条都不会重复排——只留一个定时器。
+        不排的话，落库节奏完全由 `CLICK_FLUSH_INTERVAL` 决定：
+        默认 5 秒的周期里，前 4.9 秒的点击都是「看不见」的，
+        用户点完立刻刷新列表，看到的是 0，还得靠「待结算」标记自己解释。
+        """
+        if not self._running:
+            return
+        if self._delay_timer is not None:
+            return
+        timer = threading.Timer(DELAYED_FLUSH_SECONDS, self._delayed_flush)
+        timer.daemon = True
+        self._delay_timer = timer
+        timer.start()
+
+    def _delayed_flush(self) -> None:
+        self._delay_timer = None
+        if not self._running and self.pending() == 0:
+            return
+        try:
+            self.flush()
+        except Exception:  # noqa: BLE001 - 数据已退回队列，下一轮定时器会再试
+            pass
+
     def start(self, interval: int) -> None:
         if self._running:
             return
@@ -191,11 +257,16 @@ class ClickBuffer:
 
     def stop(self) -> None:
         self._running = False
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
+        for attr in ("_timer", "_delay_timer"):
+            timer = getattr(self, attr, None)
+            if timer is not None:
+                timer.cancel()
+                setattr(self, attr, None)
 
     def reset(self) -> None:
+        if self._delay_timer is not None:
+            self._delay_timer.cancel()
+            self._delay_timer = None
         with self._lock:
             self._queue = []
             self._counts = {}

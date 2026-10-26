@@ -11,13 +11,18 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.db import Base
 from app.core.timeutil import ensure_aware, iso, utcnow
 
+# 主键在 SQLite 上必须是字面的 `INTEGER` 才等于 rowid，只有它才会跟着插入自动分配号
+# （写成 BIGINT 就只是个普通列，插入直接 NOT NULL 报错）。收成一个常量是为了
+# 别在五个模型里各写一遍 —— 也提醒后来人：这里别乱换类型。
+AUTO_ID = Integer
+
 
 class Link(Base):
     """短链接主表。"""
 
     __tablename__ = "links"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AUTO_ID, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False)
     target: Mapped[str] = mapped_column(Text, nullable=False)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -101,7 +106,7 @@ class ClickEvent(Base):
 
     __tablename__ = "click_events"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AUTO_ID, primary_key=True, autoincrement=True)
     link_id: Mapped[int] = mapped_column(ForeignKey("links.id", ondelete="CASCADE"), index=True, nullable=False)
     ts: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False, index=True)
     referrer: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -142,7 +147,7 @@ class ClaimRecord(Base):
 
     __tablename__ = "claim_records"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AUTO_ID, primary_key=True, autoincrement=True)
     link_id: Mapped[int] = mapped_column(ForeignKey("links.id", ondelete="CASCADE"), index=True, nullable=False)
     # 线索的哈希：邮箱本身不落库，只存归一化后的 SHA-256
     clue_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
@@ -158,7 +163,7 @@ class AuditLog(Base):
 
     __tablename__ = "audit_logs"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AUTO_ID, primary_key=True, autoincrement=True)
     action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     actor: Mapped[str] = mapped_column(String(64), nullable=False, default="匿名")
     code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -184,7 +189,7 @@ class ApiKey(Base):
 
     __tablename__ = "api_keys"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(AUTO_ID, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False, default="默认密钥")
     key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

@@ -696,9 +696,12 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .chart-table summary::before { content: "▸"; font-size: .7em; transition: transform .15s ease; }
 .chart-table[open] summary::before { transform: rotate(90deg); }
 .chart-table summary:hover { color: var(--text); }
+/* 明细默认展开：30 天里真有点击的日子通常只有几行，折起来反而让人
+   以为统计只剩那张图。给个高度上限，别让一整月的明细把页面撑长。 */
 .chart-table ul {
   list-style: none; margin: 10px 0 0; padding: 0;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 4px 14px;
+  max-height: 168px; overflow-y: auto; overscroll-behavior: contain;
 }
 .chart-table li {
   display: flex; justify-content: space-between; gap: 10px;
