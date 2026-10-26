@@ -155,6 +155,7 @@ curl -X POST http://localhost:8000/api/links \
 | `SOCIAL_BLOCK_HINT` | 见 `.env.example` | 社交平台拦截页提示语 |
 | `SSRF_RESOLVE_CHECK` | `true` | 创建短链时解析域名核对内网地址；关掉只校验字面 IP |
 | `DNS_CACHE_TTL` | `60` | 解析结果缓存秒数，避免同一域名反复查 DNS |
+| `DNS_TIMEOUT` | `2` | 单次域名解析的硬超时（秒），超时按「不安全」处理 |
 | `CLICK_BUFFER_MAX` | `20000` | 延迟计数队列上限，超限丢弃最旧的并计数 |
 | `CLICK_EVENT_RETENTION_DAYS` | `365` | 点击明细保留天数，`0` 不清理（累计点击数不受影响） |
 | `ANNOUNCEMENT` | 空 | 首页顶部公告，后台「设置 → 站点公告」可改 |
@@ -334,6 +335,12 @@ python -c "from app.core.crypto import hash_secret; print(hash_secret('your-pass
 解析失败也按不安全处理（宁可少收一个域名，不可放行一次内网探测）。
 结果缓存 `DNS_CACHE_TTL` 秒——不能长，DNS 重绑定要的正是「第一次解析是公网」。
 
+解析本身有硬超时 `DNS_TIMEOUT`（默认 2 秒）。`getaddrinfo` 是同步阻塞调用，
+域名服务器半死不活时要等系统解析器的默认值（5 秒还带重试），而它跑在
+创建链接的请求线程里——「DNS 慢」会直接变成「站点慢」，页面上只显示
+「创建有点慢」，没人会想到是解析超时。掐表之后超时按不安全处理，
+线程也不再被拖住。
+
 自动取标题走的是同一条判定（`titles._is_safe_host` 直接复用 `is_public_url`），
 两套规则各写一遍，早晚会有一边漏。
 
@@ -504,8 +511,14 @@ NOTIFY_ENABLED=true NOTIFY_WEBHOOK_URL=https://example.com/hook ./run.sh
 - `icon-mono.svg` — 单色版，用 `currentColor` 即可换色
 - `logo-horizontal.svg` — 图标 + 字标横版（字标跟 `currentColor` 走）
 
-造型是一条从右上绕回、再把去路折成箭头的折返线，讲的就是「长链接被绕短」。
-渐变沿对角线铺，折返处自然衔接深蓝 → 紫 → 品红。
+造型是**折返**：一条线向右绕回来，再把去路折成一支指向左上的箭头，讲的就是
+「长链接被折短」。主笔拉成一条完整的水平长笔、折返处用半圆收口、箭头独立成笔，
+重心落在左下——这一版的目的是「缩到 16px 还有一个能认出来的轮廓」，
+而不只是大图好看。渐变沿对角线铺，深蓝 → 紫 → 品红。
+
+描边随输出尺寸分档（16px 加到 17、96px 以上回到 12），小图标不会糊成一团。
+PNG 四角一律透明，`test_v17.py` 里有用例钉着这一点——有底板的话贴到深色页面上
+会露出一块方形色块，而缩略图里看不出来。
 
 重新生成（需要 `cairosvg` + `Pillow`）：
 

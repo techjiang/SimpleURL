@@ -18,7 +18,7 @@ from app.core.db import get_db
 from app.core.security import client_ip
 from app.models import Link
 from app.schemas import LinkCreate
-from app.services import ServiceError, create_link, get_link_by_code, get_stats
+from app.services import ServiceError, apply_title, create_link, fetch_title_for, get_link_by_code, get_stats
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(prefix="/yourls-api", tags=["yourls"])
@@ -102,8 +102,13 @@ def yourls_api(request: Request, db: Session = Depends(get_db)):
                 "message": exc.message,
                 "errorCode": str(exc.status),
             }
+        # 同上：先落库再出网抓标题，别拿写锁等网络
         db.commit()
         db.refresh(link)
+        title, source = fetch_title_for(db, link, None)
+        if apply_title(link, title, source):
+            db.commit()
+            db.refresh(link)
         short = f"{_base(request)}/{link.code}"
         return {
             "status": "success",

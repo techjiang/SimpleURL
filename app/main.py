@@ -191,9 +191,12 @@ root_router = APIRouter(include_in_schema=False)
 def index(request: Request):
     # csrf_token / csp_nonce 由模板全局函数提供；站点名称 / 自述走后端覆盖值
     from app.core.db import session_scope
+    from app.core.settings_store import effective
 
     with session_scope() as db:
-        html = render("index.html", request, db)
+        # 公告也走服务端渲染：前端脚本加载前就带上，不会闪一下空白
+        announcement = str(effective(db, "announcement") or "").strip()
+        html = render("index.html", request, db, announcement=announcement)
     return HTMLResponse(html)
 
 

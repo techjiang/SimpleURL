@@ -138,19 +138,31 @@ def fetch_title_sync(url: str, timeout: int = 5) -> str | None:
     return box.get("title") if isinstance(box.get("title"), str) else None
 
 
+# 纯数字 / 纯编号的路径段当不了标题。
+# `https://site/-/issues/1` 兜底出来是「1」，列表里每一条都顶着个「1」——
+# 比留空更难认，也让人以为「自动取标题」坏了。
+_MEANINGLESS = re.compile(r"^(\d{1,6}|index|home|default|page)$", re.IGNORECASE)
+
+
 def guess_title(url: str) -> str:
-    """网络拿不到时，用 URL 最后一段兜底当标题。"""
+    """网络拿不到时，用 URL 最后一段兜底当标题。
+
+    拿不出有意义的一段时返回**带域名的主机名**，而不是空串或一个数字：
+    列表里「cnb.cool」比「1」有用得多，也比空标题强。
+    """
     try:
-        path = urlparse(url).path.rstrip("/")
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
     except ValueError:
         return ""
+    host = parsed.hostname or ""
     slug = path.rsplit("/", 1)[-1] if path else ""
     slug = slug.split("?", 1)[0].split("#", 1)[0]
-    if not slug:
-        host = urlparse(url).hostname or ""
-        return host
     slug = re.sub(r"\.(html?|php|aspx?|jsp)$", "", slug, flags=re.IGNORECASE)
-    return slug.replace("-", " ").replace("_", " ").strip()[:MAX_TITLE] or (urlparse(url).hostname or "")
+    slug = slug.replace("-", " ").replace("_", " ").strip()
+    if not slug or _MEANINGLESS.match(slug):
+        return host[:MAX_TITLE]
+    return slug[:MAX_TITLE] or host[:MAX_TITLE]
 
 
 def resolve_title(url: str, enabled: bool, timeout: int = 5) -> tuple[str | None, str]:

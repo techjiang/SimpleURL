@@ -6,9 +6,12 @@
   <a class="btn tiny ghost" href="/admin" id="mode-action">后台</a>
 </div>
 
-<div class="notice-bar" id="notice-bar" hidden role="status">
+{# 服务端就把公告渲染出来：`app.js` 还没跑起来的那一瞬间，公告是「在但看不见」的。
+   启用了 JS 之后 applyAccess() 会用最新值覆盖一遍，两边不打架。 #}
+{% set _notice = announcement | default('', true) | trim %}
+<div class="notice-bar" id="notice-bar" role="status"{% if not _notice %} hidden{% endif %}>
   <span class="notice-dot" aria-hidden="true"></span>
-  <span id="notice-text"></span>
+  <span id="notice-text">{{ _notice }}</span>
 </div>
 
 <section class="hero">
@@ -178,7 +181,7 @@
     <table class="table" id="links-table">
       <thead>
         <tr>
-          <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>标签</th><th>状态</th><th>过期</th><th>创建</th><th>操作</th>
+          <th class="col-code">短码</th><th class="col-target">目标</th><th class="col-clicks">点击</th><th>标签</th><th class="col-status">状态</th><th class="col-exp">过期</th><th>创建</th><th class="col-ops">操作</th>
         </tr>
       </thead>
       <tbody id="links-body"></tbody>

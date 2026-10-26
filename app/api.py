@@ -26,6 +26,8 @@ from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkRenew, LinkSelfUpd
 from app.services import (
     ServiceError,
     all_links_for_export,
+    apply_title,
+    fetch_title_for,
     list_tags,
     bulk_update,
     code_available,
@@ -340,8 +342,17 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
         detail=("复用已有短码 target=" if existed else "target=") + link.target[:200],
         request=request,
     )
+    # 先把链接落库，再去抓标题。抓标题要出网、最长等几秒，
+    # 以前夹在事务里，等于每建一条就拿着写锁等一次网络。
     db.commit()
     db.refresh(link)
+
+    if not existed:
+        title, source = fetch_title_for(db, link, payload)
+        if apply_title(link, title, source):
+            db.commit()
+            db.refresh(link)
+
     out = _serialize(link, request, token)
     out.reused = existed
     return out
@@ -546,7 +557,10 @@ def api_access(request: Request, db: Session = Depends(get_db)):
     # 品牌名同样以库里的值为准：这里写死 settings.site_name 的话，
     # 后台改了站点名称，页头换了、横幅和提示语还挂着旧名字
     snapshot["site_name"] = branding(db)["site_name"]
-    snapshot["announcement"] = str(effective(db, "announcement") or "")
+    # 公告空串 = 明确「不要公告」，所以这里不能用 `or` 兜底：
+    # `effective()` 已经处理了「DB 覆盖 > 环境变量 > 默认」，多兜一层反而
+    # 会把后台里刚清空的那条又按环境变量填回去
+    snapshot["announcement"] = str(effective(db, "announcement") or "").strip()
     # 公告与自述都归运行配置，后台可改，前端每次加载都会拿到最新值
     return snapshot
 

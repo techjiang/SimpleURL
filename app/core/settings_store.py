@@ -78,9 +78,21 @@ def _cast(key: str, raw: str, default: object) -> object:
     return raw.strip() or default
 
 
+def _env_default(key: str, fallback: object) -> object:
+    """环境变量给的出厂值。没设就返回代码里的默认值。
+
+    `effective()` 一直这么做，但 `get_all()` 忘了——它直接抄 `EDITABLE`
+    里写死的那一列。后果是后台「设置」面板显示的和实际生效的不是一回事：
+    `SITE_NAME=我的站` 部署起来，页面标题、页脚全对，可在后台打开一看，
+    站点名称那一栏写着 SimpleURL；点一下保存，就真把它改成 SimpleURL 了。
+    面板上的值必须是生效值，否则「看起来能改」比「改不了」更糟。
+    """
+    return getattr(_default_source(), key, fallback)
+
+
 def get_all(db: Session) -> dict[str, object]:
     """生效配置：环境变量只是出厂默认，数据库里的覆盖优先。"""
-    values: dict[str, object] = {k: d[0] for k, d in EDITABLE.items()}
+    values: dict[str, object] = {k: _env_default(k, d[0]) for k, d in EDITABLE.items()}
     for key, value in _load_overrides(db).items():
         values[key] = value
     return values
@@ -101,20 +113,21 @@ def _load_overrides(db: Session) -> dict[str, object]:
     for row in rows:
         if row.key not in EDITABLE:
             continue
-        default = EDITABLE[row.key][0]
+        default = _env_default(row.key, EDITABLE[row.key][0])
         out[row.key] = _cast(row.key, row.value, default)
     return out
 
 
 def effective(db: Session, key: str) -> object:
     """取单个参数的生效值：数据库覆盖 > 环境变量 > 代码默认。"""
-    default = EDITABLE.get(key, (None, ""))[0]
+    fallback = EDITABLE.get(key, (None, ""))[0]
+    default = _env_default(key, fallback) if key in EDITABLE else fallback
     if db is None:
-        return getattr(_default_source(), key, default)
+        return default
     row = db.execute(select(Setting.value).where(Setting.key == key)).scalar_one_or_none()
     if row is not None:
         return _cast(key, row, default)
-    return getattr(_default_source(), key, default)
+    return default
 
 
 def set_value(db: Session, key: str, value: object) -> None:

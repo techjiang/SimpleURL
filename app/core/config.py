@@ -25,6 +25,13 @@ def _as_int(name: str, default: int) -> int:
         return default
 
 
+def _as_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 class Settings:
     """应用配置项。"""
 
@@ -72,6 +79,9 @@ class Settings:
         self.ssrf_resolve_check: bool = _as_bool("SSRF_RESOLVE_CHECK", True)
         # 解析结果缓存秒数：创建链接是低频操作，但同一个域名常被反复贴
         self.dns_cache_ttl: int = max(0, min(3600, _as_int("DNS_CACHE_TTL", 60)))
+        # 单次域名解析的硬超时（秒）。getaddrinfo 是同步阻塞的，域名服务器
+        # 不回话时会按系统解析器的默认值卡住整条创建链路，所以必须自己掐表。
+        self.dns_timeout: float = max(0.1, min(10.0, _as_float("DNS_TIMEOUT", 2.0)))
 
         # 置顶公告：留空则首页不显示。后台「设置 → 站点公告」可改
         self.announcement: str = os.getenv("ANNOUNCEMENT", "").strip()[:280]

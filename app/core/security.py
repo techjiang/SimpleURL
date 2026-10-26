@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime as dt
 import hashlib
 import ipaddress
+import logging
 import re
 import socket
 import threading
@@ -12,6 +14,8 @@ import time
 from urllib.parse import urlparse
 
 from app.core.config import settings
+
+logger = logging.getLogger("simpleurl")
 
 ALLOWED_SCHEMES = {"http", "https"}
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"}
@@ -111,14 +115,70 @@ def resolves_to_internal(host: str) -> bool:
     return result
 
 
-def _resolve_internal_uncached(host: str) -> bool:
+_DNS_WORKERS = 4
+_dns_pool: concurrent.futures.ThreadPoolExecutor | None = None
+_dns_pool_lock = threading.Lock()
+
+
+def _dns_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """专用小线程池：解析慢的时候不能连累别的请求。
+
+    不用默认执行器——那是全站共用的，被 DNS 卡住的线程会把
+    模板渲染、日志之类的东西一起排到后面去。
+    """
+    global _dns_pool
+    if _dns_pool is not None:
+        return _dns_pool
+    with _dns_pool_lock:
+        if _dns_pool is None:
+            _dns_pool = concurrent.futures.ThreadPoolExecutor(
+                max_workers=_DNS_WORKERS, thread_name_prefix="dns"
+            )
+        return _dns_pool
+
+
+def _resolve_addrs(host: str) -> list[str]:
+    """域名 -> 地址列表。在专用线程里跑，调用方负责掐超时。"""
+    return [info[4][0] for info in socket.getaddrinfo(host, None) if len(info) > 4 and info[4][0]]
+
+
+def _getaddrinfo_bounded(host: str) -> list[str] | None:
+    """带超时的 getaddrinfo。返回 None 表示解析失败或超时。"""
+    from app.core.config import settings
+
+    timeout = max(0.1, min(10.0, float(getattr(settings, "dns_timeout", 2.0) or 2.0)))
     try:
-        infos = socket.getaddrinfo(host, None)
+        future = _dns_executor().submit(_resolve_addrs, host)
+    except RuntimeError:  # 线程池已关闭（进程退出中）
+        return None
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        # 线程还在跑，结果直接丢弃：这个域名这一轮按不安全处理
+        future.cancel()
+        logger.info("域名解析超时（>%.1fs）：%s", timeout, host[:120])
+        return None
     except (socket.gaierror, UnicodeError, OSError):
+        return None
+    except Exception:  # noqa: BLE001 - 解析异常一律按不安全处理
+        return None
+
+
+def _resolve_internal_uncached(host: str) -> bool:
+    """解析域名，任一条结果落在内网就判不安全。
+
+    必须有硬超时：`getaddrinfo` 是同步阻塞调用，域名服务器不回话时
+    要等系统解析器的 timeout（默认 5 秒 × 重试次数）。它跑在创建链接的
+    请求线程里，于是「DNS 半死不活」的时候，每一次创建都要先卡几秒，
+    并发一上来就把同步接口的线程池占满——整个站点跟着变慢，
+    而页面上只看到「创建有点慢」，没人会想到是解析超时。
+    """
+    addrs = _getaddrinfo_bounded(host)
+    if addrs is None:
+        # 解析失败 / 超时：按不安全处理，别把「解析不出来」当「公网」放过去
         return True
     seen = False
-    for info in infos:
-        addr = info[4][0] if len(info) > 4 else None
+    for addr in addrs:
         if not addr:
             continue
         try:

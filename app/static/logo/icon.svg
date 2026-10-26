@@ -1,5 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-label="SimpleURL">
-  <defs><linearGradient id="gMain" x1="0" y1="1" x2="1" y2="0"><stop offset="0" stop-color="#4f8cff"/><stop offset=".55" stop-color="#7b5cff"/><stop offset="1" stop-color="#d946ef"/></linearGradient></defs>
-  <path d="M22 30h26a16 16 0 0 1 0 32H46" fill="none" stroke="url(#gMain)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M36 48 24 62 36 76" fill="none" stroke="url(#gMain)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 112" width="112" height="112" role="img" aria-label="SimpleURL"><defs><linearGradient id="g" x1="0.04" y1="1" x2="0.96" y2="0"><stop offset="0" stop-color="#4f8cff"/><stop offset=".5" stop-color="#7b5cff"/><stop offset="1" stop-color="#e04ff0"/></linearGradient></defs><path d="M32 37 H67 A21.5 21.5 0 0 1 67 80" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round"/><path d="M64 62 L45 81 L64 100" fill="none" stroke="url(#g)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/></svg>

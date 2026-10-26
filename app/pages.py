@@ -176,6 +176,45 @@ def healthz(db: Session = Depends(get_db)):
     }
 
 
+@router.api_route("/manifest.webmanifest", methods=["GET", "HEAD"], summary="应用清单")
+def manifest(request: Request, db: Session = Depends(get_db)):
+    """PWA 清单要跟着站名走。
+
+    原来它是 `app/static/` 底下的一张死文件，于是后台把站点名改成了别的，
+    首页标题、页脚、分享卡片全都换了，唯独「添加到主屏幕」之后
+    图标下面还印着出厂的 SimpleURL —— 用户看到的是两个品牌。
+    start_url 用相对路径，部署在子路径下也能装。
+    """
+    brand = branding(db)
+    icons = []
+    for size in (192, 512):
+        icons.append(
+            {
+                "src": f"/static/logo/icon-{size}.png",
+                "sizes": f"{size}x{size}",
+                "type": "image/png",
+                "purpose": "any maskable",
+            }
+        )
+    icons.append({"src": "/static/logo/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"})
+    payload = {
+        "name": brand["site_name"],
+        "short_name": brand["site_name"][:12],
+        "description": brand["site_tagline"] or "轻量、流畅、好用的高级短链接系统",
+        "start_url": ".",
+        "scope": ".",
+        "display": "standalone",
+        "background_color": "#070b14",
+        "theme_color": "#4f8cff",
+        "icons": icons,
+    }
+    return JSONResponse(
+        payload,
+        media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @router.api_route("/robots.txt", methods=["GET", "HEAD"], summary="爬虫协议")
 def robots():
     # 统计页与后台一样是私人数据，别让爬虫把「谁点了多少」收进索引

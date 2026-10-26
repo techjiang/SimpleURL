@@ -125,17 +125,43 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         db.rollback()
         raise ServiceError("该短码已被占用，换一个试试", 409) from exc
 
-    # 标题：用户填了就尊重用户的；没填才去抓，抓不到用 URL 兜底。
-    # 开关既认后台配置，也认这次请求自带的 fetch_title（导入脚本常常不想等）。
-    if not link.title:
-        enabled = payload.fetch_title if payload.fetch_title is not None else bool(effective(db, "fetch_title"))
-        title, source = resolve_title(link.target, enabled, timeout=settings.fetch_title_timeout)
-        link.title = title
-        link.title_source = source
-    elif payload.title:
-        link.title_source = "manual"
     logger.info("创建短链 %s -> %s", link.code, link.target)
     return link
+
+
+def fetch_title_for(db: Session, link: Link, payload: LinkCreate | None = None) -> tuple[str | None, str]:
+    """出网抓标题，**不碰数据库**。返回 (标题, 来源)。
+
+    单独拆出来是因为它要等：抓一次最长 `FETCH_TITLE_TIMEOUT` 秒。
+    以前这一步夹在创建事务中间（`db.flush()` 之后、`commit` 之前），
+    于是每一次创建都拿着写锁等出网——SQLite 下写锁是全局的，
+    一个慢域名就能让全站写请求排队；锁等待超过连接超时（15 秒）
+    还会直接抛 `database is locked`。调用方现在先提交，再调这个。
+    """
+    if link.title:
+        return link.title, "manual"
+    enabled = (
+        payload.fetch_title if payload is not None and payload.fetch_title is not None else bool(effective(db, "fetch_title"))
+    )
+    if not enabled:
+        # 关掉 = 一个字都不去打听：不出网，也不拿 URL 拼个假标题。
+        # 「自动取标题」是用户能关的开关，关掉之后列表里就该是空的，
+        # 而不是换个来源悄悄填上——那样开关看起来永远不会生效。
+        return None, "off"
+    return resolve_title(link.target, True, timeout=settings.fetch_title_timeout)
+
+
+def apply_title(link: Link, title: str | None, source: str) -> bool:
+    """把抓到的标题写回对象（由调用方负责提交）。返回是否真的改了。"""
+    if link.title and source != "manual":
+        return False
+    if not title:
+        return False
+    if link.title == title and link.title_source == source:
+        return False
+    link.title = title
+    link.title_source = source
+    return True
 
 
 def get_link_by_code(db: Session, code: str, include_deleted: bool = False) -> Link:

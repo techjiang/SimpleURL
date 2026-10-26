@@ -193,8 +193,13 @@ select option { background: var(--bg-soft); color: var(--text); }
 .table th.col-check, .table td.col-check { width: 3.6%; }
 /* 小数百分比才够分：整数百分比会被逐列四舍五入，八列各进位一点，
    加起来能比表格宽出 4%，最右边的按钮就被裁掉半个。 */
-.table .col-code { width: 12.8%; }
-.table .col-target { width: 24.6%; }
+/* 短码列要放得下「/」+ 最长短码 + 左右内边距（24px）。
+   12.8% 在 1440 视口下约 133px，`CODE_MAX_LENGTH=16` 时 /AbCdEfGhIjKlMnOp
+   光字符就 160px —— 折行之后整行被撑高，看着像每条链接都多了个副标题。
+   行内省略号又不行（短码被截断比折行更糟），只能把列加宽，
+   目标列相应让出几个百分点。 */
+.table .col-code { width: 15.4%; }
+.table .col-target { width: 22%; }
 .table .col-clicks { width: 5.6%; }
 .table .col-status { width: 8.6%; }
 .table .col-exp { width: 9.6%; }
