@@ -24,47 +24,54 @@
 
 <section class="composer" id="create">
   <form id="create-form" class="composer-form" autocomplete="off">
+    {# 主路径只有一个输入框：粘链接、回车，完事。
+       其余字段都收进「高级选项」——第一屏七行输入框，看着像填报销单。 #}
     <div class="field main">
       <label for="target">目标链接</label>
       <input id="target" name="target" type="text" inputmode="url" placeholder="https://example.com/very/long/url" required />
     </div>
-    <div class="row">
-      <div class="field">
-        <label for="code">自定义短码 <span class="hint">留空自动生成</span></label>
-        <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" aria-describedby="code-status" />
-        <span class="field-status" id="code-status" role="status" aria-live="polite"></span>
+    <details class="advanced" id="advanced">
+      <summary>高级选项 <span class="hint">短码、标题、标签、过期时间、找回线索</span></summary>
+      <div class="advanced-body">
+        <div class="row">
+          <div class="field">
+            <label for="code">自定义短码 <span class="hint">留空自动生成</span></label>
+            <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" aria-describedby="code-status" />
+            <span class="field-status" id="code-status" role="status" aria-live="polite"></span>
+          </div>
+          <div class="field">
+            <label for="title">标题 <span class="hint">留空自动获取</span></label>
+            <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="tags">标签 <span class="hint">逗号分隔</span></label>
+            <input id="tags" name="tags" type="text" placeholder="活动, 文档" maxlength="200" />
+          </div>
+          <div class="field">
+            <label for="expires_at">过期时间 <span class="hint">可选，如 2026-12-31 23:59</span></label>
+            <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="note">备注 <span class="hint">可选 · 只有你自己和管理员看得到</span></label>
+          <input id="note" name="note" type="text" placeholder="这条链接用在哪、跟谁对的、什么时候撤" maxlength="400" />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="clue">找回线索 <span class="hint">可选 · 丢了回执凭它捞回来</span></label>
+            <input id="clue" name="clue" type="text" placeholder="邮箱或一句只有你记得的自述" maxlength="120" />
+          </div>
+          <div class="field toggles">
+            <label class="check" for="reuse">
+              <input type="checkbox" id="reuse" name="reuse" />
+              <span>地址已收录时直接复用短码</span>
+            </label>
+          </div>
+        </div>
       </div>
-      <div class="field">
-        <label for="title">标题 <span class="hint">留空自动获取</span></label>
-        <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
-      </div>
-    </div>
-    <div class="field">
-      <label for="note">备注 <span class="hint">可选 · 只有你自己和管理员看得到</span></label>
-      <input id="note" name="note" type="text" placeholder="这条链接用在哪、跟谁对的、什么时候撤" maxlength="400" />
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="tags">标签 <span class="hint">逗号分隔</span></label>
-        <input id="tags" name="tags" type="text" placeholder="活动, 文档" maxlength="200" />
-      </div>
-      <div class="field">
-        <label for="expires_at">过期时间 <span class="hint">可选，如 2026-12-31 23:59</span></label>
-        <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
-      </div>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="clue">找回线索 <span class="hint">可选 · 丢了回执凭它捞回来</span></label>
-        <input id="clue" name="clue" type="text" placeholder="邮箱或一句只有你记得的自述" maxlength="120" />
-      </div>
-      <div class="field toggles">
-        <label class="check" for="reuse">
-          <input type="checkbox" id="reuse" name="reuse" />
-          <span>地址已收录时直接复用短码</span>
-        </label>
-      </div>
-    </div>
+    </details>
     <div class="composer-actions">
       <button type="submit" class="btn primary" id="submit-btn">生成短链接</button>
       <button type="button" class="btn ghost" id="recover-btn">回执丢了？</button>

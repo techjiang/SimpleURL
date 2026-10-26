@@ -16,6 +16,9 @@
   --warn: #ffb84d;
   --radius: 14px;
   --radius-sm: 10px;
+  /* 间距刻度：从标签到输入框、从卡头到表格，一律走这几档。
+     以前各处 10/12/14/18 随手给，两列表单永远差一格对不齐。 */
+  --s1: 6px; --s2: 10px; --s3: 14px; --s4: 18px; --s5: 24px; --s6: 34px;
   --shadow: 0 18px 50px -20px rgba(0, 0, 0, 0.75);
   --ring: 0 0 0 3px rgba(79, 140, 255, 0.28);
   --ff: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
@@ -62,7 +65,9 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 .brand img { display: block; }
 .brand strong { font-size: 1.05rem; letter-spacing: -0.01em; }
 .brand em { font-style: normal; font-size: 0.7rem; color: var(--text-faint); letter-spacing: 0.14em; text-transform: uppercase; }
-.topnav { display: flex; gap: 4px; min-width: 0; }
+/* 窄屏最先牺牲的就是这句副标题：品牌名比它重要得多 */
+@media (max-width: 860px) { .brand em { display: none; } }
+.topnav { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .nav-link { padding: 7px 12px; border-radius: 999px; color: var(--text-dim); font-size: 0.86rem; white-space: nowrap; transition: color .2s, background .2s; }
 .nav-link:hover { color: var(--text); background: var(--surface-strong); }
 
@@ -81,12 +86,12 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
   backdrop-filter: blur(14px);
 }
 
-.composer { padding: 22px; }
-.composer-form { display: grid; gap: 14px; }
-.row { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+.composer { padding: var(--s5); }
+.composer-form { display: grid; gap: var(--s3); }
+.row { display: grid; gap: var(--s3); grid-template-columns: 1fr 1fr; }
 /* 同一行里两个 field：一个带说明文字、一个不带，输入框就会错开一格。
    对齐到 start 让每个 field 自己从顶部排，不再互相拉扯 */
-.field { display: grid; gap: 6px; align-content: start; }
+.field { display: grid; gap: var(--s1); align-content: start; min-width: 0; }
 .field > label { font-size: 0.78rem; color: var(--text-dim); font-weight: 500; }
 .hint { color: var(--text-faint); font-weight: 400; }
 /* 快到期的链接：给一点颜色，但别红得像报错 */
@@ -94,12 +99,13 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 .exp-date { display: block; font-size: 0.72rem; white-space: nowrap; }
 .exp-none { display: block; font-size: 0.72rem; }
 
+/* 高度统一成 42px：和 .btn 并排时，差 2px 会让人以为是没对齐 */
 input, select {
-  width: 100%; font: inherit; color: var(--text);
+  width: 100%; font: inherit; color: var(--text); height: 42px;
   background: rgba(6, 10, 20, 0.6);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 11px 13px;
+  padding: 0 13px;
   transition: border-color .18s, box-shadow .18s, background .18s;
 }
 input::placeholder { color: var(--text-faint); }
@@ -107,14 +113,34 @@ input:focus, select:focus { outline: none; border-color: var(--brand); box-shado
 select { cursor: pointer; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 34px; }
 select option { background: var(--bg-soft); color: var(--text); }
 
-.composer-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* ============ 高级选项折叠 ============ */
+/* 默认收起：七行输入框铺开时，第一屏几乎全是表单，粘完链接还得滚半天才看见按钮。
+   展开后正文自己带间距，不再靠 <details> 的默认样式 */
+.advanced { border-top: 1px solid var(--border); padding-top: var(--s2); }
+.advanced > summary {
+  cursor: pointer; list-style: none; display: flex; align-items: baseline;
+  flex-wrap: wrap; gap: var(--s1) var(--s2); padding: var(--s1) 0;
+  font-size: 0.82rem; color: var(--text-dim); transition: color .16s;
+}
+.advanced > summary::-webkit-details-marker { display: none; }
+.advanced > summary::before {
+  content: "▸"; font-size: 0.7em; color: var(--text-faint);
+  transition: transform .16s ease; align-self: center;
+}
+.advanced[open] > summary::before { transform: rotate(90deg); }
+.advanced > summary:hover { color: var(--text); }
+.advanced-body { display: grid; gap: var(--s3); padding-top: var(--s2); }
+
+.composer-actions { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; margin-top: var(--s1); }
+/* 勾选框别被 flex 压成一条线 */
+.composer-actions input[type="checkbox"], .check input { flex: 0 0 auto; height: auto; }
 .dash-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 
 /* ============ 按钮 ============ */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   font: inherit; font-weight: 600; font-size: 0.88rem;
-  padding: 10px 16px; border-radius: var(--radius-sm);
+  height: 40px; padding: 0 16px; border-radius: var(--radius-sm);
   border: 1px solid var(--border-strong); background: var(--surface-strong); color: var(--text);
   cursor: pointer; white-space: nowrap;
   transition: transform .14s ease, filter .18s, background .18s, border-color .18s, opacity .18s;
@@ -129,7 +155,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.ghost { background: transparent; }
-.btn.tiny { padding: 6px 10px; font-size: 0.78rem; border-radius: 8px; }
+.btn.tiny { height: 30px; padding: 0 10px; font-size: 0.78rem; border-radius: 8px; }
 .btn.danger { color: var(--danger); border-color: rgba(255,107,129,0.35); background: rgba(255,107,129,0.1); }
 .btn.danger:hover { background: rgba(255,107,129,0.18); }
 .btn[disabled] { opacity: 0.55; cursor: not-allowed; transform: none; }
@@ -170,13 +196,16 @@ select option { background: var(--bg-soft); color: var(--text); }
 
 /* ============ 链接库 ============ */
 .board { margin-top: 30px; padding: 20px; }
-.board-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
-.board-head h2 { font-size: 1.2rem; }
-.board-tools { display: flex; gap: 10px; flex-wrap: wrap; }
+.board-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
+.board-head h2 { font-size: 1.2rem; white-space: nowrap; }
+/* 工具栏：搜索框吃掉伸缩的余量，下拉各自保持内容宽度，别全挤成一样宽 */
+.board-tools { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.board-tools select { width: auto; min-width: 116px; }
+/* 分页那一行也借用 board-tools 的排布，但整体居中 */
+.board-tools.pager-row { justify-content: center; width: 100%; margin-top: var(--s3); }
 .search { position: relative; display: flex; align-items: center; }
 .search svg { position: absolute; left: 11px; color: var(--text-faint); pointer-events: none; }
-.search input { padding-left: 34px; width: 260px; }
-.board-tools select { width: auto; min-width: 120px; }
+.search input { padding-left: 34px; width: clamp(180px, 26vw, 260px); }
 
 .summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
 .chip { font-size: 0.76rem; color: var(--text-dim); background: var(--surface); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; }
@@ -236,6 +265,8 @@ select option { background: var(--bg-soft); color: var(--text); }
 .code-cell:hover { color: var(--brand); }
 .target-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .clicks-cell { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+/* 空标签只有一个「—」，字号跟着正文走会把行撑得比邻近行高 */
+.table td .hint { font-size: 0.78rem; }
 /* 点击数里还压在内存缓冲里的那部分：延迟计数有结算周期，
    不标出来，刚点完回来看还是旧数字，人就以为统计坏了 */
 .pending-mark {
@@ -277,10 +308,14 @@ select option { background: var(--bg-soft); color: var(--text); }
 .badge.off { color: var(--warn); border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.1); }
 .badge.exp { color: var(--danger); border-color: rgba(255,107,129,0.35); background: rgba(255,107,129,0.1); }
 
-.empty { text-align: center; padding: 46px 20px; color: var(--text-faint); display: grid; gap: 10px; justify-items: center; }
-.empty img { opacity: 0.5; }
+/* 空态：44px 的 logo 会把半屏撑成一片空白，收成行内小图标 */
+.empty {
+  text-align: center; padding: var(--s5) var(--s4); color: var(--text-faint);
+  display: grid; gap: var(--s2); justify-items: center; font-size: 0.88rem;
+}
+.empty img { opacity: 0.4; width: 22px; height: 22px; }
 
-.pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; font-size: 0.82rem; color: var(--text-dim); }
+.pager { display: flex; align-items: center; justify-content: center; gap: var(--s3); margin-top: var(--s3); font-size: 0.82rem; color: var(--text-dim); }
 
 /* ============ 统计页 ============ */
 .stats-page { padding: 10px 0 40px; animation: rise .3s ease both; }
@@ -305,26 +340,40 @@ select option { background: var(--bg-soft); color: var(--text); }
 .chart-head .hint { margin-left: auto; }
 /* 图表 = 左侧刻度 + 柱状区。刻度绝对定位贴在容器左上，柱子区照旧 flex 撑满。
    原来是单纯的一排柱子，没有任何量纲：1 次和 100 次看起来是同一种东西。 */
-.chart { position: relative; display: flex; align-items: stretch; width: 100%; padding-left: 30px; box-sizing: border-box; }
+/* 柱区必须有确定高度：柱高是百分比，父级只给 min-height 时百分比无处可依，
+   柱子会退回 2px 的保底高度——30 天里只有一天有点击时，整张图看着像空的。 */
+.chart { position: relative; display: flex; align-items: stretch; width: 100%; height: 160px; padding-left: 30px; box-sizing: border-box; }
 /* 刻度用绝对定位钉在图表左上，不跟着柱子跑：柱子一多就横向滚动，
    纵轴跟着滚走等于没有纵轴。滚动时脚本用 translateX 把它拉回来。 */
 .chart-axis { position: absolute; left: 0; top: 0; height: 160px; width: 26px; pointer-events: none; border-radius: 3px; border-right: 1px solid var(--border); background: var(--bg); z-index: 2; }
-.chart-axis span { position: absolute; right: 6px; transform: translateY(50%); font-size: .62rem; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 刻度是绝对定位的，容不下的时候会被压成两行（顶上的「10」看着像「1/0」）。
+   只留数字，并把它钉在刻度线上。 */
+.chart-axis span { position: absolute; line-height: 1; right: 6px; transform: translateY(50%); font-size: .68rem; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 柱状区要能撑开：放在横向滚动容器里、柱子又有最小宽度时，flex 会把 30 根柱子
    压回可视宽度，手机上这段图就是一片空白。fit-content 吃的是「柱子最小宽度之和」，
    图表外壳只负责留出左侧刻度位。 */
-.chart-bars { flex: 1 1 auto; display: flex; align-items: stretch; gap: 3px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
+.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; gap: 3px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
 .chart-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; scrollbar-width: thin; }
 /* 只在真的滚得动时出现（脚本按滚动宽度决定），别在桌面端白占一行 */
 .chart-swipe { margin: 6px 0 0; font-size: .74rem; text-align: right; }
 .chart-scroll::-webkit-scrollbar { height: 6px; }
 .chart-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-.bar { position: relative; flex: 1 0 auto; min-width: 14px; height: calc(100% - 16px); }
-.bar i { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
+.bar { position: relative; flex: 1 0 auto; min-width: 14px; height: 100%; }
+.bar i { position: absolute; left: 0; right: 0; bottom: 0; flex: 0 0 auto; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
 .bar:hover i { filter: brightness(1.3); }
 /* 日期挂在柱子底下：横向滚动时跟着自己那根走，不会滚丢 */
 .bar b { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 4px; font-size: .62rem; color: var(--text-faint); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.bar.is-zero i { background: transparent; border-top: 1px dashed var(--border-strong); border-radius: 0; }
+/* 没有日期标签的柱子要把那 16px 也占住：只在个别柱子上有 b 时，
+   滚动容器底部会随最后一根柱子有没有标签而跳一下，图整体高矮不一。
+   同一层级的图表还得一样高，横向扫一眼才顺。 */
+.bar.no-label { padding-bottom: 16px; }
+/* 零点击的日子不画线：一排贴底的短横比空白更像「坏了」 */
+.bar i.zero { display: none; }
+/* 一根柱子都没有时不再画一条贴底的细线，改成一句人话 */
+.chart-empty {
+  display: grid; place-items: center; min-height: 150px;
+  color: var(--text-faint); font-size: 0.86rem;
+}
 .ref-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .ref-list li { display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.88rem; }
 .ref-list b { font-variant-numeric: tabular-nums; flex: none; }
@@ -378,18 +427,81 @@ select option { background: var(--bg-soft); color: var(--text); }
   .container { padding: 18px 0 60px; }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
-  .chart { padding-left: 26px; }
+  .chart { padding-left: 26px; height: 130px; }
   .chart-bars { height: 130px; }
   /* 手机上柱子给足宽度，宁可横滑也别全挤成一根线 */
   .chart .bar { min-width: 22px; }
   .bar b { font-size: .58rem; }
   .chart-axis { width: 22px; height: 130px; }
-  .chart-axis span { font-size: .58rem; right: 4px; }
+  .chart-axis span { font-size: .64rem; right: 4px; }
   /* 30 天在 390px 里每根柱子只剩 10px：点击全堆在最后一天时那根柱子细到看不见。
      窄屏给柱子一个下限宽度让图横向可滑，右端留 4px 内边距，免得最后一根贴边被裁。
      标签同时抽稀，不然滚起来满屏都是字 */
   .chart-bars { padding-right: 4px; }
   .chart .bar { min-width: 24px; }
+  /* 30 根柱子在 390px 里只放得下一半：日期抽稀，别糊成一片 */
+  .bar:nth-child(even) b { visibility: hidden; }
+}
+
+/* ============ 中等宽度：先藏次要列，别让表格横着滚 ============ */
+@media (max-width: 860px) {
+  .topnav { gap: 0; }
+  .nav-link { padding: 7px 9px; font-size: 0.84rem; }
+  .board-head { align-items: flex-start; }
+  .board-tools { width: 100%; }
+  .search { flex: 1 1 100%; }
+  .search input { width: 100%; }
+  .board-tools select { flex: 1 1 auto; min-width: 0; }
+  /* 目标、标签、创建时间在窄屏是「知道就行」的信息，真正要动手的是短码和状态 */
+  .col-hide-sm { display: none; }
+}
+
+/* ============ 窄屏表格：横向滚动会藏住右侧操作列，改成卡片式 ============ */
+@media (max-width: 720px) {
+  .table-wrap { overflow-x: visible; max-width: 100%; }
+  .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
+  .table thead { display: none; }
+  .table tbody tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center; gap: var(--s1) var(--s2);
+    padding: var(--s3); margin-bottom: var(--s2);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--surface);
+  }
+  .table td { padding: 0; border: 0; width: auto; min-width: 0; text-align: left; }
+  /* 短码和状态同一行，标题挂在短码下面 */
+  .table td[data-label="短码"] { grid-column: 1; font-size: 1rem; }
+  .table td[data-label="状态"] { grid-column: 2; justify-self: end; }
+  .table td[data-label="目标"] { grid-column: 1 / -1; }
+  .target-cell { max-width: none; white-space: normal; overflow-wrap: anywhere; word-break: break-all; line-height: 1.5; }
+  .table td[data-label="标签"] { grid-column: 1 / -1; }
+  .table td[data-label="操作"] {
+    grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--s2);
+    padding-top: var(--s2); border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .table td[data-label="操作"] .ops {
+    display: flex; flex-wrap: wrap; gap: var(--s2); width: 100%;
+    grid-auto-flow: row;
+  }
+  /* 卡片里按钮不用挤：去掉 nowrap 撑宽和桌面端的等宽栅格 */
+  .table td[data-label="操作"] .btn { flex: 1 1 auto; white-space: nowrap; }
+  /* 卡片里没有表头，「点击」和「创建」已经藏着，别留占位空隙 */
+  .table td[data-label="选择"], .table td.col-check { display: flex; align-items: center; }
+  .table td[data-label="状态"] .badge { font-size: 0.72rem; padding: 2px 8px; }
+  /* 卡片化之后表格自己的 hover 底色没意义，交给卡片边框 */
+  .table tbody tr:hover { background: var(--surface); }
+  /* 描述性字段（点击/过期/标题来源/创建）在卡片里挤不进主线，收在短码下面一行小字 */
+  .table td[data-label="点击"], .table td[data-label="过期"],
+  .table td[data-label="标题"], .table td[data-label="创建"] {
+    grid-column: 1 / -1; font-size: 0.76rem; color: var(--text-faint);
+  }
+  .table td[data-label="点击"] { display: none; }
+  .table td[data-label="创建"] { display: none; }
+  .table td[data-label="过期"] .exp-date { display: inline; margin-left: var(--s1); }
+  .table td.col-check { grid-column: 1 / -1; justify-self: start; }
+  .table td.col-check input { width: 18px; height: 18px; }
+  /* 回收站的「删除于」在窄屏没意义，留下「还剩几天」就够 */
+  .table td[data-label="删除于"] { display: none; }
 }
 
 /* ============ 无障碍 ============ */
@@ -504,7 +616,9 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 
 /* ============ 访问模式横幅 ============ */
 .mode-banner {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  /* 圆点、文案、按钮挤一行：圆点写了 flex-wrap 之后会自己独占一行，
+     去掉换行并把文案设成可伸缩项，长文本才在文案内部折行 */
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: nowrap;
   padding: 10px 16px; margin-bottom: 22px;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--surface); font-size: 0.82rem; color: var(--text-dim);
@@ -512,12 +626,13 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .mode-banner.locked { border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.09); color: var(--warn); }
 .mode-banner .mode-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); flex: none; }
 .mode-banner.locked .mode-dot { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
-.mode-banner #mode-action { margin-left: auto; }
+.mode-banner #mode-action { margin-left: auto; flex: none; }
+.mode-banner #mode-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
 .mode-banner[hidden] { display: none; }
 
 /* ============ 站点公告 ============ */
 .notice-bar {
-  display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap;
+  display: flex; align-items: flex-start; gap: var(--s2); flex-wrap: nowrap;
   padding: 11px 16px; margin-bottom: 18px;
   border: 1px solid rgba(79,140,255,0.28); border-radius: var(--radius-sm);
   background: linear-gradient(180deg, rgba(79,140,255,0.12), rgba(79,140,255,0.05));
@@ -528,7 +643,7 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   width: 7px; height: 7px; margin-top: 6px; border-radius: 50%; flex: none;
   background: var(--accent); box-shadow: 0 0 10px var(--accent);
 }
-.notice-bar #notice-text { overflow-wrap: anywhere; }
+.notice-bar #notice-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 
 /* ============ 社交平台防洪 ============ */
 .social-grid { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; margin: 4px 0 12px; }

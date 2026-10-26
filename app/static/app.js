@@ -778,6 +778,14 @@
     }
   }
 
+  /* 从别的页面点「链接库」进来时是 `/#list`：浏览器在脚本渲染列表之前就去找锚点，
+     找不到就停在页面顶部，看着像没跳。DOM 稳了再补一次滚动 */
+  function scrollToHash() {
+    if (!location.hash) return;
+    const el = document.querySelector(location.hash);
+    if (el) el.scrollIntoView({ block: 'start' });
+  }
+
   function bindBoard() {
     const body = $('#links-body');
     if (!body) return;
@@ -1005,16 +1013,26 @@
 
   function renderChart(el, daily) {
     const peak = Math.max(0, ...daily.map((d) => d.count));
+    // 一根柱子都没有：画出来就是一条贴着底边的虚线，看着像图表没加载完
+    if (!peak) {
+      el.innerHTML = '<div class="chart-empty">这段时间还没有点击</div>';
+      return;
+    }
     const { top, ticks } = axisTicks(peak);
     const labels = chartLabels(el.parentElement.clientWidth, daily);
     // 柱高按刻度上限算，不再按最大值——否则「最高的一根」永远是 100%，
     // 加上坐标轴之后数字会和视觉对不上
     const bars = daily
       .map((d, i) => {
-        // 有数据的柱子保底 2%：1 次点击在 144px 高的柱区里只有 2.4px，
+        // 有数据的柱子保底 2%：1 次点击在 160px 高的柱区里只有 3.2px，
         // 刚好看得见；保底再放大就会失真——几次点击的柱子和十几次的一样高
         const h = d.count ? Math.max(2, (d.count / top) * 100) : 0;
-        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${labels.get(i) || ''}</b></div>`;
+        // 零点不画虚线：30 天里有 29 天没点击时，那是一排贴底的短横，
+        // 看着像图表没渲染完。零柱本来就没有高度，留个空位对齐就够了
+        const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
+        // 有标签才叫日期行：14 天宽屏下每根都有日期，30 天窄屏下只有几根有
+        const day = labels.has(i) ? `<b>${labels.get(i)}</b>` : '';
+        return `<div class="bar${d.count ? '' : ' is-zero'}${day ? '' : ' no-label'}" title="${d.date}：${d.count} 次点击">${fill}${day}</div>`;
       })
       .join('');
     el.innerHTML =
@@ -1038,7 +1056,7 @@
     };
     const scrollable = wrap.scrollWidth > wrap.clientWidth + 1;
     // 「左右滑动」这句只在真滚得动时出现，桌面端不该白占一行
-    const tip = wrap.parentElement.querySelector('.chart-swipe');
+    const tip = wrap.parentElement && wrap.parentElement.querySelector('.chart-swipe');
     if (tip) tip.hidden = !scrollable;
     if (!scrollable) return;
     // 柱子撑出去了：窄屏该先看到「今天」，而不是 30 天前那几根零。
@@ -1090,6 +1108,7 @@
     // 少发三个 GET，也少三条可能报错的地方
     if ($('#list')) {
       loadSummary(); loadTags(); loadLinks();
+      scrollToHash();
     }
   });
 

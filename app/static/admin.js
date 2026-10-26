@@ -288,6 +288,11 @@
   function renderChart(el, daily) {
     if (!el) return;
     const peak = Math.max(0, ...daily.map((d) => d.count));
+    // 一次点击都没有：画出来是一排贴底的空位，看着像没加载完，不如直说
+    if (!peak) {
+      el.innerHTML = '<div class="chart-empty">这段时间还没有点击</div>';
+      return;
+    }
     const { top, ticks } = axisTicks(peak);
     const width = el.parentElement.clientWidth;
     const per = 21;
@@ -300,7 +305,11 @@
         // 有数据的柱子留个下限高度，1 次和 0 次不该长得一样；
         // 但别保太多，否则几次点击的柱子和十几次的一模一样高
         const h = d.count ? Math.max(2, (d.count / top) * 100) : 0;
-        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count}"><i style="height:${h}%"></i><b>${showAt(i) ? d.date.slice(5) : ''}</b></div>`;
+        // 零点击不给元素：内联 height 会盖掉 .bar i.zero 的 display:none，
+        // 屏幕上就多出十来个贴底的圆角块，像一排没画完的柱子
+        const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
+        const label = showAt(i) ? d.date.slice(5) : '';
+        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? '' : ' no-label'}" title="${d.date}：${d.count}">${fill}<b>${label}</b></div>`;
       })
       .join('');
     el.innerHTML =
