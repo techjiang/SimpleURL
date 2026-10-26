@@ -118,19 +118,30 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
 
     total_links = db.execute(select(func.count()).select_from(Link)).scalar_one() or 0
     total_clicks = db.execute(select(func.coalesce(func.sum(Link.clicks), 0))).scalar_one() or 0
-    enabled = db.execute(select(func.count()).select_from(Link).where(Link.enabled.is_(True))).scalar_one() or 0
+    # 回收站里的链接不算「链接总数」「已启用」「已停用」「已过期」。
+    # 以前整个库一起数：仪表盘写「链接总数 50」，链接列表里只有 47 条，
+    # 差的那 3 条在回收站——数字对不上，人就开始怀疑哪边坏了。
+    alive = Link.deleted_at.is_(None)
+    live = db.execute(select(func.count()).select_from(Link).where(alive)).scalar_one() or 0
+    total_links = int(live)
+    enabled = db.execute(select(func.count()).select_from(Link).where(alive, Link.enabled.is_(True))).scalar_one() or 0
     disabled = total_links - enabled
     expired = (
         db.execute(
-            select(func.count()).select_from(Link).where(Link.expires_at.is_not(None), Link.expires_at <= now)
+            select(func.count())
+            .select_from(Link)
+            .where(alive, Link.expires_at.is_not(None), Link.expires_at <= now)
         ).scalar_one()
         or 0
+    )
+    trashed = int(
+        db.execute(select(func.count()).select_from(Link).where(Link.deleted_at.is_not(None))).scalar_one() or 0
     )
     expiring_horizon = now + dt.timedelta(days=7)
     expiring_rows = list(
         db.execute(
             select(Link.code, Link.target, Link.expires_at)
-            .where(Link.expires_at.is_not(None), Link.expires_at > now, Link.expires_at <= expiring_horizon)
+            .where(alive, Link.expires_at.is_not(None), Link.expires_at > now, Link.expires_at <= expiring_horizon)
             .order_by(Link.expires_at.asc())
             .limit(8)
         ).all()
@@ -139,7 +150,7 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
         db.execute(
             select(func.count())
             .select_from(Link)
-            .where(Link.expires_at.is_not(None), Link.expires_at > now, Link.expires_at <= expiring_horizon)
+            .where(alive, Link.expires_at.is_not(None), Link.expires_at > now, Link.expires_at <= expiring_horizon)
         ).scalar_one()
         or 0
     )
@@ -166,6 +177,9 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
     legacy = blocked_by_reason.get("", 0)
     if legacy:
         no_click.append({"reason": "legacy", "label": "历史未分类", "count": legacy})
+    # 点击明细要不要把回收站里那些也算进来？事件的归属链接已经软删了，
+    # 但它们是真实发生过的点击。「运行状态」报的是库里有几行明细，
+    # 所以这里保留全量口径，只把几个面向「还活着的链接」的数字剔除回收站。
     total_events = db.execute(select(func.count()).select_from(ClickEvent)).scalar_one() or 0
     # 今日按本地自然日算，跟用户看到的日期一致。
     # 注意不能自己 combine(tzinfo=utc)：那切的是本地早上 8 点，
@@ -237,6 +251,7 @@ def api_dashboard(request: Request, db: Session = Depends(get_db)):
     return DashboardOut(
         total_links=int(total_links),
         total_clicks=int(total_clicks),
+        trash_links=trashed,
         enabled_links=int(enabled),
         disabled_links=int(disabled),
         expired_links=int(expired),

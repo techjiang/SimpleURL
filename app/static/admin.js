@@ -120,6 +120,8 @@
         ['已启用', d.enabled_links], ['已停用', d.disabled_links],
         ['已过期', d.expired_links], ['7 天内到期', d.expiring_links || 0], ['今日点击', d.clicks_today],
         ['拦截留痕', d.blocked_events], ['待结算', d.pending_clicks],
+        // 回收站里的链接不计入「链接总数」，差的那几条在这儿，别让人对着两个数发呆
+        ['回收站', d.trash_links || 0],
       ];
       $('#dash-cards').innerHTML = cards
         .map(([k, v]) => `<div class="stat-card"><span class="stat-label">${k}</span><strong>${v}</strong></div>`)
@@ -369,7 +371,7 @@
         <td class="col-check" data-label="选择"><input type="checkbox" data-pick="${escapeHtml(l.code)}"${on ? ' checked' : ''} aria-label="选择 /${escapeHtml(l.code)}" /></td>
         <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}${l.note ? `<span class="note-cell" title="${escapeHtml(l.note)}">${escapeHtml(l.note)}</span>` : ''}</td>
         <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
-        <td class="clicks-cell col-clicks" data-label="点击">${l.clicks}</td>
+        <td class="clicks-cell col-clicks" data-label="点击">${clicksCell(l)}</td>
         <td class="col-status" data-label="状态">${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
         <td class="exp-cell col-exp" data-label="过期">${expiryText(l)}</td>
         <td class="title-src col-src" data-label="标题">${titleSourceCell(l)}</td>
@@ -391,6 +393,14 @@
       if (box) { box.checked = all; box.indeterminate = !all && data.items.some((l) => picked.has(l.code)); }
       syncBulkBar();
     } catch (err) { toast(err.message); }
+  }
+
+  /* 点击数：落库的 + 缓冲里的。
+     延迟计数有 5 秒结算周期，刚生成的链接点两下再回来，以前这里还是 0，
+     看着像统计坏了。现在把还在内存里的那份标出来，数字跟着走、口径不撒谎。 */
+  function clicksCell(l) {
+    if (!l.pending_clicks) return `${l.clicks}`;
+    return `${l.clicks}<span class="hint pending-mark" title="其中 ${l.pending_clicks} 次还在内存缓冲里，5 秒内落库">待结算 ${l.pending_clicks}</span>`;
   }
 
   /* 过期那一列：后台原来完全看不到到期时间，只能靠「状态」猜。

@@ -7,10 +7,11 @@ import datetime as dt
 import io
 import json
 import logging
+import time
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.core import guard, policy, social
 from app.core.codes import generate_unique_code, normalize_code, validate_custom_code
@@ -32,6 +33,7 @@ from app.schemas import LinkCreate, LinkUpdate
 
 logger = logging.getLogger("simpleurl")
 
+_OUTBOUND_CACHE: tuple[float, bool] | None = None
 EXPIRING_DAYS = 7
 
 # 一次点击没被计入的原因。库里存这几个短值，界面再翻译成人话。
@@ -230,15 +232,11 @@ def list_links(
 
     stmt = stmt.where(Link.deleted_at.is_(None))
     total = db.execute(select(func.count()).select_from(stmt.subquery())).scalar_one()
-    items = list(
-        db.execute(
-            stmt.offset((page - 1) * page_size)
-            .limit(page_size)
-            .options(selectinload(Link.events))  # to_dict 不碰 events，这里是为了避免后续按需加载
-        )
-        .scalars()
-        .all()
-    )
+    # 这里以前挂了 selectinload(Link.events)：只为「避免后续按需加载」，
+    # 而 Link.to_dict() 根本不碰 events。代价是一页 100 条链接会把
+    # 这些链接的全部点击明细（每条链接可能几万行）拉进内存再丢掉。
+    # 列表只要链接本身，明细是统计页的事。
+    items = list(db.execute(stmt.offset((page - 1) * page_size).limit(page_size)).scalars().all())
     return total, items
 
 
@@ -358,6 +356,15 @@ def restore_link(db: Session, code: str) -> Link:
     db.flush()
     logger.info("恢复短链 %s", link.code)
     return link
+
+
+def trash_count(db: Session) -> int:
+    """回收站里还有多少条。
+
+    「删了怎么库还这么大」得有个明确答案，所以单独数一遍，
+    别让人去拿总链接数去猜（总链接数在定义上包含回收站里那些）。
+    """
+    return int(db.execute(select(func.count()).select_from(Link).where(Link.deleted_at.is_not(None))).scalar_one() or 0)
 
 
 def purge_link(db: Session, code: str) -> None:
@@ -596,7 +603,8 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         for dev, c in device_rows
     ]
 
-    # 按来源平台分账：微信 / QQ 里点开多少，一屏看清
+    # 按来源平台分账：微信 / QQ 里点开多少，一屏看清。
+    # 只数真正算进点击数的那些：分账表要能加回总数，混进被拦的访问就对不上了
     platform_rows = (
         db.execute(
             select(ClickEvent.platform, func.count(ClickEvent.id))
@@ -876,8 +884,40 @@ def title_source_stats(db: Session) -> dict:
     return out
 
 
+NOT_OUTBOUND_TEXT = (
+    "这台机器出不了网（或被 SSRF 解析检查挡了）：目标地址解析不到公网 IP，"
+    "所以自动取标题、Webhook / 通知这些外发能力都用不了。"
+    "本地演示、容器内网环境很常见，不影响短链本身的创建与跳转。"
+)
+
+
+def outbound_blocked() -> bool:
+    """这台机器能不能访问公网。
+
+    跑一次真实解析：拿一个必然存在的域名看它解出来是不是公网地址。
+    结果缓存几秒——运行状态页刷新几次不必每次都问 DNS。
+    """
+    from app.core.security import _resolve_internal_uncached
+
+    global _OUTBOUND_CACHE
+    now = time.monotonic()
+    if _OUTBOUND_CACHE and now - _OUTBOUND_CACHE[0] < 30:
+        return _OUTBOUND_CACHE[1]
+    try:
+        hardcoded = _resolve_internal_uncached("example.com")
+    except Exception:  # noqa: BLE001 - 探测本身失败就当能出网，别误报
+        hardcoded = False
+    _OUTBOUND_CACHE = (now, hardcoded)
+    return hardcoded
+
+
 def title_warnings(db: Session) -> list[dict]:
-    """自动取标题开着，却一条都没抓到时，直接说清楚。"""
+    """自动取标题开着，却一条都没抓到时，直接说清楚。
+
+    以前这里只有一句「多半是出不了网，或被 SSRF 挡住了」——把「机器没网」
+    这件可验证的事留给用户自己猜。现在先测一次出网，能测出来就直说，
+    测不出来才退回那句猜测。
+    """
     if not effective(db, "fetch_title"):
         return []
     stats = title_source_stats(db)
@@ -885,11 +925,13 @@ def title_warnings(db: Session) -> list[dict]:
         return []
     if stats["fetched"] > 0:
         return []
+    if outbound_blocked():
+        return [{"level": "info", "text": NOT_OUTBOUND_TEXT}]
     return [
         {
             "level": "warn",
             "text": "自动取标题已开启，但没有一条抓到真实标题（全部走了 URL 兜底）。"
-            "多半是这台机器出不了网，或被 SSRF 解析检查挡住了。",
+            "机器出网是通的，那就去看目标站是不是禁止抓取、或者标题在 JS 里渲染。",
         }
     ]
 

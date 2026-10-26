@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+import math
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core import access, claim, report
+from app.core.clicks import click_buffer
 from app.core.admin import current_admin
 from app.core.config import settings
 from app.core.db import get_db
@@ -47,6 +50,12 @@ router = APIRouter(prefix="/api", tags=["api"])
 
 def _serialize(link: Link, request: Request, claim_token: str | None = None) -> LinkOut:
     out = LinkOut.model_validate(link.to_dict())
+    # 点击数有两本账：库里已落库的，和还在内存缓冲里没结算的。
+    # Link.to_dict() 只给前者，于是「刚点完去看列表还是 0」——
+    # 延迟计数的代价不该是让用户怀疑统计坏了。
+    pending = click_buffer.pending_for(link.id)
+    out.clicks = int(link.clicks or 0) + pending
+    out.pending_clicks = pending
     base = str(request.base_url).rstrip("/")
     out.short_url = base + "/" + link.code
     out.stats_url = f"{base}/s/{link.code}"
@@ -386,7 +395,10 @@ def api_trash(
     for link in list_deleted(db, q=q):
         row = link.to_dict()
         deleted = ensure_aware(link.deleted_at)
-        row["days_left"] = max(0, TRASH_RETENTION_DAYS - (utcnow() - deleted).days) if deleted else 0
+        # 剩 0 天其实还剩最多 24 小时：整除会把「刚删 1 天半」算成还剩 29 天，
+        # 也会把「删了 29 天半」算成还剩 0 天。向上取整才是人看到的意思。
+        left = (deleted + dt.timedelta(days=TRASH_RETENTION_DAYS) - utcnow()).total_seconds() if deleted else 0
+        row["days_left"] = max(0, math.ceil(left / 86400))
         items.append(row)
     return {"items": items, "retention_days": TRASH_RETENTION_DAYS}
 
@@ -439,7 +451,13 @@ def api_bulk(request: Request, payload: dict, db: Session = Depends(get_db)):
         db,
         "delete" if action == "delete" else "update",
         actor=access_actor(request),
-        detail=f"批量{label} {result['affected']} 条",
+        # 记下是哪几条：只写「批量删除 50 条」的话，事后谁也不知道删的是哪些，
+        # 而这正是最需要查清的那一刻。短码本身不是隐私，留痕里本来就有
+        detail=(
+            f"批量{label} {result['affected']} 条："
+            + "、".join(f"/{c}" for c in codes[:20])
+            + ("…" if len(codes) > 20 else "")
+        ),
         request=request,
     )
     db.commit()

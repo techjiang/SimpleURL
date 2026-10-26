@@ -29,6 +29,10 @@ ACTIONS = {
     "claim": "回执换新",
     "restore": "恢复链接",
     "purge": "彻底删除",
+    "bulk": "批量操作",
+    "self_update": "回执改链接",
+    "self_delete": "回执删链接",
+    "renew": "续期",
 }
 
 MAX_ROWS = 2000

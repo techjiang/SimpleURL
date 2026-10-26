@@ -256,6 +256,17 @@
         if (!box.hidden) $('#recover-clue').focus();
       });
     }
+    // 空状态里那条「回执丢了？」：点了先把它露出来，再滚过去——
+    // 不然按钮像是没反应（面板在上面，当前屏看不到）
+    const emptyOpen = $('#empty-recover');
+    if (emptyOpen && box) {
+      emptyOpen.addEventListener('click', () => {
+        box.hidden = false;
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const clue = $('#recover-clue');
+        if (clue) setTimeout(() => clue.focus(), 260);
+      });
+    }
     const form = $('#recover-form');
     if (!form) return;
     form.addEventListener('submit', async (e) => {
@@ -636,7 +647,7 @@
     return `<tr>
       <td data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}${note}</td>
       <td data-label="目标" class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
-      <td data-label="点击" class="clicks-cell">${link.clicks}</td>
+      <td data-label="点击" class="clicks-cell">${link.clicks}${link.pending_clicks ? `<span class="hint pending-mark" title="其中 ${link.pending_clicks} 次还在内存缓冲里，几秒内落库">待结算</span>` : ''}</td>
       <td data-label="标签">${tags || '<span class="hint">—</span>'}</td>
       <td data-label="状态">${badgeOf(link)}</td>
       <td data-label="过期">${expiryCell(link)}</td>
@@ -679,9 +690,14 @@
     if (!empty) return;
     empty.hidden = !show;
     if (!show) return;
+    // 这段文案以前只是「说明这里为什么是空的」，看完还是不知道该干什么。
+    // 访客手上那张回执丢了是常态（换了设备、清了缓存），所以直接把路给出来。
     empty.querySelector('p').textContent = access.admin_mode
       ? '站点仅管理员可使用，登录后台后查看自己建过的链接'
-      : '这里放的是建过的链接。没登录只能凭回执看刚建的那一条，登录后台可见全部。';
+      : '这里放的是你建过的链接。没登录时只记得最近那一条的凭据——凭回执能看它、也能改它。';
+    // 空着的时候最需要那条出口，别让人再滚回上面去找「回执丢了？」
+    const rec = document.querySelector('#empty-recover');
+    if (rec) rec.hidden = Boolean(access.admin_mode);
   }
 
   function renderGuestBoard() {

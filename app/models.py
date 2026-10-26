@@ -48,8 +48,12 @@ class Link(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
     )
 
+    # `lazy="selectin"` 是这里最大的一个隐患：只要有一处 Link 查询，
+    # SQLAlchemy 就会顺手把每条链接的**全部**点击明细再查一遍。
+    # 一页 100 条热链接 = 十几万行明细进内存，然后被丢掉——没有一处在用。
+    # 改成按需加载：真要明细就走显式查询（统计页自己聚合）。
     events: Mapped[list["ClickEvent"]] = relationship(
-        back_populates="link", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="link", cascade="all, delete-orphan", lazy="select"
     )
 
     __table_args__ = (

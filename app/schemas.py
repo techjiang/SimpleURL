@@ -180,6 +180,9 @@ class LinkOut(BaseModel):
     stats_url: Optional[str] = None
     # 这个短码是不是「目标已存在，直接复用」来的
     reused: bool = False
+    # 还在内存缓冲里没落库的点击数。clicks 已经把这一份加进去了，
+    # 单独给一个是让界面能说「其中 N 次待结算」，而不是让人怀疑数字跳变。
+    pending_clicks: int = 0
 
 
 class LinkListOut(BaseModel):
@@ -324,6 +327,8 @@ class AdminLogin(BaseModel):
 class DashboardOut(BaseModel):
     total_links: int
     total_clicks: int
+    # 回收站里还有多少条：链接总数不含它们，这里单独报，免得数字对不上
+    trash_links: int = 0
     enabled_links: int
     disabled_links: int
     expired_links: int

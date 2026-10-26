@@ -231,6 +231,13 @@ select option { background: var(--bg-soft); color: var(--text); }
 .code-cell:hover { color: var(--brand); }
 .target-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
 .clicks-cell { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+/* 点击数里还压在内存缓冲里的那部分：延迟计数有结算周期，
+   不标出来，刚点完回来看还是旧数字，人就以为统计坏了 */
+.pending-mark {
+  display: inline-block; margin-left: 6px; font-size: 0.68rem; font-weight: 500;
+  padding: 1px 6px; border-radius: 6px; white-space: nowrap;
+  border: 1px solid rgba(126, 160, 255, 0.32); color: rgba(180, 200, 255, 0.9);
+}
 .title-cell { display: block; font-size: 0.78rem; color: var(--text-faint); margin-top: 2px; }
 /* 备注：自己写的那句话，和抓来的标题不是一回事，给一点区分但别抢注意力 */
 .note-cell {
