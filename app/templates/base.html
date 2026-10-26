@@ -15,12 +15,11 @@
     <a class="brand" href="/">
       <img src="/static/logo/icon.svg" alt="" width="28" height="28" />
       <strong>{{ site_name }}</strong>
-      <em>Short Link Service</em>
     </a>
-    <nav class="topnav">
+    <nav class="topnav" aria-label="主导航">
       <a href="/" class="nav-link">首页</a>
-      <a href="/#list" class="nav-link">链接库</a>
-      {% if auth_enabled %}<a href="/admin" class="nav-link">后台</a>{% endif %}
+      <a href="/#list" class="nav-link" data-admin-only>链接库</a>
+      {% if auth_enabled %}<a href="/admin" class="nav-link" data-admin-only>后台</a>{% endif %}
       <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
       {% include "_console.html" %}
     </nav>

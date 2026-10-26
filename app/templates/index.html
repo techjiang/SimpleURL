@@ -1,11 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="hero">
-  <div class="hero-copy">
-    <p class="kicker">轻量 · 流畅 · 好用</p>
-    <h1>把冗长的链接<br /><span class="grad">收进一行短码</span></h1>
-    <p class="lede">粘贴链接，回车即得。自带访问统计、二维码与标签管理，全程自托管。</p>
-  </div>
+  <p class="kicker">轻量 · 流畅 · 好用</p>
+  <h1>把冗长的链接<br /><span class="grad">收进一行短码</span></h1>
+  <p class="lede">粘贴链接，回车即得。自带访问统计、二维码与标签管理，全程自托管。</p>
 </section>
 
 <p class="announcement" id="announcement" hidden></p>
@@ -22,50 +20,63 @@
   <form id="create-form" class="composer-form" autocomplete="off">
     <div class="field main">
       <label for="target">目标链接</label>
-      <input id="target" name="target" type="text" inputmode="url" autocomplete="url"
-             placeholder="https://example.com/very/long/url" required />
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="code">自定义短码 <span class="hint">留空自动生成</span></label>
-        <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" aria-describedby="code-status" />
-        <span class="field-status" id="code-status" role="status" aria-live="polite"></span>
+      <div class="input-row">
+        <input id="target" name="target" type="text" inputmode="url" autocomplete="url"
+               placeholder="https://example.com/very/long/url" required />
+        <button type="submit" class="btn primary" id="submit-btn">生成短链接</button>
       </div>
-      <div class="field">
-        <label for="title">标题 <span class="hint">可选</span></label>
-        <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
-      </div>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="tags">标签 <span class="hint">逗号分隔</span></label>
-        <input id="tags" name="tags" type="text" placeholder="活动, 文档" maxlength="200" />
-      </div>
-      <div class="field">
-        <label for="expires_at">过期时间 <span class="hint">可选，如 2026-12-31 23:59</span></label>
-        <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
-      </div>
-    </div>
-    <div class="row">
-      <div class="field">
-        <label for="max_clicks">访问次数上限 <span class="hint">可选，点满即失效</span></label>
-        <input id="max_clicks" name="max_clicks" type="number" min="1" max="1000000" placeholder="不限" />
-      </div>
-      <div class="field">
-        <label for="password">访问口令 <span class="hint">可选，打开前需输口令</span></label>
-        <input id="password" name="password" type="password" maxlength="72"
-               autocomplete="new-password" placeholder="留空表示公开可访问" />
-      </div>
-    </div>
-    <div class="composer-actions">
-      <button type="submit" class="btn primary" id="submit-btn">生成短链接</button>
       <span class="status" id="create-status" role="status" aria-live="polite"></span>
     </div>
+
+    <details class="advanced" id="advanced" open>
+      <summary>自定义与高级选项</summary>
+      <div class="advanced-body">
+        <div class="row">
+          <div class="field">
+            <label for="code">自定义短码</label>
+            <input id="code" name="code" type="text" placeholder="my-link" maxlength="16" aria-describedby="code-status" />
+            <span class="field-status" id="code-status" role="status" aria-live="polite">留空自动生成</span>
+          </div>
+          <div class="field">
+            <label for="title">标题</label>
+            <input id="title" name="title" type="text" placeholder="给链接起个好记的名字" maxlength="255" />
+            <span class="field-status">不填会尝试抓取页面标题</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="tags">标签</label>
+            <input id="tags" name="tags" type="text" placeholder="活动, 文档" maxlength="200" />
+            <span class="field-status">逗号分隔，多个标签用逗号隔开</span>
+          </div>
+          <div class="field">
+            <label for="expires_at">过期时间</label>
+            <input id="expires_at" name="expires_at" type="datetime-local" />
+            <span class="field-status">留空表示永不过期</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="max_clicks">访问次数上限</label>
+            <input id="max_clicks" name="max_clicks" type="number" min="1" max="1000000" placeholder="不限" />
+            <span class="field-status">点满后自动失效</span>
+          </div>
+          <div class="field">
+            <label for="password">访问口令</label>
+            <input id="password" name="password" type="password" maxlength="72"
+                   autocomplete="new-password" placeholder="留空表示公开可访问" />
+            <span class="field-status">设置后打开前需输入口令</span>
+          </div>
+        </div>
+      </div>
+    </details>
   </form>
+
   <div class="dup-hint" id="dup-hint" hidden>
     <p class="dup-title">这个地址已经有短码了，直接复用更省事：</p>
     <ul class="dup-list" id="dup-list"></ul>
   </div>
+
   <div class="result" id="result" hidden>
     <div class="result-card">
       <p class="result-label">你的短链接</p>
@@ -74,14 +85,14 @@
         <button class="btn ghost copy" id="copy-btn" type="button">复制</button>
       </div>
       <div class="result-meta">
-        <img id="result-qr" alt="二维码" width="96" height="96" />
+        <img id="result-qr" alt="二维码" width="92" height="92" />
         <div class="result-tags" id="result-tags"></div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="board admin-only" id="list" hidden>
+<section class="board" id="list" data-admin-only hidden>
   <div class="board-head">
     <h2>链接库</h2>
     <div class="board-tools">
@@ -95,16 +106,15 @@
         <option value="disabled">已停用</option>
         <option value="expired">已过期</option>
       </select>
-      <select id="page-size" aria-label="每页条数">
-        <option value="10">10 条/页</option>
-        <option value="20">20 条/页</option>
-        <option value="50">50 条/页</option>
-        <option value="100">100 条/页</option>
-      </select>
       <select id="sort-select" aria-label="排序方式">
         <option value="created_desc">最近创建</option>
         <option value="clicks_desc">点击最多</option>
         <option value="code_asc">短码排序</option>
+      </select>
+      <select id="page-size" aria-label="每页条数">
+        <option value="10">10 条/页</option>
+        <option value="20">20 条/页</option>
+        <option value="50">50 条/页</option>
       </select>
       <button class="btn tiny ghost" id="export-btn" type="button">导出 CSV</button>
     </div>
@@ -114,20 +124,25 @@
     <table class="table">
       <thead>
         <tr>
-          <th>短码</th><th>目标</th><th class="col-clicks">点击</th><th>标签</th><th>状态</th><th>操作</th>
+          <th>短码 / 标题</th>
+          <th class="col-hide-sm">目标</th>
+          <th class="col-clicks">点击</th>
+          <th class="col-hide-sm">标签</th>
+          <th class="col-hide-sm">状态</th>
+          <th>操作</th>
         </tr>
       </thead>
       <tbody id="links-body"></tbody>
     </table>
     <div class="empty" id="empty" hidden>
-      <img src="/static/logo/icon.svg" alt="" width="44" height="44" />
+      <img src="/static/logo/icon.svg" alt="" width="22" height="22" />
       <p>还没有链接，先创建一个吧</p>
     </div>
   </div>
   <div class="pager">
-    <button class="btn ghost" id="prev-btn" type="button">上一页</button>
+    <button class="btn tiny ghost" id="prev-btn" type="button">上一页</button>
     <span id="page-info"></span>
-    <button class="btn ghost" id="next-btn" type="button">下一页</button>
+    <button class="btn tiny ghost" id="next-btn" type="button">下一页</button>
   </div>
 </section>
 
@@ -148,22 +163,22 @@
           <input id="edit-title" type="text" maxlength="255" />
         </div>
         <div class="field">
-          <label for="edit-tags">标签 <span class="hint">逗号分隔</span></label>
-          <input id="edit-tags" type="text" maxlength="200" />
+          <label for="edit-tags">标签</label>
+          <input id="edit-tags" type="text" maxlength="200" placeholder="逗号分隔" />
         </div>
       </div>
       <div class="row">
         <div class="field">
-          <label for="edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>
+          <label for="edit-expires">过期时间</label>
           <input id="edit-expires" type="datetime-local" />
         </div>
         <div class="field">
-          <label for="edit-max-clicks">访问次数上限 <span class="hint">留空表示不限</span></label>
+          <label for="edit-max-clicks">访问次数上限</label>
           <input id="edit-max-clicks" type="number" min="1" max="1000000" placeholder="不限" />
         </div>
       </div>
       <div class="field main">
-        <label for="edit-password">访问口令 <span class="hint">设置后需口令才能打开</span></label>
+        <label for="edit-password">访问口令</label>
         <input id="edit-password" type="password" maxlength="72" autocomplete="new-password" />
         <label class="check"><input id="edit-clear-password" type="checkbox" /> 清除口令</label>
       </div>

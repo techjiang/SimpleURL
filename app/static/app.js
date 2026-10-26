@@ -65,15 +65,19 @@
     const board = $('#list');
     if (board) board.hidden = !isAdmin;
 
-    // 顶栏控制台
-    const badge = $('#mode-badge');
+    // 顶栏：管理员专属入口平时不出现，登录后才现身，别让访客看到一堆点不动的链接
+    const tag = $('#mode-tag');
     const loginBtn = $('#console-login');
     const logoutBtn = $('#console-logout');
     const inviteBtn = $('#console-invite');
-    if (badge) {
-      badge.textContent = isAdmin ? '管理员' : access.mode_label;
-      badge.className = 'badge mode' + (isAdmin ? ' admin' : access.mode === 'admin' ? ' locked' : '');
-      badge.hidden = false;
+    document.querySelectorAll('[data-admin-only]').forEach((el) => { el.hidden = !isAdmin; });
+
+    if (tag) {
+      const locked = !isAdmin && access.mode !== 'public';
+      tag.textContent = isAdmin ? '管理员' : access.mode_label;
+      tag.className = 'console-tag' + (isAdmin ? ' admin' : locked ? ' locked' : '');
+      // 开放模式下、又没登录时，这枚小圆点没什么信息量，收起来
+      tag.hidden = !isAdmin && access.mode === 'public';
     }
     if (loginBtn) loginBtn.hidden = isAdmin || !access.admin_login_enabled;
     if (logoutBtn) logoutBtn.hidden = !isAdmin;
@@ -110,9 +114,6 @@
   }
 
   function bindConsole() {
-    const loginBtn = $('#console-login');
-    if (loginBtn) loginBtn.addEventListener('click', () => { location.href = '/admin/login'; });
-
     const logoutBtn = $('#console-logout');
     if (logoutBtn) logoutBtn.addEventListener('click', async () => {
       await api('/api/admin/logout', { method: 'POST' });
@@ -317,22 +318,33 @@
       expired: '<span class="badge exp">已过期</span>',
       exhausted: '<span class="badge exp">次数用完</span>',
     };
-    const state = link.state || (link.expired ? 'expired' : link.enabled ? 'active' : 'disabled');
-    const badge = map[state] || map.active;
-    const extra = [link.locked ? '🔒' : '', link.max_clicks ? `${link.clicks}/${link.max_clicks}` : '']
-      .filter(Boolean).join(' ');
-    return extra ? `${badge} <span class="hint">${extra}</span>` : badge;
+    const st = link.state || (link.expired ? 'expired' : link.enabled ? 'active' : 'disabled');
+    return map[st] || map.active;
+  }
+
+  function metaOf(link) {
+    const bits = [];
+    if (link.locked) bits.push('口令');
+    if (link.max_clicks) bits.push(`${link.clicks}/${link.max_clicks}`);
+    if (link.expires_at) bits.push('限时');
+    return bits.join(' · ');
   }
 
   function rowOf(link) {
     const tags = (link.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
-    const title = link.title ? `<span class="title-cell">${escapeHtml(link.title)}</span>` : '';
+    const title = link.title
+      ? `<span class="title-cell" title="${escapeHtml(link.title)}">${escapeHtml(link.title)}</span>`
+      : '';
+    const meta = metaOf(link);
     return `<tr>
-      <td><a class="code-cell" href="/s/${encodeURIComponent(link.code)}" title="查看统计">/${escapeHtml(link.code)}</a>${title}</td>
+      <td>
+        <a class="code-cell" href="/s/${encodeURIComponent(link.code)}" title="查看统计">/${escapeHtml(link.code)}</a>
+        ${title}
+      </td>
       <td class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
-      <td class="clicks-cell">${link.clicks}</td>
-      <td>${tags || '<span class="hint">—</span>'}</td>
-      <td>${badgeOf(link)}</td>
+      <td class="clicks-cell">${link.clicks}${meta ? `<span class="sub-cell">${escapeHtml(meta)}</span>` : ''}</td>
+      <td class="col-hide-sm">${tags || '<span class="hint">—</span>'}</td>
+      <td class="col-hide-sm">${badgeOf(link)}</td>
       <td>
         <a class="btn tiny ghost" href="/${encodeURIComponent(link.code)}" target="_blank" rel="noopener">访问</a>
         <button class="btn tiny ghost" data-act="edit" data-code="${escapeHtml(link.code)}">编辑</button>
@@ -357,7 +369,7 @@
       $('#summary').innerHTML = [
         `<span class="chip">共 ${data.total} 条</span>`,
         `<span class="chip">总点击 ${summary.total_clicks}</span>`,
-        `<span class="chip">第 ${data.page}/${pages} 页</span>`,
+        `<span class="chip">本页 ${data.items.length} 条</span>`,
       ].join('');
       $('#page-info').textContent = `第 ${data.page} 页 / 共 ${Math.max(1, Math.ceil(data.total / state.pageSize))} 页`;
       $('#prev-btn').disabled = data.page <= 1;
@@ -530,9 +542,19 @@
 
   /* ---------- 图表 ---------- */
   function renderChart(el, daily) {
-    const max = Math.max(1, ...daily.map((d) => d.count));
-    el.innerHTML = daily
-      .map((d) => `<div class="bar" title="${d.date}：${d.count} 次点击"><i style="height:${(d.count / max) * 100}%"></i><b>${d.date.slice(5)}</b></div>`)
+    if (!el) return;
+    const rows = daily || [];
+    const total = rows.reduce((sum, d) => sum + (d.count || 0), 0);
+    if (!rows.length || total === 0) {
+      el.innerHTML = '<div class="chart-empty">这段时间还没有点击</div>';
+      return;
+    }
+    const max = Math.max(1, ...rows.map((d) => d.count));
+    el.innerHTML = rows
+      .map((d) => {
+        const h = d.count ? Math.max(4, (d.count / max) * 100) : 0;
+        return `<div class="bar${d.count ? '' : ' dim'}" title="${d.date}：${d.count} 次点击"><i style="height:${h}%"></i><b>${d.date.slice(5)}</b></div>`;
+      })
       .join('');
   }
 
@@ -546,10 +568,19 @@
     } catch (_) { /* 公告拿不到不影响主流程 */ }
   }
 
+  // 顶栏「链接库」跳到 /#list 时，列表是 JS 拉完才出现的，浏览器自己跳不准
+  function scrollToHash() {
+    const id = (location.hash || '').slice(1);
+    if (!id) return;
+    const el = document.getElementById(id);
+    if (el && !el.hidden) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
   async function bootstrap() {
     // 各块互不依赖，一个接口慢不该拖住整页；任何一个挂了也不影响其余部分
     await Promise.allSettled([loadAccess(), loadSummary(), loadAnnouncement()]);
     if (access.is_admin) await loadLinks();
+    scrollToHash();
   }
 
   document.addEventListener('DOMContentLoaded', () => {

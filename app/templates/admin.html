@@ -21,14 +21,14 @@
       <h1>仪表盘</h1>
       <p class="hint">数据实时聚合；点击计数走批量落库，缓冲里的条数单独标注。</p>
     </header>
-    <div class="board-tools">
+    <div class="seg">
       {% for d in [7, 14, 30, 90] %}
-      <a class="btn tiny {{ 'primary' if dash.days == d else 'ghost' }}" href="/admin?days={{ d }}">近 {{ d }} 天</a>
+      <a class="seg-item{{ ' active' if dash.days == d else '' }}" href="/admin?days={{ d }}">{{ d }} 天</a>
       {% endfor %}
     </div>
     <div class="stat-grid four" id="dash-cards"></div>
     <div class="chart-card">
-      <div class="chart-head"><h2>点击趋势</h2><span class="hint">最近 14 天</span></div>
+      <div class="chart-head"><h2>点击趋势</h2><span class="hint">最近 {{ dash.days }} 天</span></div>
       <div class="chart-scroll"><div class="chart" id="dash-chart"></div></div>
     </div>
     <div class="admin-cols">
@@ -55,7 +55,7 @@
     <header class="admin-head"><h1>链接管理</h1><p class="hint">共 {{ total }} 条 · 第 {{ page }}/{{ pages }} 页</p></header>
     <form class="board-tools" id="admin-filter" method="get" action="/admin/links">
       <div class="search">
-        <input name="q" type="search" value="{{ q }}" placeholder="搜索短码 / 目标 / 标题 / 标签" />
+        <input name="q" type="search" value="{{ q }}" placeholder="搜索短码 / 目标 / 标题 / 标签" aria-label="搜索链接" />
       </div>
       <select name="status" aria-label="状态筛选">
         <option value="" {{ 'selected' if not status else '' }}>全部状态</option>
@@ -70,23 +70,27 @@
       </select>
       <button class="btn tiny primary" type="submit">筛选</button>
       <button class="btn tiny ghost" id="export-json" type="button">导出 JSON</button>
-      {% set qs = 'q=' ~ (q | urlencode) ~ '&status=' ~ (status or '') ~ '&sort=' ~ sort %}
+    </form>
+    {% set qs = 'q=' ~ (q | urlencode) ~ '&status=' ~ (status or '') ~ '&sort=' ~ sort %}
+    <div class="board-tools pager-row">
       <a class="btn tiny ghost{{ ' disabled' if page <= 1 else '' }}" href="/admin/links?{{ qs }}&page={{ page - 1 if page > 1 else 1 }}">上一页</a>
       <span class="hint">第 {{ page }}/{{ pages }} 页</span>
       <a class="btn tiny ghost{{ ' disabled' if page >= pages else '' }}" href="/admin/links?{{ qs }}&page={{ page + 1 if page < pages else pages }}">下一页</a>
-    </form>
+    </div>
     <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>短码</th><th>标题 / 目标</th><th>点击</th><th>过期</th><th>状态</th><th>操作</th></tr></thead>
+      <table class="table cards-sm">
+        <thead><tr><th>短码</th><th>标题 / 目标</th><th class="col-clicks">点击</th><th class="col-hide-sm">过期</th><th>状态</th><th>操作</th></tr></thead>
         <tbody id="admin-links-body">
           {% for link in links %}
           <tr>
-            <td><a class="code-cell" href="/s/{{ link.code }}">/{{ link.code }}</a></td>
-            <td class="target-cell"><span class="title-cell">{{ link.title or '—' }}</span><br />{{ link.target }}</td>
-            <td class="clicks-cell">{{ link.clicks }}</td>
-            <td class="hint">{{ link.expires_at[:10] if link.expires_at else '—' }}</td>
-            <td>{% if link.expired %}<span class="badge exp">已过期</span>{% elif link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
-            <td>
+            <td class="cell-code"><a class="code-cell" href="/s/{{ link.code }}">/{{ link.code }}</a></td>
+            <td class="cell-target" title="{{ link.target }}">
+              {% if link.title %}<span class="title-cell">{{ link.title }}</span>{% endif %}<span class="t-url">{{ link.target }}</span>
+            </td>
+            <td class="clicks-cell cell-meta">{{ link.clicks }}</td>
+            <td class="col-hide-sm hint">{{ link.expires_at[:10] if link.expires_at else '—' }}</td>
+            <td class="cell-status">{% if link.expired %}<span class="badge exp">已过期</span>{% elif link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
+            <td class="cell-actions">
               <button class="btn tiny ghost" data-toggle="{{ link.code }}">{% if link.enabled %}停用{% else %}启用{% endif %}</button>
               <button class="btn tiny danger" data-del="{{ link.code }}">删除</button>
             </td>
@@ -124,7 +128,7 @@
     </div>
 
     {% elif panel == 'keys' %}
-    <header class="admin-head"><h1>API 密钥</h1><p class="hint">库里只存哈希，明文仅在创建时显示一次。用于给外部系统调用 /api/*。</p></header>
+    <header class="admin-head"><h1>API 密钥</h1><p class="hint">库里只存哈希，明文仅在创建时显示一次。</p></header>
     <div class="composer card-inline">
       <div class="field main"><label for="key-name">密钥名称</label><input id="key-name" type="text" maxlength="64" placeholder="例如：CI 脚本" /></div>
       <div class="composer-actions"><button class="btn primary" id="key-create" type="button">生成密钥</button><span class="status" id="key-status"></span></div>

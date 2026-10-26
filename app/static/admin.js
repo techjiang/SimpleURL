@@ -85,15 +85,14 @@
     const top = $('#dash-top');
     if (top) {
       top.innerHTML = data.top_links.length
-        ? data.top_links.map((l) => `<li><span>/${escapeHtml(l.code)} <em class="hint">${escapeHtml((l.title || l.target || '').slice(0, 26))}</em></span><b>${l.clicks}</b></li>`).join('')
-        : '<li><span class="hint">还没有点击数据</span></li>';
+        ? data.top_links.map((l) => `<li><span>/${escapeHtml(l.code)} <em class="hint">${escapeHtml((l.title || l.target || '').slice(0, 28))}</em></span><b>${l.clicks}</b></li>`).join('')
+        : '<li class="empty-row">还没有点击数据</li>';
     }
     const g = $('#dash-guard');
     if (g) {
-      const entries = Object.entries(data.guard);
-      g.innerHTML = ['rate', 'ua', 'wechat', 'qq'].map((kind) =>
-        `<li><span>${KIND_LABEL[kind] || kind}</span><b>${data.events.filter((e) => e.kind === kind).length ? (data.guard[kind] || 0) : 0}</b></li>`
-      ).join('') || entries.map(([k, v]) => `<li><span>${KIND_LABEL[k] || k}</span><b>${v}</b></li>`).join('');
+      g.innerHTML = ['rate', 'ua', 'wechat', 'qq']
+        .map((kind) => `<li><span>${KIND_LABEL[kind] || kind}</span><b>${data.guard[kind] || 0}</b></li>`)
+        .join('');
     }
     const badge = $('#guard-badge');
     if (badge) badge.textContent = `单IP ${data.guard.per_minute}/分 · 封 ${data.guard.block}s`;
@@ -103,8 +102,8 @@
     const body = $('#event-body');
     if (body) {
       body.innerHTML = data.events.length
-        ? data.events.map((e) => `<tr><td>${fmtTime(e.ts)}</td><td>/${escapeHtml(e.code || '—')}</td><td>${escapeHtml(KIND_LABEL[e.kind] || e.kind)}</td><td>${escapeHtml(e.detail || '')}</td><td class="ua-cell">${escapeHtml(e.ua || '')}</td></tr>`).join('')
-        : '<tr><td colspan="5" class="hint">暂无风控事件</td></tr>';
+        ? data.events.map((e) => `<tr><td class="hint">${fmtTime(e.ts)}</td><td class="code-cell">/${escapeHtml(e.code || '—')}</td><td>${escapeHtml(KIND_LABEL[e.kind] || e.kind)}</td><td class="hint">${escapeHtml(e.detail || '')}</td><td class="ua-cell">${escapeHtml(e.ua || '')}</td></tr>`).join('')
+        : '<tr><td colspan="5" class="hint" style="text-align:center">暂无风控事件</td></tr>';
     }
   }
 
@@ -255,8 +254,8 @@
       const body = $('#event-body-2');
       if (body) {
         body.innerHTML = overview.events.length
-          ? overview.events.map((e) => `<tr><td>${fmtTime(e.ts)}</td><td>/${escapeHtml(e.code || '—')}</td><td>${escapeHtml(KIND_LABEL[e.kind] || e.kind)}</td><td>${escapeHtml(e.detail || '')}</td></tr>`).join('')
-          : '<tr><td colspan="4" class="hint">暂无事件</td></tr>';
+          ? overview.events.map((e) => `<tr><td class="hint">${fmtTime(e.ts)}</td><td class="code-cell">/${escapeHtml(e.code || '—')}</td><td>${escapeHtml(KIND_LABEL[e.kind] || e.kind)}</td><td class="hint">${escapeHtml(e.detail || '')}</td></tr>`).join('')
+          : '<tr><td colspan="4" class="hint" style="text-align:center">暂无事件</td></tr>';
       }
     }
   }
