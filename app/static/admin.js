@@ -309,14 +309,20 @@
         // 屏幕上就多出十来个贴底的圆角块，像一排没画完的柱子
         const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
         const label = showAt(i) ? d.date.slice(5) : '';
-        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? '' : ' no-label'}" title="${d.date}：${d.count}">${fill}<b>${label}</b></div>`;
+        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count}">${fill}<b>${label}</b></div>`;
       })
       .join('');
     el.innerHTML =
+      // 刻度是绝对定位的，`bottom:0` 那句 transform 会把字往下压半个身位，
+      // 于是最低那个「0」总有一半探出图表外、贴着卡片边缘——看着像被裁掉了。
+      // 两头的数字改成贴边对齐，中间的照旧中线对齐。
       `<div class="chart-axis" aria-hidden="true">${ticks
         .slice()
         .reverse()
-        .map((v) => `<span style="bottom:${(v / top) * 100}%">${v}</span>`)
+        .map((v, i, arr) => {
+          const edge = i === 0 ? ' is-top' : i === arr.length - 1 ? ' is-bottom' : '';
+          return `<span class="tick${edge}" style="bottom:${(v / top) * 100}%">${v}</span>`;
+        })
         .join('')}</div><div class="chart-bars">${bars}</div>`;
     // 柱子撑出容器时默认停在最右端：窄屏上一打开该看到「今天」，不是 30 天前
     const wrap = el.parentElement;

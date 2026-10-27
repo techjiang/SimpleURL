@@ -1032,14 +1032,20 @@
         const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
         // 有标签才叫日期行：14 天宽屏下每根都有日期，30 天窄屏下只有几根有
         const day = labels.has(i) ? `<b>${labels.get(i)}</b>` : '';
-        return `<div class="bar${d.count ? '' : ' is-zero'}${day ? '' : ' no-label'}" title="${d.date}：${d.count} 次点击">${fill}${day}</div>`;
+        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count} 次点击">${fill}${day}</div>`;
       })
       .join('');
     el.innerHTML =
+      // 刻度是绝对定位的，`bottom:0` 那句 transform 会把字往下压半个身位，
+      // 于是最低那个「0」总有一半探出图表外、贴着卡片边缘——看着像被裁掉了。
+      // 两头的数字改成贴边对齐，中间的照旧中线对齐。
       `<div class="chart-axis" aria-hidden="true">${ticks
         .slice()
         .reverse()
-        .map((v) => `<span style="bottom:${(v / top) * 100}%">${v}</span>`)
+        .map((v, i, arr) => {
+          const edge = i === 0 ? ' is-top' : i === arr.length - 1 ? ' is-bottom' : '';
+          return `<span class="tick${edge}" style="bottom:${(v / top) * 100}%">${v}</span>`;
+        })
         .join('')}</div><div class="chart-bars">${bars}</div>`;
     // 柱子撑出容器了（手机上 30 天放不下）：默认停在最右端。
     // 不这么做的话，一打开看到的是 30 天前那段——那几天大多是零，
