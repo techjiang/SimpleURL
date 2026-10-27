@@ -26,6 +26,24 @@
 }
 
 * { box-sizing: border-box; }
+/* 跳到正文：平时藏在视口外，键盘聚焦才落下来。用 transform 而不是
+   `left:-9999px`，旧式写法在 RTL 和缩放时会露出一条边。 */
+.skip-link {
+  position: fixed; top: 0; left: 50%; z-index: 200;
+  /* 不用百分比：元素自身高度 42px，-120% 只能退 50px，兜帽上那点圆角
+     还会挂在视口上沿留一道蓝边。直接退到自身高度之外。 */
+  transform: translate(-50%, calc(-100% - 8px));
+  transition: transform .18s ease;
+  padding: 10px 18px; border-radius: 0 0 12px 12px;
+  background: var(--brand); color: #fff; font-size: 0.86rem; font-weight: 600;
+  text-decoration: none;
+}
+/* 聚焦时落下来。`:focus` 也给一份：Safari 里 `:focus-visible` 的判定
+   比 Chrome 保守，键盘用户会按了 Tab 却什么都没看见。 */
+.skip-link:focus,
+.skip-link:focus-visible { transform: translate(-50%, 0); outline: none; }
+/* 焦点落到 main 上时不要描边——那是跳转目标，不是可点元素 */
+main:focus { outline: none; }
 [hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
@@ -324,28 +342,19 @@ select option { background: var(--bg-soft); color: var(--text); }
 .stats-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 26px; }
 .stats-hero h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); margin: 8px 0; overflow-wrap: anywhere; word-break: break-word; }
 .qr { border-radius: var(--radius); background: #fff; padding: 6px; }
-/* 卡片阵列按固定档位分栏，而不是 auto-fit 自动塞：
-   自动填充在 1038px 上排出「5 / 5」，第二行两个空位——很像没画完；
-   换成 4 / 3 / 2 / 1 四档，每行要么排满，要么明摆着是最后一行。
-   最后一行不满时靠左对齐，不留中间一个洞。 */
-.stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 22px; }
-.stat-card { padding: 18px; display: grid; gap: 6px; align-content: start; }
-@media (max-width: 1180px) { .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 860px) { .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 22px; }
+.stat-card { padding: 18px; display: grid; gap: 6px; }
 .stat-label { font-size: 0.76rem; color: var(--text-faint); letter-spacing: 0.1em; text-transform: uppercase; }
 /* 数字默认不换行；日期这种长值在窄卡片里会撑破 170px 的格子，
    给它一个更小的起点 + 允许在空格处折行 */
 .stat-card strong { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
-/* 手机竖屏不再一列排到底：十张卡就是十屏，翻到手酸还看不出全貌。
-   两列 + 缩一号字，「链接总数 5」这种短值照样一眼看清。 */
-@media (max-width: 520px) {
-  .stat-grid { gap: var(--s2); }
-  .stat-card { padding: var(--s3); }
-  .stat-card strong { font-size: 1.5rem; }
-}
 .stat-card strong.wide { font-size: 1.18rem; line-height: 1.35; overflow-wrap: anywhere; }
-.chart-card { padding: 20px; margin-bottom: 18px; }
-.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.chart-card { padding: 20px; margin-bottom: 18px; position: relative; }
+/* 卡片本身定位：图表要在自己的框里自成一层——刻度上限那个数字比图高半个字，
+   不给容器定位就会让它跑到标题底下去（截图里就是标题被画了一道横） */
+.chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+/* 24px 而不是 18px：刻度上限那个数字要挂在柱区上方，只给 18px 时它的上半截
+   正好压在标题文字上，截图里标题像被划了一道横线 */
 /* 标题不许被右侧控件挤成竖排：给个最小宽度并禁止换行 */
 .chart-head h2 { font-size: 1.02rem; white-space: nowrap; flex: none; }
 /* 右侧控件不许抢满整行：筛选下拉固定宽度，并靠右 */
@@ -355,27 +364,24 @@ select option { background: var(--bg-soft); color: var(--text); }
    原来是单纯的一排柱子，没有任何量纲：1 次和 100 次看起来是同一种东西。 */
 /* 柱区必须有确定高度：柱高是百分比，父级只给 min-height 时百分比无处可依，
    柱子会退回 2px 的保底高度——30 天里只有一天有点击时，整张图看着像空的。 */
-/* 柱区高度单独给 .chart-bars，.chart 自己不定高：刻度是用百分比挂在柱区上的，
-   柱区如果靠 stretch 撑满一个 160px 的父级，再算上底部 16px 的日期行，
-   「最高」那个刻度就被顶到图表外面——峰值常年贴着画布上沿。
-   取整数值是为了让 0 / 25% / 50% / 75% / 100% 几档刻度正好落在像素边界上。 */
-.chart { position: relative; display: flex; align-items: flex-start; width: 100%; padding-left: 30px; box-sizing: border-box; }
+.chart { position: relative; display: flex; align-items: stretch; width: 100%; height: 160px; padding-left: 30px; box-sizing: border-box; }
+/* 刻度上限那个数字挂在柱区上方，得在 .chart 里留出位置：
+   它是绝对定位的子元素，没有这段 padding 时会直接伸到元素外，被
+   .chart-scroll 的 overflow 裁掉一半——截图里坐标轴顶端就是半条横线 */
+.chart { padding-top: 14px; height: 174px; }
 /* 刻度用绝对定位钉在图表左上，不跟着柱子跑：柱子一多就横向滚动，
    纵轴跟着滚走等于没有纵轴。滚动时脚本用 translateX 把它拉回来。 */
-/* 刻度区只覆盖柱区那一段高度，和 .chart-bars 同进同退（是它的绝对定位兄弟） */
-.chart-axis { position: absolute; left: 0; top: 0; height: 152px; width: 26px; pointer-events: none; border-right: 1px solid var(--border); background: var(--bg); z-index: 2; }
+.chart-axis { position: absolute; left: 0; top: 14px; height: 160px; width: 26px; pointer-events: none; border-radius: 3px; border-right: 1px solid var(--border); background: var(--bg); z-index: 2; }
 /* 刻度是绝对定位的，容不下的时候会被压成两行（顶上的「10」看着像「1/0」）。
    只留数字，并把它钉在刻度线上。 */
 .chart-axis span { position: absolute; line-height: 1; right: 6px; transform: translateY(50%); font-size: .68rem; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* 两头的刻度都往里收：中线对齐时，最低那个数字有一半探出图表底边、
-   最高那个压在柱区顶线上，看着都像被裁了。 */
-.chart-axis span.is-bottom { transform: translateY(-50%); }
-.chart-axis span.is-top { transform: translateY(100%); }
 /* 柱状区要能撑开：放在横向滚动容器里、柱子又有最小宽度时，flex 会把 30 根柱子
    压回可视宽度，手机上这段图就是一片空白。fit-content 吃的是「柱子最小宽度之和」，
    图表外壳只负责留出左侧刻度位。 */
-.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; gap: 3px; height: 152px; width: fit-content; min-width: min(100%, 320px); }
-.chart-scroll { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; scrollbar-width: thin; }
+.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; gap: 3px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
+/* 顶部要留出 8px 给刻度上限那个数字：它挂在柱区上方，柱子区又在横向滚动容器里，
+   overflow-y:hidden 会把它当溢出内容裁掉一半 */
+.chart-scroll { overflow-x: auto; overflow-y: hidden; padding: 8px 0 4px; scrollbar-width: thin; }
 /* 只在真的滚得动时出现（脚本按滚动宽度决定），别在桌面端白占一行 */
 .chart-swipe { margin: 6px 0 0; font-size: .74rem; text-align: right; }
 .chart-scroll::-webkit-scrollbar { height: 6px; }
@@ -385,10 +391,10 @@ select option { background: var(--bg-soft); color: var(--text); }
 .bar:hover i { filter: brightness(1.3); }
 /* 日期挂在柱子底下：横向滚动时跟着自己那根走，不会滚丢 */
 .bar b { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 4px; font-size: .62rem; color: var(--text-faint); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* 日期那 16px 要在柱区里先留出来，否则日期行会探到柱区外面（柱高是百分比算的），
-   刻度上的「0」也跟着落在日期行里，看着像纵轴和横轴叠在一起。
-   加一条和日期行等高的底衬，让两根轴的交点重新对齐。 */
-.chart-bars { padding-bottom: 16px; }
+/* 没有日期标签的柱子要把那 16px 也占住：只在个别柱子上有 b 时，
+   滚动容器底部会随最后一根柱子有没有标签而跳一下，图整体高矮不一。
+   同一层级的图表还得一样高，横向扫一眼才顺。 */
+.bar.no-label { padding-bottom: 16px; }
 /* 零点击的日子不画线：一排贴底的短横比空白更像「坏了」 */
 .bar i.zero { display: none; }
 /* 一根柱子都没有时不再画一条贴底的细线，改成一句人话 */
@@ -439,22 +445,28 @@ select option { background: var(--bg-soft); color: var(--text); }
   .table { font-size: 0.82rem; }
   .table th, .table td { padding: 10px 8px; }
   .brand em { display: none; }
-  /* 窄屏：顶栏拆两行，导航可横滑。不换行的话「首页/链接库」会被挤成竖排单字 */
-  .topbar { flex-wrap: wrap; gap: 10px; padding: 14px 0; }
-
-  /* 导航换行后撑满整行：留 auto 宽度会在右上角空出一大块，看着像坏了 */
-  .topnav { order: 3; width: 100%; flex: 1 1 100%; overflow-x: auto; scrollbar-width: none; }
+  /* 窄屏：品牌和导航同一行，导航自己横滑。
+     以前导航整行换到第三行，首屏还没见到标题先看到一条空导航带；
+     同一行放不下时它只在自己的滚动区里滚，不会把品牌挤成竖排 */
+  .topbar { gap: 10px; padding: 12px 0; }
+  .brand { flex: none; }
+  .brand strong { font-size: 1rem; }
+  /* min-width: 0 是横滑的前提：flex 子项默认不肯缩到内容宽度以下 */
+  .topnav { flex: 1 1 auto; min-width: 0; justify-content: flex-end; overflow-x: auto; scrollbar-width: none; }
   .topnav::-webkit-scrollbar { display: none; }
-  .nav-link { flex: none; }
+  .nav-link { flex: none; padding: 6px 9px; font-size: 0.82rem; }
   .container { padding: 18px 0 60px; }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
-  .chart { padding-left: 26px; }
-  .chart-bars { height: 124px; }
+  .chart { padding-left: 26px; height: 144px; }
+  .chart-bars { height: 130px; }
+  /* 刻度容器高度写死 160px，柱区在窄屏改成 130px 之后刻度不再贴着柱子走：
+     顶部那个数字浮在框外像条怪线，「0」躺在底部几像素之下。跟着一起缩 */
+  .chart-axis { height: 130px; }
   /* 手机上柱子给足宽度，宁可横滑也别全挤成一根线 */
   .chart .bar { min-width: 22px; }
   .bar b { font-size: .58rem; }
-  .chart-axis { width: 22px; height: 124px; }
+  .chart-axis { width: 22px; height: 130px; top: 14px; }
   .chart-axis span { font-size: .64rem; right: 4px; }
   /* 30 天在 390px 里每根柱子只剩 10px：点击全堆在最后一天时那根柱子细到看不见。
      窄屏给柱子一个下限宽度让图横向可滑，右端留 4px 内边距，免得最后一根贴边被裁。
@@ -508,8 +520,13 @@ select option { background: var(--bg-soft); color: var(--text); }
   /* 卡片里按钮不用挤：去掉 nowrap 撑宽和桌面端的等宽栅格 */
   .table td[data-label="操作"] .btn { flex: 1 1 auto; white-space: nowrap; }
   /* 卡片里没有表头，「点击」和「创建」已经藏着，别留占位空隙 */
-  .table td[data-label="选择"], .table td.col-check { display: flex; align-items: center; }
+  .table td[data-label="选择"], .table td.col-check {
+    grid-column: 1; grid-row: 1; justify-self: start; display: flex; align-items: center;
+  }
   .table td[data-label="状态"] .badge { font-size: 0.72rem; padding: 2px 8px; }
+  /* 卡片顶上：勾选框、短码、状态各归各位。没有勾选框的表（回收站）
+     走原来那条「短码在第一列」的规则 */
+  .table tr:has(td[data-label="选择"]) td[data-label="短码"] { grid-column: 2; }
   /* 卡片化之后表格自己的 hover 底色没意义，交给卡片边框 */
   .table tbody tr:hover { background: var(--surface); }
   /* 描述性字段（点击/过期/标题来源/创建）在卡片里挤不进主线，收在短码下面一行小字 */
@@ -519,7 +536,18 @@ select option { background: var(--bg-soft); color: var(--text); }
   }
   .table td[data-label="点击"] { display: none; }
   .table td[data-label="创建"] { display: none; }
+  /* 没有标题的链接，标题列只有一个「—」：卡片里它就是一条悬着的小横线，
+     读起来像分隔符。空着比画个占位符更清楚 */
+  .table td[data-label="标题"]:has(.hint:only-child),
+  .table td[data-label="标签"]:has(.hint:only-child) { display: none; }
   .table td[data-label="过期"] .exp-date { display: inline; margin-left: var(--s1); }
+  /* 卡片里的标题就是这张卡的名字，不该比正文还小；它和短码挤在同一格，
+     必须显式成块——短码那格是 nowrap，标题会跟着缩成一行长条 */
+  .table td[data-label="短码"] .title-cell {
+    display: block; white-space: normal; font-size: 0.86rem; color: var(--text-dim); margin-top: 4px;
+  }
+  /* 短码这格在卡片里自己会换行，外面那层 nowrap 要撤掉 */
+  .table td[data-label="短码"] { white-space: normal; }
   .table td.col-check { grid-column: 1 / -1; justify-self: start; }
   .table td.col-check input { width: 18px; height: 18px; }
   /* 回收站的「删除于」在窄屏没意义，留下「还剩几天」就够 */
@@ -619,13 +647,6 @@ select option { background: var(--bg-soft); color: var(--text); }
 .admin-panel.active { display: block; }
 /* 两栏：各卡按内容高度排，别拉齐——拉齐会在短的那栏底部留一大片空白 */
 .admin-cols { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; align-items: start; }
-/* 两栏不等高时别硬拉成一模一样：左边「点击 Top」只有 5 行、右边「最近访问」20 行，
-   stretch 会让左栏卡底部空出一大片。但空成两倍高同样难看——给它一个上限，
-   多出来的滚动，两栏的落脚线就差不多了。 */
-/* 上限差不多是「5 行列表 + 卡头 + 内边距」的高度：两栏的落脚线接近了，
-   右栏也不会拖出一条谁也不想去滚的长滚动条——「最近访问」本来就只是扫一眼。 */
-.admin-cols > .chart-card { max-height: 344px; display: flex; flex-direction: column; }
-.admin-cols > .chart-card > .ref-list { overflow-y: auto; min-height: 0; scrollbar-width: thin; }
 .admin-cols .ref-list li span:first-child { font-family: var(--mono); font-size: 0.82rem; }
 .admin-cols .ref-list li { align-items: center; gap: 10px; }
 textarea { width: 100%; padding: 10px 12px; font-family: var(--mono); font-size: 0.84rem; color: var(--text); background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: var(--radius-sm); resize: vertical; line-height: 1.6; }
@@ -635,12 +656,20 @@ textarea:focus { outline: none; border-color: var(--brand); box-shadow: var(--ri
 code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(0,0,0,0.3); padding: 3px 7px; border-radius: 6px; border: 1px solid var(--border); word-break: break-all; }
 .admin .chart-card { margin-bottom: 18px; }
 .admin .pager button[disabled] { opacity: .5; }
+/* 分页器挪进 table-wrap 里（跟着表格走）：之前它挂在卡片外面，
+   表格一高就悬在卡片底部之外，看着像掉出来的零件 */
+.table-wrap .pager-row {
+  display: flex; align-items: center; justify-content: center;
+  gap: var(--s3); flex-wrap: wrap; margin-top: var(--s3);
+  font-size: 0.82rem; color: var(--text-dim);
+}
+.table-wrap .pager-row span:empty { display: none; }
 @media (max-width: 720px) {
   .admin-cols { grid-template-columns: 1fr; }
-  /* 窄屏：六个页签平分一行会被压成竖排单字，改成可横滑的一行 */
-  .admin-tabs { border-radius: var(--radius); overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
-  .admin-tabs::-webkit-scrollbar { display: none; }
-  .admin-tab { flex: none; text-align: center; }
+  /* 窄屏：十一个页签横滑时右边永远有一个被切成半个字，看着像坏了。
+     改成折行——每个页签都完整可见，也不用猜右边还有没有东西 */
+  .admin-tabs { border-radius: var(--radius); flex-wrap: wrap; gap: 4px; }
+  .admin-tab { flex: 1 1 auto; padding: 8px 12px; font-size: 0.82rem; text-align: center; }
 }
 
 /* ============ 访问模式横幅 ============ */
@@ -878,7 +907,9 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .receipt-tip .status { min-height: 1.2em; }
 .receipt-tip .status:empty { display: none; }
 @media (max-width: 560px) {
-  .qr-block { justify-items: start; }
+  /* 窄屏二维码靠左排：下面那行「下载二维码」原本是居中网格里的第二行，
+     一左对齐就叠到二维码图上，把码压掉半行 */
+  .qr-block { justify-items: start; gap: 8px; }
   .chart-table ul { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 }
 
@@ -997,6 +1028,16 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   border-radius: var(--radius-sm); background: #fff;
 }
 .qr-panel .qr-preview img { width: 100%; max-width: 260px; height: auto; display: block; }
+/* 还没填短码：白底收起来，留一句说明。之前是一整块 700×300 的纯白，
+   在深色页面上像个没加载出来的图，谁看都想刷新一下。 */
+.qr-panel .qr-preview.is-empty {
+  background: transparent; border: 1px dashed var(--border-strong);
+  min-height: 168px; padding: 24px;
+}
+.qr-panel .qr-preview.is-empty img { display: none; }
+.qr-blank { margin: 0; font-size: 0.82rem; color: var(--text-faint); }
+.qr-panel .qr-preview:not(.is-empty) .qr-blank { display: none; }
+.qr-actions .btn.disabled { opacity: .45; pointer-events: none; }
 .qr-row { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 .qr-row label { font-size: 0.78rem; color: var(--text-dim); display: grid; gap: 6px; }
 .qr-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }

@@ -100,18 +100,18 @@
           <thead>
             <tr>
               <th class="col-check"><input type="checkbox" id="admin-check-all" aria-label="全选本页" /></th>
-              <th class="col-code">短码</th><th class="col-target">目标</th><th class="col-clicks">点击</th>
-              <th class="col-status">状态</th><th class="col-exp">过期</th><th class="col-src">标题</th><th class="col-ops">操作</th>
+              <th class="col-code" scope="col">短码</th><th class="col-target" scope="col">目标</th><th class="col-clicks" scope="col">点击</th>
+              <th class="col-status" scope="col">状态</th><th class="col-exp" scope="col">过期</th><th class="col-src" scope="col">标题</th><th class="col-ops" scope="col">操作</th>
             </tr>
           </thead>
           <tbody id="admin-links-body"></tbody>
         </table>
         <div class="empty" id="admin-links-empty" hidden><p>没有符合条件的链接</p></div>
-      </div>
-      <div class="board-tools pager-row">
-        <button class="btn ghost" id="admin-prev" type="button">上一页</button>
-        <span id="admin-page-info"></span>
-        <button class="btn ghost" id="admin-next" type="button">下一页</button>
+        <div class="pager-row">
+          <button class="btn ghost" id="admin-prev" type="button">上一页</button>
+          <span id="admin-page-info"></span>
+          <button class="btn ghost" id="admin-next" type="button">下一页</button>
+        </div>
       </div>
     </div>
   </div>
@@ -292,7 +292,10 @@
           </select>
         </label>
       </div>
-      <div class="qr-preview"><img id="qr-img" alt="二维码预览" src="/static/logo/icon.svg" /></div>
+      <div class="qr-preview is-empty" id="qr-preview">
+        <img id="qr-img" alt="二维码预览" src="/static/logo/icon.svg" />
+        <p class="qr-blank" id="qr-blank">填个短码，预览就出在这里</p>
+      </div>
       <div class="qr-actions">
         <button class="btn primary" id="qr-refresh" type="button">刷新预览</button>
         <a class="btn ghost" id="qr-download" href="#" download>下载图片</a>

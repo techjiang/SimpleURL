@@ -198,7 +198,7 @@
       const days = $('#trash-days');
       if (days) days.textContent = data.retention_days;
       body.innerHTML = (data.items || []).map((l) => `<tr>
-        <td class="col-code" data-label="短码"><a class="code-cell" href="/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}</td>
+        <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell" title="${escapeHtml(l.title)}">${escapeHtml(l.title)}</span>` : ''}</td>
         <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
         <td class="clicks-cell col-clicks" data-label="点击">${l.clicks}</td>
         <td class="exp-cell col-exp" data-label="删除于">${fmtStamp(l.deleted_at)}</td>
@@ -309,19 +309,18 @@
         // 屏幕上就多出十来个贴底的圆角块，像一排没画完的柱子
         const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
         const label = showAt(i) ? d.date.slice(5) : '';
-        return `<div class="bar${d.count ? '' : ' is-zero'}" title="${d.date}：${d.count}">${fill}<b>${label}</b></div>`;
+        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? '' : ' no-label'}" title="${d.date}：${d.count}">${fill}<b>${label}</b></div>`;
       })
       .join('');
     el.innerHTML =
-      // 刻度是绝对定位的，`bottom:0` 那句 transform 会把字往下压半个身位，
-      // 于是最低那个「0」总有一半探出图表外、贴着卡片边缘——看着像被裁掉了。
-      // 两头的数字改成贴边对齐，中间的照旧中线对齐。
       `<div class="chart-axis" aria-hidden="true">${ticks
         .slice()
         .reverse()
-        .map((v, i, arr) => {
-          const edge = i === 0 ? ' is-top' : i === arr.length - 1 ? ' is-bottom' : '';
-          return `<span class="tick${edge}" style="bottom:${(v / top) * 100}%">${v}</span>`;
+        // 首尾两格各让出半个字高：否则一半落在刻度框外，顶上的被标题压掉、底下的悬空
+        .map((v) => {
+          const pct = (v / top) * 100;
+          const shift = v === top ? -6 : (v ? 0 : 6);
+          return `<span style="bottom:${pct}%;${shift ? `transform:translateY(${shift}px)` : ''}">${v}</span>`;
         })
         .join('')}</div><div class="chart-bars">${bars}</div>`;
     // 柱子撑出容器时默认停在最右端：窄屏上一打开该看到「今天」，不是 30 天前
@@ -395,7 +394,7 @@
         const on = picked.has(l.code);
         return `<tr>
         <td class="col-check" data-label="选择"><input type="checkbox" data-pick="${escapeHtml(l.code)}"${on ? ' checked' : ''} aria-label="选择 /${escapeHtml(l.code)}" /></td>
-        <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.title ? `<span class="title-cell">${escapeHtml(l.title)}</span>` : ''}${l.note ? `<span class="note-cell" title="${escapeHtml(l.note)}">${escapeHtml(l.note)}</span>` : ''}</td>
+        <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.note ? `<span class="note-cell" title="${escapeHtml(l.note)}">${escapeHtml(l.note)}</span>` : ''}</td>
         <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
         <td class="clicks-cell col-clicks" data-label="点击">${clicksCell(l)}</td>
         <td class="col-status" data-label="状态">${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
@@ -1073,12 +1072,20 @@
     const img = $('#qr-img');
     const note = $('#qr-note');
     if (!img) return;
+    const box = $('#qr-preview');
     const url = qrUrl();
     if (!url) {
+      // 没填短码就别摆一块白板：白底是给真二维码垫底的，空着的时候
+      // 一整块纯白比什么都不显示的「坏掉了」还像坏掉了
+      if (box) box.classList.add('is-empty');
+      img.removeAttribute('src');
+      const link = $('#qr-download');
+      if (link) { link.removeAttribute('href'); link.classList.add('disabled'); }
       note.textContent = '填短码后点「刷新预览」。SVG 放多大都不糊，适合印刷；带图标的版本把错误纠正开到 H，中间挖掉 20% 照样扫得出来。';
       note.className = 'qr-note';
       return;
     }
+    if (box) box.classList.remove('is-empty');
     img.src = url;
     const link = $('#qr-download');
     if (link) {

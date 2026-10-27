@@ -27,6 +27,8 @@ CSRF_HEADER = "x-csrf-token"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 # 不参与 CSRF 校验的路径前缀
 _CSRF_EXEMPT_PREFIXES = ("/static/", "/yourls-api")
+# 静态资源前缀（不发 cookie，响应头单独处理）
+_STATIC_PREFIXES = ("/static/",)
 
 _SECURITY_HEADERS = {
     # 禁 MIME 嗅探、点击劫持，referer 只回源站
@@ -110,6 +112,29 @@ def _is_csrf_exempt(path: str) -> bool:
     return path.startswith(_CSRF_EXEMPT_PREFIXES)
 
 
+# 静态资源缓存：文件名不带指纹，所以不能长缓存，给一天 + ETag 让浏览器自己协商。
+# 之前这些文件只有 ETag，没有 `Cache-Control`，浏览器每次都按「可能已过期」重新
+# 发一轮条件请求；一张页面十来个资源就是十来个往返，慢网下首屏白得肉眼可见。
+_STATIC_CACHE = "public, max-age=86400"
+
+
+def apply_static_cache(response, path: str) -> None:
+    """给 `/static/` 下的响应定缓存策略。
+
+    HTML 与 API 走 `no-store`（别处统一加），静态资源按扩展名分两档：
+    图标/字体这类几乎不动的给长缓存，css/js 给一天。
+    """
+    if not path.startswith(_STATIC_PREFIXES):
+        return
+    if not 200 <= int(getattr(response, "status_code", 0) or 0) < 300:
+        return
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    if ext in {"png", "ico", "svg", "woff", "woff2"}:
+        response.headers["Cache-Control"] = "public, max-age=604800"
+    else:
+        response.headers["Cache-Control"] = _STATIC_CACHE
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """统一补安全响应头，并给页面请求分配 CSP nonce 与 CSRF 令牌。"""
 
@@ -117,6 +142,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         token = _cookie_token(request) or issue_token()
         request.state.csrf_token = token
         request.state.csp_nonce = random_token(16)
+        # 静态资源不种 cookie：一张 app.css 加十几张图标，每个响应都往回塞一个
+        # `Set-Cookie`，等于把浏览器每次开页面能塞的 cookie 数量当垃圾桶用。
+        # 而且这些文件本来就不看 CSRF 令牌，种了也没人用。
+        plant_cookie = not request.url.path.startswith(_STATIC_PREFIXES)
 
         response = await call_next(request)
 
@@ -126,8 +155,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             csp = content_security_policy(request.state.csp_nonce)
         for key, value in security_headers(csp, request.url.path).items():
             response.headers[key] = value
+        # 缓存头只在这场中间件里定：后面还有一层 AccessTokenCookieMiddleware
+        # 会包住响应，放前面等于给外层中间件留了个「再覆盖一次」的机会
+        apply_static_cache(response, request.url.path)
 
-        if _cookie_token(request) != token:
+        if plant_cookie and _cookie_token(request) != token:
             response.set_cookie(
                 CSRF_COOKIE,
                 token,
@@ -221,3 +253,4 @@ def _reject(request: Request):
         {"ok": False, "message": "页面已过期，请刷新后重试"},
         status.HTTP_403_FORBIDDEN,
     )
+

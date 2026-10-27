@@ -22,6 +22,9 @@
 </head>
 <body>
   <div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+  {# 键盘用户按 Tab 第一下就能跳过整条导航。顶栏有五个链接，
+     每页翻一遍都得按五下才轮到正文，这不是小事。 #}
+  <a class="skip-link" href="#main">跳到正文</a>
   <header class="topbar">
     <a class="brand" href="/">
       <img src="/static/logo/icon.svg" alt="" width="28" height="28" />
@@ -36,7 +39,7 @@
       <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
     </nav>
   </header>
-  <main class="container">{% block content %}{% endblock %}</main>
+  <main class="container" id="main" tabindex="-1">{% block content %}{% endblock %}</main>
   <footer class="footer">
     <span>Built with ⚡ by <b>{{ site_name }}</b></span>
     <span class="dot">·</span>
