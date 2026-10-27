@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -37,6 +37,16 @@ class Link(Base):
 
     # 一次性领取码的哈希：开放模式下访客凭它回看自己建的那条链接
     claim_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # 这条链接自己的每日点击上限，0 表示不限制。
+    # 站点级的 click_daily_limit 是「单 IP 防刷」，这里是「活动预算」——
+    # 限量兑换、内测名额这类场景要的是「这条链接一共只放 N 个人进来」，
+    # 跟谁点的没关系。所以单独一套账，不与防刷配额混用。
+    daily_limit: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    # 当日已用次数与所属日期（UTC 日期）。日期一变即视为 0，
+    # 不靠定时任务清零：多实例下定时任务会重复跑，漏一次就永久卡死。
+    daily_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    daily_date: Mapped[Optional[dt.date]] = mapped_column(Date, nullable=True)
 
     # 删除时间：有值即进了回收站。软删除而不是直接 DELETE，
     # 因为「手滑删了一条发出去半年的短链」是不可逆事故——回收站留 30 天。
@@ -70,6 +80,21 @@ class Link(Base):
         return self.deleted_at is not None
 
     @property
+    def has_daily_limit(self) -> bool:
+        return int(self.daily_limit or 0) > 0
+
+    @property
+    def daily_used_today(self) -> int:
+        """今天的已用次数。日期不是今天就算 0——日切靠比对，不靠定时清零。"""
+        if self.daily_date is None or self.daily_date != utcnow().date():
+            return 0
+        return int(self.daily_used or 0)
+
+    @property
+    def daily_exhausted(self) -> bool:
+        return self.has_daily_limit and self.daily_used_today >= int(self.daily_limit)
+
+    @property
     def is_expired(self) -> bool:
         expires = ensure_aware(self.expires_at)
         return bool(expires and expires <= utcnow())
@@ -92,6 +117,9 @@ class Link(Base):
             "tags": tags,
             "clicks": self.clicks,
             "enabled": self.enabled,
+            "daily_limit": int(self.daily_limit or 0),
+            "daily_used": self.daily_used_today,
+            "daily_exhausted": self.daily_exhausted,
             "expires_at": iso(self.expires_at),
             "expired": self.is_expired,
             "title_source": self.title_source,

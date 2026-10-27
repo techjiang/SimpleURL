@@ -41,6 +41,8 @@ class LinkCreate(BaseModel):
     clue: Optional[str] = Field(None, max_length=120, description="找回线索，可选")
     # 同一地址重复收录时：true 直接复用已有短码，不再新建一条
     reuse: Optional[bool] = Field(None, description="目标已存在时复用，不新建")
+    # 这条链接自己的每日点击上限，0 / 留空表示不限制
+    daily_limit: Optional[int] = Field(None, ge=0, le=1_000_000, description="每日点击上限，0 不限制")
 
     @field_validator("target")
     @classmethod
@@ -91,6 +93,7 @@ class LinkUpdate(BaseModel):
     tags: Optional[list[str] | str] = None
     enabled: Optional[bool] = None
     expires_at: Optional[dt.datetime] = None
+    daily_limit: Optional[int] = Field(None, ge=0, le=1_000_000, description="每日点击上限，0 不限制")
 
     @field_validator("target")
     @classmethod
@@ -185,6 +188,10 @@ class LinkOut(BaseModel):
     # 还在内存缓冲里没落库的点击数。clicks 已经把这一份加进去了，
     # 单独给一个是让界面能说「其中 N 次待结算」，而不是让人怀疑数字跳变。
     pending_clicks: int = 0
+    # 这条链接自己的每日点击上限（0 = 不限）、今日已用与是否用尽
+    daily_limit: int = 0
+    daily_used: int = 0
+    daily_exhausted: bool = False
 
 
 class LinkListOut(BaseModel):

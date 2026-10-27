@@ -29,6 +29,7 @@ from app.services import (
     apply_title,
     fetch_title_for,
     list_tags,
+    public_board,
     bulk_update,
     code_available,
     create_link,
@@ -58,6 +59,12 @@ def _serialize(link: Link, request: Request, claim_token: str | None = None) -> 
     pending = click_buffer.pending_for(link.id)
     out.clicks = int(link.clicks or 0) + pending
     out.pending_clicks = pending
+    # 今日额度同理：缓冲里那几票已经记账但还没落库，不补上就会看到
+    # 「已经用满了、列表却说还剩一次」，接着下一次点击就撞上 403
+    if out.daily_limit:
+        buffered = click_buffer.pending_daily(link.id)
+        out.daily_used = min(out.daily_limit, out.daily_used + buffered)
+        out.daily_exhausted = out.daily_used >= out.daily_limit
     base = str(request.base_url).rstrip("/")
     out.short_url = base + "/" + link.code
     out.stats_url = f"{base}/s/{link.code}"
@@ -242,6 +249,22 @@ def api_list_links(
     return LinkListOut(
         total=total, page=page, page_size=page_size, items=[_serialize(item, request) for item in items]
     )
+
+
+@router.get("/board", summary="公开热门榜")
+def api_board(request: Request, db: Session = Depends(get_db)):
+    """首页热门榜。访客也读得到。
+
+    榜单只含短码、标题与点击数，不含目标地址——它本来就贴在首页上给所有人看，
+    放目标地址等于把链接库变成公开目录。开了访问令牌的话仍然先过门禁。
+    """
+    check_api_key(request, db)
+    if not _access_granted(request):
+        raise ServiceError("访问受限：请先输入访问令牌", 403)
+    size = int(effective(db, "board_size") or 0)
+    if size <= 0:
+        return {"items": []}
+    return {"items": public_board(db, limit=size)}
 
 
 @router.get("/tags", summary="标签列表")

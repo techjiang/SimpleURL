@@ -213,6 +213,57 @@ select option { background: var(--bg-soft); color: var(--text); }
 .result-self .status:empty { display: none; }
 
 /* ============ 链接库 ============ */
+/* ============ 首页热门榜 ============ */
+/* 只给短码、标题和点击数。访客没有「全部链接」的视野，
+   把目标地址放上去等于把一堆私链变成公开目录。 */
+.hotboard { margin-top: 26px; padding: 18px 20px; border-radius: var(--r-lg); background: var(--surface); border: 1px solid var(--line); animation: rise .3s ease both; }
+.hotboard[hidden] { display: none; }
+.hotboard-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
+.hotboard-head h2 { font-size: 1.05rem; white-space: nowrap; }
+.hotboard-head .hint { font-size: 0.78rem; }
+.hotboard-list { list-style: none; display: grid; gap: 2px; margin: 0; padding: 0; }
+.hotboard-item {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: 9px 8px; border-radius: var(--r-sm);
+  transition: background .15s ease;
+}
+.hotboard-item:hover { background: var(--surface-2, rgba(255,255,255,0.03)); }
+.hotboard-rank {
+  flex: none; width: 20px; text-align: center;
+  font-size: 0.76rem; font-variant-numeric: tabular-nums; color: var(--text-faint);
+}
+/* 前三名给个轻重差：不做金铜银，只让人一眼看出头部 */
+.hotboard-item:nth-child(-n+3) .hotboard-rank { color: var(--accent); font-weight: 600; }
+/* 标题列占满剩余宽度，但别把点击数和按钮挤到最右边——
+   榜单读的是「第几名、什么链接、多少次」，三者该挨得近一点 */
+.hotboard-main { flex: 1; min-width: 0; max-width: 520px; display: grid; gap: 2px; }
+.hotboard-clicks { margin-left: auto; }
+.hotboard-title {
+  font-size: 0.9rem; color: var(--text); text-decoration: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hotboard-title:hover { color: var(--accent); }
+.hotboard-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.75rem; color: var(--text-faint); }
+.hotboard-code { color: var(--text-dim); }
+.hotboard-clicks {
+  flex: none; font-size: 0.82rem; font-variant-numeric: tabular-nums;
+  color: var(--text-dim); min-width: 40px; text-align: right;
+}
+.hotboard-clicks::after { content: " 次"; font-size: 0.72rem; color: var(--text-faint); }
+/* 复制按钮常驻但压暗：藏到 hover 才出现的话，触屏设备上永远摸不到 */
+.hotboard-copy { opacity: .45; transition: opacity .15s ease; }
+.hotboard-item:hover .hotboard-copy, .hotboard-copy:focus-visible { opacity: 1; }
+
+/* 点击列后面的额度账：限量链接真正想知道的是「还剩几次」 */
+.quota-mark {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  font-size: 0.7rem; border-radius: 999px; white-space: nowrap;
+  color: var(--text-dim); background: rgba(255,255,255,0.05);
+  font-variant-numeric: tabular-nums;
+}
+.quota-mark.used { color: var(--warn); background: rgba(255,184,77,0.12); }
+.field-note { display: block; padding-top: 26px; font-size: 0.76rem; line-height: 1.5; }
+
 .board { margin-top: 30px; padding: 20px; }
 .board-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
 .board-head h2 { font-size: 1.2rem; white-space: nowrap; }
@@ -325,6 +376,9 @@ select option { background: var(--bg-soft); color: var(--text); }
 .badge.on { color: var(--accent); border-color: rgba(34,211,166,0.35); background: rgba(34,211,166,0.1); }
 .badge.off { color: var(--warn); border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.1); }
 .badge.exp { color: var(--danger); border-color: rgba(255,107,129,0.35); background: rgba(255,107,129,0.1); }
+/* 「额度用尽」既不是过期（明天会恢复）也不是停用（人没动手），
+   给它自己的琥珀色，看徽章就知道该去调上限还是去续期 */
+.badge.warn { color: var(--warn); border-color: rgba(255,184,77,0.4); background: rgba(255,184,77,0.12); }
 
 /* 空态：44px 的 logo 会把半屏撑成一片空白，收成行内小图标 */
 .empty {
@@ -861,7 +915,22 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 #audit-list li > b { flex: none; color: var(--text-dim); font-weight: 500; font-size: 0.8rem; white-space: nowrap; }
 #audit-list li .hint { overflow-wrap: anywhere; }
 
+/* 窄屏：热门榜的复制按钮常驻（没有 hover 这回事），
+   点击数收窄，标题允许两行——一行装不下就把标题切得只剩开头几个字 */
+/* 顶栏在 390px 放不下五个链接，最后一个会被挤出屏幕一半。
+   藏掉「仓库」而不是让它挂着半截——看着像布局坏了。 */
 @media (max-width: 640px) {
+  .nav-link.nav-hide-sm { display: none; }
+
+  .hotboard { padding: 14px; }
+  .hotboard-item { gap: 8px; padding: 8px 4px; align-items: flex-start; }
+  .hotboard-rank { padding-top: 2px; }
+  .hotboard-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .hotboard-copy { opacity: 1; }
+  .hotboard-clicks { min-width: 32px; font-size: 0.78rem; }
+  .quota-mark { margin-left: 0; }
+  .field-note { padding-top: 0; }
+}
   .bulk-bar { gap: 6px; }
   .bulk-bar > span { width: 100%; margin-right: 0; }
   #audit-list li { flex-direction: column; gap: 4px; }

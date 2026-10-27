@@ -105,6 +105,10 @@ _ADDED_COLUMNS: dict[str, dict[str, str]] = {
         "title_source": "VARCHAR(16)",
         # 回收站：有值即已删除（软删），30 天后自动清掉
         "deleted_at": "DATETIME",
+        # 这条链接自己的每日点击上限与当日用量（0 表示不限制）
+        "daily_limit": "INTEGER NOT NULL DEFAULT 0",
+        "daily_used": "INTEGER NOT NULL DEFAULT 0",
+        "daily_date": "DATE",
     },
     "click_events": {
         "device": "VARCHAR(16)",

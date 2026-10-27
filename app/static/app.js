@@ -328,6 +328,8 @@
         expires_at: localInputToIso($('#expires_at').value),
         clue: (($('#clue') || {}).value || '').trim() || undefined,
         reuse: Boolean(($('#reuse') || {}).checked) || undefined,
+        // 留空 = 不限制。不能发 0 之外的空串，后端会当成非法整数
+        daily_limit: intOrUndefined($('#daily_limit')),
       };
       if (!payload.target) { setStatus('请先粘贴一个链接', 'err'); return; }
       // 短码被占这件事，边打边查时就已经告诉过他了。真正提交到这里时
@@ -536,6 +538,71 @@
     return summary;
   }
 
+  /* 榜单是动态渲染的，用事件委托：不然每刷一次就要重挂一批监听 */
+  function bindHotboard() {
+    const list = $('#hotboard-list');
+    if (!list) return;
+    list.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-copy]');
+      if (!btn) return;
+      e.preventDefault();
+      try {
+        await writeClipboard(btn.dataset.copy);
+        const original = btn.textContent;
+        btn.textContent = '已复制 ✓';
+        setTimeout(() => { btn.textContent = original; }, 1600);
+      } catch (_) {
+        toast('复制失败，请手动选中', 'err');
+      }
+    });
+  }
+
+  /* 首页热门榜：只显示短码、标题和点击数，不含目标地址。
+     刻意不做成「链接库的预览」——访客没有看全站的视野，
+     他只需要一眼看到「这个站上大家在用什么」，落地页才不至于空荡荡。 */
+  async function loadBoard() {
+    const box = $('#hotboard');
+    const list = $('#hotboard-list');
+    if (!box || !list) return;
+    let items = [];
+    try {
+      const data = await withToken('/api/board');
+      items = (data && data.items) || [];
+    } catch (_) {
+      // 榜单是锦上添花，拉不到就整块不显示，别在首页顶一个红条
+      box.hidden = true;
+      return;
+    }
+    if (!items.length) { box.hidden = true; return; }
+    const origin = location.origin;
+    list.innerHTML = items.map((item, idx) => {
+      const url = `${origin}/${item.code}`;
+      const title = item.title ? escapeHtml(item.title) : `<span class="hint">/${escapeHtml(item.code)}</span>`;
+      const tags = (item.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
+      return `<li class="hotboard-item">
+        <span class="hotboard-rank">${idx + 1}</span>
+        <div class="hotboard-main">
+          <a class="hotboard-title" href="${escapeHtml(url)}" target="_blank" rel="noopener">${title}</a>
+          <div class="hotboard-meta">
+            <span class="mono hotboard-code">/${escapeHtml(item.code)}</span>
+            ${tags}
+          </div>
+        </div>
+        <span class="hotboard-clicks" title="累计点击 ${item.clicks} 次">${humanCount(item.clicks)}</span>
+        <button class="btn tiny ghost hotboard-copy" type="button" data-copy="${escapeHtml(url)}">复制</button>
+      </li>`;
+    }).join('');
+    box.hidden = false;
+  }
+
+  /* 点击数上万之后还写全数字，一格就撑不住了 */
+  function humanCount(n) {
+    const num = Number(n) || 0;
+    if (num < 1000) return String(num);
+    if (num < 1000000) return (num / 1000).toFixed(num < 10000 ? 1 : 0).replace(/\.0$/, '') + 'k';
+    return (num / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  }
+
   /* 写剪贴板：https 下用 Clipboard API，http 或旧浏览器退回 execCommand */
   async function writeClipboard(text) {
     try {
@@ -592,7 +659,21 @@
   /* ---------- 列表 ---------- */
   function badgeOf(link) {
     if (link.expired) return '<span class="badge exp">已过期</span>';
-    return link.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>';
+    if (!link.enabled) return '<span class="badge off">已停用</span>';
+    // 额度用尽的链接「启用着但进不去」，只显示「已启用」等于骗人
+    if (link.daily_exhausted) {
+      return `<span class="badge warn" title="今天已用满 ${link.daily_limit} 次，UTC 零点重置">额度用尽</span>`;
+    }
+    return '<span class="badge on">已启用</span>';
+  }
+
+  /* 点击那一列后面挂一句额度账：限量链接最想知道的不是「点了多少」，
+     而是「还剩几次」。不显示就等于要人去算。 */
+  function quotaMark(link) {
+    if (!link.daily_limit) return '';
+    const left = Math.max(0, link.daily_limit - (link.daily_used || 0));
+    const cls = left === 0 ? 'quota-mark used' : 'quota-mark';
+    return `<span class="${cls}" title="今日已用 ${link.daily_used} / ${link.daily_limit}">额度 ${link.daily_used}/${link.daily_limit}</span>`;
   }
 
   const DAY = 86400000;
@@ -637,7 +718,7 @@
     return `<tr>
       <td data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(link.code)}${tq}" title="查看统计">/${escapeHtml(link.code)}</a>${title}${note}</td>
       <td data-label="目标" class="target-cell" title="${escapeHtml(link.target)}">${escapeHtml(link.target)}</td>
-      <td data-label="点击" class="clicks-cell">${link.clicks}${link.pending_clicks ? `<span class="hint pending-mark" title="其中 ${link.pending_clicks} 次还在内存缓冲里，几秒内落库">待结算</span>` : ''}</td>
+      <td data-label="点击" class="clicks-cell">${link.clicks}${link.pending_clicks ? `<span class="hint pending-mark" title="其中 ${link.pending_clicks} 次还在内存缓冲里，几秒内落库">待结算</span>` : ''}${quotaMark(link)}</td>
       <td data-label="标签">${tags || '<span class="hint">—</span>'}</td>
       <td data-label="状态">${badgeOf(link)}</td>
       <td data-label="过期">${expiryCell(link)}</td>
@@ -888,6 +969,19 @@
     $('#edit-note').value = link.note || '';
     $('#edit-tags').value = (link.tags || []).join(', ');
     $('#edit-expires').value = link.expires_at ? toLocalInput(link.expires_at) : '';
+    const dailyInput = $('#edit-daily');
+    if (dailyInput) {
+      dailyInput.value = link.daily_limit ? String(link.daily_limit) : '';
+      // 访客凭回执改不了额度，把输入框锁上而不是让他改完发现没生效
+      dailyInput.disabled = Boolean(guest);
+      const st = $('#edit-daily-status');
+      if (st) {
+        st.textContent = guest
+          ? '额度由管理员设置'
+          : (link.daily_limit ? `今日已用 ${link.daily_used} 次` : '0 表示不限制');
+        st.className = 'field-status' + (guest ? ' hint' : '');
+      }
+    }
     $('#edit-status').textContent = '';
     $('#edit-status').className = 'status';
     document.querySelectorAll('#edit-modal [data-admin-only]').forEach((el) => { el.hidden = editingGuest; });
@@ -919,6 +1013,17 @@
       + `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
   }
 
+  /* 数字输入框 -> 非负整数 / undefined。
+     空串表示「不限制」，但空串直接发出去会被后端当非法整数，所以这里统一收口。 */
+  function intOrUndefined(el) {
+    if (!el) return undefined;
+    const raw = String(el.value || '').trim();
+    if (!raw) return undefined;
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0) return undefined;
+    return Math.floor(num);
+  }
+
   /* ISO 字符串 -> datetime-local 需要的本地 naive 串 */
   function toLocalInput(isoStr) {
     const d = new Date(isoStr);
@@ -948,6 +1053,9 @@
       if (!payload.target) { setEditStatus('目标链接不能为空', 'err'); return; }
       // 留空表示清除过期时间（显式 null），填了就是本地时间
       payload.expires_at = localInputToIso($('#edit-expires').value) || null;
+      // 每日上限只有管理员能改：访客的 self 接口不收这个字段
+      const daily = intOrUndefined($('#edit-daily'));
+      if (!editingGuest && daily !== undefined) payload.daily_limit = daily;
       const saveBtn = $('#edit-save');
       saveBtn.disabled = true;
       setEditStatus('保存中…');
@@ -1110,6 +1218,7 @@
   // 从后台（新标签页）切回来时刷新一次：那边删了/改了链接，这边还是旧的会误导人
   document.addEventListener('DOMContentLoaded', async () => {
     bindCreate(); bindCopy(); bindSelfTools(); bindBoard(); bindEdit(); bindGate(); bindRecover();
+    bindHotboard();
     bindCodeCheck(); bindDupCheck();
     await loadAccess();
     // 本站开了访问令牌而这位还没过门禁：先把门摆出来，别先拉一屏空数据再弹窗
@@ -1120,7 +1229,7 @@
     // 没有链接库的页面（工具页、统计页）根本不需要这几个请求，
     // 少发三个 GET，也少三条可能报错的地方
     if ($('#list')) {
-      loadSummary(); loadTags(); loadLinks();
+      loadSummary(); loadTags(); loadLinks(); loadBoard();
       scrollToHash();
     }
   });

@@ -19,6 +19,7 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "fetch_title": (True, "创建时自动获取目标页标题"),
     "require_api_key": (False, "要求 API 请求携带密钥"),
     "create_daily_limit": (200, "单 IP 每日创建上限，0 不限制"),
+    "board_size": (5, "首页公开热门榜条数（3~20，0 关闭）"),
     "access_mode": ("open", "访问模式：open 开放外部可使用，admin 仅管理员可使用"),
     "announcement": ("", "站点公告，显示在首页顶部；留空不显示"),
     "code_length": (4, "自动生成短码的长度（3~16）"),

@@ -16,7 +16,14 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.core.middleware import ACCESS_COOKIE
 from app.core.security import client_ip
-from app.services import ServiceError, get_link_by_code, get_stats, record_click, resolve_redirect
+from app.services import (
+    NO_CLICK_DAILY,
+    ServiceError,
+    get_link_by_code,
+    get_stats,
+    record_click,
+    resolve_redirect,
+)
 from app.web import branding, render, render_stats
 
 logger = logging.getLogger("simpleurl")
@@ -304,8 +311,22 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         )
 
     # 延迟计数：只入缓冲，不阻塞跳转
-    record_click(db, link, referrer=referrer, ua=ua, ip=ip, snapshot=snap)
+    result = record_click(db, link, referrer=referrer, ua=ua, ip=ip, snapshot=snap)
     db.commit()
+    if result.get("reason") == NO_CLICK_DAILY:
+        # 额度用尽：上面已经留了痕，这里只需要一张说得清的页面。
+        # 照旧 307 就等于「统计说不计、人却照样打开」，额度成了摆设。
+        return HTMLResponse(
+            render(
+                "gone.html",
+                request,
+                db,
+                code=code,
+                message="这条链接今天的额度已经用完了",
+                detail="明天（UTC 零点）会重新计算额度。你是创建者的话，回执里可以把上限调大。",
+            ),
+            status_code=429,
+        )
     logger.info("跳转 %s -> %s", code, target)
     return RedirectResponse(url=target, status_code=307)
 
@@ -326,6 +347,7 @@ ENDPOINTS: dict[str, list[dict]] = {
         {"method": "GET", "path": "/api/links/{code}/stats", "desc": "点击趋势、来源、设备、平台", "auth": "管理员 / 回执"},
         {"method": "GET", "path": "/api/qr/{code}", "desc": "二维码 PNG", "auth": "管理员 / 回执"},
         {"method": "GET", "path": "/api/stats/summary", "desc": "站点总览", "auth": ""},
+        {"method": "GET", "path": "/api/board", "desc": "公开热门榜（不含目标地址）", "auth": ""},
         {"method": "GET", "path": "/api/tags", "desc": "标签及出现次数", "auth": ""},
         {"method": "GET", "path": "/api/access", "desc": "当前访问模式与站点信息", "auth": ""},
     ],

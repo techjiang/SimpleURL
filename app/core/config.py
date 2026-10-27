@@ -53,6 +53,8 @@ class Settings:
 
         # 每个 IP 每天最多创建的链接数，防止滥用
         self.create_daily_limit: int = _as_int("CREATE_DAILY_LIMIT", 200)
+        # 首页公开热门榜条数（后台「设置 → 热门榜」可改）
+        self.board_size: int = max(0, min(20, _as_int("BOARD_SIZE", 5)))
 
         # 存储：默认 SQLite，可切换到 Postgres
         self.database_url: str = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{base_dir / 'simpleurl.db'}"

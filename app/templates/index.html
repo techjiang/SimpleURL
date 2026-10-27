@@ -54,6 +54,16 @@
             <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
           </div>
         </div>
+        <div class="row">
+          <div class="field">
+            <label for="daily_limit">每日上限 <span class="hint">可选 · 这条链接一天最多被打开几次</span></label>
+            <input id="daily_limit" name="daily_limit" type="number" min="0" max="1000000" step="1" placeholder="0 = 不限制" />
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+            <span class="hint field-note">限量兑换、内测名额用得上：跟「单 IP 防刷」是两套账。</span>
+          </div>
+        </div>
         <div class="field">
           <label for="note">备注 <span class="hint">可选 · 只有你自己和管理员看得到</span></label>
           <input id="note" name="note" type="text" placeholder="这条链接用在哪、跟谁对的、什么时候撤" maxlength="400" />
@@ -149,6 +159,14 @@
   </div>
 </section>
 
+<section class="hotboard" id="hotboard" hidden>
+  <div class="hotboard-head">
+    <h2>热门短链</h2>
+    <p class="hint">站内点击最多的几条 · 只展示短码与点击数</p>
+  </div>
+  <ol class="hotboard-list" id="hotboard-list"></ol>
+</section>
+
 <section class="board" id="list">
   <div class="board-head">
     <h2>链接库</h2>
@@ -236,6 +254,11 @@
     <div class="field">
       <label for="edit-expires">过期时间 <span class="hint">留空表示永不过期</span></label>
       <input id="edit-expires" name="expires_at" type="datetime-local" />
+    </div>
+    <div class="field">
+      <label for="edit-daily">每日上限 <span class="hint">0 表示不限制</span></label>
+      <input id="edit-daily" name="daily_limit" type="number" min="0" max="1000000" step="1" placeholder="0" />
+      <span class="field-status" id="edit-daily-status" role="status" aria-live="polite"></span>
     </div>
     <div class="modal-actions">
       <button type="submit" class="btn primary" id="edit-save">保存</button>

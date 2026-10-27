@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 import threading
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -52,6 +52,8 @@ class ClickBuffer:
         self._lock = threading.Lock()
         self._queue: list[_Pending] = []
         self._counts: dict[int, int] = {}
+        # 还没落库的「今日额度占用」，与 _counts 同生共死
+        self._daily: dict[int, int] = {}
         self._dropped = 0
         self._timer: threading.Timer | None = None
         self._delay_timer: threading.Timer | None = None
@@ -70,12 +72,17 @@ class ClickBuffer:
         platform: str | None = None,
         reason: str | None = None,
         schedule: bool = True,
+        daily_limit: int = 0,
     ) -> bool:
         """入队一条点击；队列满时丢弃并返回 False。
 
         `schedule=False` 不排「稍后落库」：只有真正走完跳转的请求才需要
         立刻让数字可见。被拦下的访问本来就不进点击数，为它们多排一次
         落库，等于给刷量的人开了一条「每来一次就唤醒一次写库」的路。
+
+        `daily_limit > 0` 时这一票同时占该链接今天的额度。额度必须和点击数
+        在同一把锁里扣、并跟点击在同一批 flush 里落库：分成两处更新的话，
+        同一秒进来的并发请求会集体看到「今天还剩 1 次」，集体放行，超额几乎必现。
         """
         from app.core.security import parse_user_agent
 
@@ -101,11 +108,41 @@ class ClickBuffer:
             # 被 UA 屏蔽 / 平台拦截 / 超出配额的事件只留痕、不算点击
             if not blocked and not reason:
                 self._counts[link_id] = self._counts.get(link_id, 0) + 1
+                if daily_limit > 0:
+                    self._daily[link_id] = self._daily.get(link_id, 0) + 1
         if schedule:
             self._schedule_delayed()
         return True
 
+    def _add_daily_usage(self, session: Session, daily: dict[int, int]) -> None:
+        """把这一批占用的今日额度累加进 links.daily_used。
+
+        跨日了就直接从 0 起算：`daily_date` 不是今天就等于昨天那本账已经翻篇，
+        没必要再开个定时任务去清零——那种任务在多实例下会重复跑，漏一次就永久卡住。
+        """
+        if not daily:
+            return
+        today = utcnow().date()
+        table = Link.__table__
+        for link_id, delta in daily.items():
+            session.execute(
+                table.update()
+                .where(table.c.id == link_id)
+                .values(
+                    daily_used=case(
+                        (table.c.daily_date == today, func.coalesce(table.c.daily_used, 0) + delta),
+                        else_=delta,
+                    ),
+                    daily_date=today,
+                )
+            )
+
     # ---------- 观测 ----------
+    def pending_daily(self, link_id: int) -> int:
+        """某条链接还没落库的今日额度占用。"""
+        with self._lock:
+            return self._daily.get(link_id, 0)
+
     def pending(self) -> int:
         with self._lock:
             return len(self._queue)
@@ -132,6 +169,7 @@ class ClickBuffer:
             self._queue = [item for item in self._queue if item.link_id != link_id]
             dropped = before - len(self._queue)
             self._counts.pop(link_id, None)
+            self._daily.pop(link_id, None)
         return dropped
 
     # ---------- 落库 ----------
@@ -152,6 +190,8 @@ class ClickBuffer:
             self._queue = []
             counts = self._counts
             self._counts = {}
+            daily = self._daily
+            self._daily = {}
         if not batch:
             return 0
 
@@ -180,6 +220,7 @@ class ClickBuffer:
                     .where(Link.id == link_id)
                     .values(clicks=func.coalesce(Link.clicks, 0) + delta)
                 )
+            self._add_daily_usage(session, daily)
             session.commit()
             if self._dropped:
                 logger.warning("延迟计数期间因队列超限丢弃 %d 条点击", self._dropped)
@@ -194,6 +235,8 @@ class ClickBuffer:
                 self._queue = batch + self._queue
                 for link_id, delta in counts.items():
                     self._counts[link_id] = self._counts.get(link_id, 0) + delta
+                for link_id, delta in daily.items():
+                    self._daily[link_id] = self._daily.get(link_id, 0) + delta
             logger.exception("延迟计数 flush 失败，已回退队列")
             raise
         finally:
@@ -270,6 +313,7 @@ class ClickBuffer:
         with self._lock:
             self._queue = []
             self._counts = {}
+            self._daily = {}
             self._dropped = 0
 
 

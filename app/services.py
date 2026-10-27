@@ -41,12 +41,14 @@ NO_CLICK_UA = "ua"  # UA 黑名单命中
 NO_CLICK_SOCIAL = "social"  # 社交平台策略拦下
 NO_CLICK_SOCIAL_SILENT = "social_silent"  # 放行不计数
 NO_CLICK_QUOTA = "quota"  # 单 IP 限速或每日点击配额用尽
+NO_CLICK_DAILY = "daily"  # 这条链接自己的当日额度用尽
 
 NO_CLICK_LABELS = {
     NO_CLICK_UA: ("UA 屏蔽", "命中自定义 UA 黑名单，未计入点击数"),
     NO_CLICK_SOCIAL: ("平台拦截", "被社交平台防洪策略拦下，返回了提示页"),
     NO_CLICK_SOCIAL_SILENT: ("放行不计数", "页面正常打开了，但按策略不计入点击数"),
     NO_CLICK_QUOTA: ("超出配额", "单 IP 访问过于频繁或今日点击配额用完，未计入点击数"),
+    NO_CLICK_DAILY: ("额度用尽", "这条链接今天的额度用完了，访问被拦下，未计入点击数"),
 }
 
 EXPORT_HEADER = ["短码", "短链接", "目标地址", "标题", "备注", "标签", "点击", "状态", "过期时间", "创建时间"]
@@ -120,6 +122,7 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         note=payload.note,
         tags=json.dumps(payload.tags, ensure_ascii=False) if payload.tags else None,
         expires_at=expires_at,
+        daily_limit=int(payload.daily_limit or 0),
     )
     db.add(link)
     try:
@@ -294,6 +297,39 @@ def list_tags(db: Session, limit: int = 60) -> list[dict]:
                 counter[name] = counter.get(name, 0) + 1
     ordered = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0].lower()))
     return [{"tag": name, "count": count} for name, count in ordered[:limit]]
+
+
+def public_board(db: Session, limit: int = 5) -> list[dict]:
+    """公开热门榜：全站点击最多、还能用的那几条。
+
+    刻意只给短码、标题和点击数——**不给目标地址**。访客没有「全部链接」的
+    视野，把目标地址放上去等于把一堆私链变成公开目录；但让他看一眼
+    「这个站上大家用得最多的是什么」，落地页才不至于空荡荡的。
+
+    回收站里的、停用的、过期的都不进榜：榜单应该只装还能打开的东西。
+    """
+    limit = max(1, min(20, int(limit or 5)))
+    stmt = (
+        select(Link)
+        .where(
+            Link.deleted_at.is_(None),
+            Link.enabled.is_(True),
+            Link.clicks > 0,
+            or_(Link.expires_at.is_(None), Link.expires_at > utcnow()),
+        )
+        .order_by(Link.clicks.desc(), Link.created_at.desc())
+        .limit(limit)
+    )
+    rows = list(db.execute(stmt).scalars().all())
+    return [
+        {
+            "code": link.code,
+            "title": link.title or "",
+            "clicks": int(link.clicks or 0) + click_buffer.pending_for(link.id),
+            "tags": link.to_dict()["tags"][:3],
+        }
+        for link in rows
+    ]
 
 
 def all_links_for_export(
@@ -520,7 +556,7 @@ def bulk_update(
 
 
 def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
-    """返回 (链接, 目标地址)。已停用/过期/无效都抛错。"""
+    """返回 (链接, 目标地址)。已停用/过期/额度用尽/无效都抛错。"""
     link = get_link_by_code(db, code)
     if not link.enabled:
         raise ServiceError("该短链接已停用", 410)
@@ -529,6 +565,23 @@ def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
     if not is_public_url(link.target):
         raise ServiceError("目标地址已失效", 410)
     return link, link.target
+
+
+def daily_left(link: Link) -> int | None:
+    """这条链接今天还剩多少额度；不限时返回 None。
+
+    缓冲里还没落库的那部分也要算进来：否则一秒内连点两次，两次都从库里
+    读到「还剩 1 次」，双双放行——额度就成了摆设。
+    """
+    if not link.has_daily_limit:
+        return None
+    used = link.daily_used_today + click_buffer.pending_daily(link.id)
+    return max(0, int(link.daily_limit) - used)
+
+
+def daily_exhausted(link: Link) -> bool:
+    left = daily_left(link)
+    return left is not None and left <= 0
 
 
 def record_click(
@@ -578,7 +631,15 @@ def record_click(
         click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_SOCIAL_SILENT, schedule=False)
         return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_SOCIAL_SILENT}
 
-    click_buffer.add(db, link.id, referrer, ua, ip, platform=platform)
+    if daily_exhausted(link):
+        # 链接自己的额度用完了：留痕（不计数），页面那边据此给「额度用尽」页。
+        # 判定和入队之间没有锁，两个人抢最后一格时可能都放过——代价是多一次点击，
+        # 而为此给每次跳转加一把全局锁，热门短码的吞吐会掉一个量级。账记在缓冲里，
+        # 差额几十毫秒内就会被下一次判定看到。
+        click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, reason=NO_CLICK_DAILY, schedule=False)
+        return {"recorded": False, "blocked": True, "platform": platform, "reason": NO_CLICK_DAILY, "block_reason": NO_CLICK_DAILY}
+
+    click_buffer.add(db, link.id, referrer, ua, ip, platform=platform, daily_limit=int(link.daily_limit or 0))
     return {"recorded": True, "blocked": False, "platform": platform}
 
 

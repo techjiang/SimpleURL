@@ -442,7 +442,7 @@
         <td class="col-code" data-label="短码"><a class="code-cell" href="/s/${encodeURIComponent(l.code)}" target="_blank" rel="noopener">/${escapeHtml(l.code)}</a>${l.note ? `<span class="note-cell" title="${escapeHtml(l.note)}">${escapeHtml(l.note)}</span>` : ''}</td>
         <td class="target-cell col-target" data-label="目标" title="${escapeHtml(l.target)}">${escapeHtml(l.target)}</td>
         <td class="clicks-cell col-clicks" data-label="点击">${clicksCell(l)}</td>
-        <td class="col-status" data-label="状态">${l.expired ? '<span class="badge exp">已过期</span>' : (l.enabled ? '<span class="badge on">已启用</span>' : '<span class="badge off">已停用</span>')}</td>
+        <td class="col-status" data-label="状态">${statusCell(l)}</td>
         <td class="exp-cell col-exp" data-label="过期">${expiryText(l)}</td>
         <td class="title-src col-src" data-label="标题">${titleSourceCell(l)}</td>
         <td class="col-ops" data-label="操作"><div class="ops">
@@ -469,8 +469,28 @@
      延迟计数有 5 秒结算周期，刚生成的链接点两下再回来，以前这里还是 0，
      看着像统计坏了。现在把还在内存里的那份标出来，数字跟着走、口径不撒谎。 */
   function clicksCell(l) {
-    if (!l.pending_clicks) return `${l.clicks}`;
-    return `${l.clicks}<span class="hint pending-mark" title="其中 ${l.pending_clicks} 次还在内存缓冲里，5 秒内落库">待结算 ${l.pending_clicks}</span>`;
+    const pending = l.pending_clicks
+      ? `<span class="hint pending-mark" title="其中 ${l.pending_clicks} 次还在内存缓冲里，5 秒内落库">待结算 ${l.pending_clicks}</span>`
+      : '';
+    return `${l.clicks}${pending}${quotaMark(l)}`;
+  }
+
+  /* 额度账：限量链接真正想知道的不是「点了多少」，而是「还剩几次」 */
+  function quotaMark(l) {
+    if (!l.daily_limit) return '';
+    const used = Math.min(l.daily_limit, l.daily_used || 0);
+    const cls = used >= l.daily_limit ? 'quota-mark used' : 'quota-mark';
+    return `<span class="${cls}" title="今日已用 ${used} / ${l.daily_limit}，UTC 零点重置">额度 ${used}/${l.daily_limit}</span>`;
+  }
+
+  /* 「启用着但进不去」只显示「已启用」等于骗人 */
+  function statusCell(l) {
+    if (l.expired) return '<span class="badge exp">已过期</span>';
+    if (!l.enabled) return '<span class="badge off">已停用</span>';
+    if (l.daily_exhausted) {
+      return `<span class="badge warn" title="今天已用满 ${l.daily_limit} 次，UTC 零点重置">额度用尽</span>`;
+    }
+    return '<span class="badge on">已启用</span>';
   }
 
   /* 过期那一列：后台原来完全看不到到期时间，只能靠「状态」猜。
@@ -527,6 +547,15 @@
     $('#admin-edit-tags').value = (link.tags || []).join(', ');
     $('#admin-edit-note').value = link.note || '';
     $('#admin-edit-expires').value = link.expires_at ? toLocalInput(link.expires_at) : '';
+    const daily = $('#admin-edit-daily');
+    if (daily) daily.value = link.daily_limit ? String(link.daily_limit) : '';
+    const dailySt = $('#admin-edit-daily-status');
+    if (dailySt) {
+      dailySt.textContent = link.daily_limit
+        ? `今日已用 ${Math.min(link.daily_limit, link.daily_used || 0)} 次`
+        : '0 表示不限制';
+      dailySt.className = 'field-status hint';
+    }
     setStatus('#admin-edit-status', '');
     modal.hidden = false;
     document.body.style.overflow = 'hidden';
@@ -568,6 +597,8 @@
             // 留空表示清除过期时间，不能省略这个字段，否则永远改不掉。
             // datetime-local 是本地时间，补上偏移再发，别让后端当成 UTC
             expires_at: localInputToIso(exp) || null,
+            // 每日上限：空输入按 0（不限制）处理，别发空串让后端 422
+            daily_limit: Math.max(0, parseInt(($('#admin-edit-daily') || {}).value, 10) || 0),
           }),
         });
         toast(`/${editingCode} 已更新`);

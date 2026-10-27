@@ -36,7 +36,9 @@
       <a href="/#list" class="nav-link">链接库</a>
       <a href="/tools" class="nav-link">接口</a>
       <a href="/admin" class="nav-link">后台</a>
-      <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
+      {# 窄屏上藏掉：五个链接在 390px 里必然把最后一个挤出屏幕，
+         而「仓库」是这五个里唯一不影响站内使用的 #}
+      <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link nav-hide-sm">仓库</a>
     </nav>
   </header>
   <main class="container" id="main" tabindex="-1">{% block content %}{% endblock %}</main>
