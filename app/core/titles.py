@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import html as html_lib
 import logging
 import re
 import threading
@@ -39,6 +40,11 @@ _CONNECT_TIMEOUT = 3.0
 
 def _clean(raw: str) -> str:
     text = _TAG_RE.sub("", raw)
+    # 实体必须解开：`<title>A &amp; B &#8212; C</title>` 抓回来会是
+    # `A &amp; B &#8212; C`，Jinja 转义一交就原样显示成 `&amp;`，
+    # 列表里一屏「Python 3.15.2 documentation」中间挂着 `&#8212;`。
+    # 解两次：网页里 `&amp;#8212;` 这种双重转义也见过。
+    text = html_lib.unescape(html_lib.unescape(text))
     text = _WS_RE.sub(" ", text).strip()
     return text[:MAX_TITLE]
 

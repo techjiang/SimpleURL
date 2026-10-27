@@ -47,7 +47,14 @@
 
   async function api(path, options) {
     const res = await fetch(path, withCsrf(options));
-    if (res.status === 401) { showLogin(); throw new Error('请先登录'); }
+    // 登录接口自己回 401 是「密码不对」，不是「没登录」：
+    // 这时候把门再放一次、再叫一遍「请先登录」，会把真正的错误盖掉
+    if (res.status === 401 && !path.startsWith('/api/admin/login')) {
+      sawAuthRequired = true;
+      showLogin();
+      showLoginHint();
+      throw new Error('请先登录');
+    }
     let data = {};
     try { data = await res.json(); } catch (_) {}
     if (!res.ok) throw new Error(data.message || `请求失败（${res.status}）`);
@@ -60,6 +67,18 @@
   /* ---------- 登录 ---------- */
   function showLogin() { const g = $('#admin-login'); if (g) g.hidden = false; }
   function hideLogin() { const g = $('#admin-login'); if (g) g.hidden = true; }
+
+  /* 401 之后门里那句话：区分「会话到期」与「从没登录」，
+     否则每次被拦都只看到「请先登录」，像在怪用户没登录过 */
+  let sawAuthRequired = false;
+  function showLoginHint() {
+    const el = $('#login-status');
+    if (!el) return;
+    if (!sawAuthRequired) return;
+    el.textContent = '会话已过期，请重新登录';
+    el.className = 'status err';
+    sawAuthRequired = false;
+  }
 
   function bindLogin() {
     const form = $('#admin-login-form');
@@ -266,6 +285,11 @@
   // 柱子放得下就逐根标日期，放不下按宽度抽稀；纵轴给好看的整数刻度。
   // 改动时两边要一起改——后台这张图和统计页那张必须一个口径，
   // 否则同一个数字在两个页面上高度不一样。
+  //
+  // 横轴的「放得下」按柱子自己的宽度算，不能拿滚动容器的 clientWidth 算：
+  // 容器有横向滚动时 clientWidth 是整条可视宽度，柱子却按 min-width 撑开，
+  // 于是 14 根柱子 1440px 下判定成「宽裕」，标了 14 个日期挤成一团，
+  // 后面几根被挤出视口，看着像图没画完。
   function axisTicks(max, count = 4) {
     const value = Math.max(1, Math.ceil(max));
     const nice = [1, 2, 5, 10];
@@ -285,6 +309,29 @@
     return ticks;
   }
 
+  // 柱子宽度够就每根都标日期，不够就抽稀；窄到抽稀也放不下时只留首尾两天。
+  // 柱宽取「柱子容器的可视宽 / 柱子数」，与 app.js 里那份同一口径。
+  // 返回值是 Map<下标, 「MM-DD」>：渲染时直接取标签文本，别在调用处再切一次字符串
+  function chartLabels(el, daily) {
+    const out = new Map();
+    const last = daily.length - 1;
+    if (last < 0) return out;
+    const bars = el && el.querySelector('.chart-bars');
+    const width = (bars && bars.clientWidth) || (el && el.parentElement && el.parentElement.clientWidth) || 0;
+    const per = 21;
+    const room = Math.max(1, Math.floor(width / (per * 2.2)));
+    const mark = (i) => out.set(i, String(daily[i].date).slice(5));
+    if (width && width / Math.max(1, daily.length) >= per * 2.2) {
+      daily.forEach((_, i) => mark(i));
+      return out;
+    }
+    const step = Math.ceil(daily.length / Math.max(2, room));
+    daily.forEach((_, i) => {
+      if (i === 0 || i === last || i % step === 0) mark(i);
+    });
+    return out;
+  }
+
   function renderChart(el, daily) {
     if (!el) return;
     const peak = Math.max(0, ...daily.map((d) => d.count));
@@ -294,12 +341,8 @@
       return;
     }
     const { top, ticks } = axisTicks(peak);
-    const width = el.parentElement.clientWidth;
-    const per = 21;
+    const labels = chartLabels(el, daily);
     const last = daily.length - 1;
-    const dense = width / Math.max(1, daily.length) >= per * 2.2;
-    const step = Math.ceil(daily.length / Math.max(2, Math.floor(width / (per * 2.2))));
-    const showAt = (i) => dense || i === 0 || i === last || i % step === 0;
     const bars = daily
       .map((d, i) => {
         // 有数据的柱子留个下限高度，1 次和 0 次不该长得一样；
@@ -308,8 +351,8 @@
         // 零点击不给元素：内联 height 会盖掉 .bar i.zero 的 display:none，
         // 屏幕上就多出十来个贴底的圆角块，像一排没画完的柱子
         const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
-        const label = showAt(i) ? d.date.slice(5) : '';
-        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? '' : ' no-label'}" title="${d.date}：${d.count}">${fill}<b>${label}</b></div>`;
+        const label = labels.has(i) ? labels.get(i) : '';
+        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? '' : ' no-label'}" title="${d.date}：${d.count} 次点击">${fill}${label ? `<b>${label}</b>` : ''}</div>`;
       })
       .join('');
     el.innerHTML =
@@ -319,7 +362,9 @@
         // 首尾两格各让出半个字高：否则一半落在刻度框外，顶上的被标题压掉、底下的悬空
         .map((v) => {
           const pct = (v / top) * 100;
-          const shift = v === top ? -6 : (v ? 0 : 6);
+          // 零刻度用 >= 1 判断：零点击的日子不画柱子，图上那天什么都没有，
+          // 可刻度数字还留着，`v ? ... : ...` 会把它当中间那格，贴底露出半截
+          const shift = v === top ? -6 : (v >= 1 ? 0 : 6);
           return `<span style="bottom:${pct}%;${shift ? `transform:translateY(${shift}px)` : ''}">${v}</span>`;
         })
         .join('')}</div><div class="chart-bars">${bars}</div>`;
@@ -1229,7 +1274,13 @@
     try {
       const s = await api('/api/admin/session');
       if (s.admin) { hideLogin(); boot(); }
-      else if (s.enabled) { showLogin(); }
+      else if (s.enabled) {
+        // 已登录过但会话到期：登录框里直接说是哪件事没成。
+        // 以前这里只把门放下来，页面正中还挂着上一次的「请先登录」——
+        // 哪怕是刚点了「保存」被拦的，也看不出是会话到期，只当是又坏了
+        showLogin();
+        showLoginHint();
+      }
       else {
         // 没配 ADMIN_TOKEN：后台不可用，给个提示
         const g = $('#admin-login');

@@ -350,7 +350,7 @@
           setStatus(`短码 ${link._code_swapped} 已被占用，已改用 /${link.code}`, 'ok');
           toast(`短码已被占用，已改用 /${link.code}`);
         } else {
-          setStatus(link.reused ? '已复用现成的短码' : '创建成功', 'ok');
+          setStatus(link.reused ? `已复用现成的短码 /${link.code}` : '创建成功', 'ok');
         }
         form.reset();
         setCodeStatus('');
@@ -421,7 +421,6 @@
     const hasClaim = fresh && Boolean(link.claim_token);
     currentClaim = hasClaim ? { code: link.code, token: link.claim_token } : { code: link.code, token: '' };
     showingFresh = hasClaim;
-    box.hidden = !hasClaim;
     box.hidden = !hasClaim;
     if (!hasClaim) return;
     $('#result-target').textContent = link.target || '—';
@@ -605,8 +604,11 @@
     if (Number.isNaN(end)) return '<span class="hint">—</span>';
     const left = end - Date.now();
     if (left <= 0) return '<span class="exp-soon">已过期</span>';
+    // 「还剩几天」按向上取整算，但最后一天要说清是几小时：
+    // 一个两小时后到期的链接写「不到 1 天」，和明天此刻到期看起来一样
     const days = Math.ceil(left / DAY);
-    const text = days <= 1 ? '不到 1 天' : `还剩 ${days} 天`;
+    const hours = Math.floor(left / 3600000);
+    const text = days > 1 ? `还剩 ${days} 天` : (hours >= 1 ? `还剩 ${hours} 小时` : '不到 1 小时');
     const cls = days <= 7 ? 'exp-soon' : 'hint';
     // 「还剩 120 天」说不清什么时候到期，把日期一并给出来
     return `<span class="${cls}">${text}</span><span class="hint exp-date">${escapeHtml(fmtDate(link.expires_at))}</span>`;
@@ -1045,8 +1047,10 @@
         .reverse()
         .map((v) => {
           const pct = (v / top) * 100;
-          // 顶部那格往上让、底部那格往下让，其余照旧居中
-          const shift = v === top ? -axisPad : (v ? 0 : axisPad);
+          // 顶部那格往上让、底部那格往下让，其余照旧居中。
+          // 用 >= 1 而不是真值判断：零刻度是 0，`v ? ... : ...` 会把它
+          // 也当成「中间的格子」，贴底那半截数字就探到框外去了。
+          const shift = v === top ? -axisPad : (v >= 1 ? 0 : axisPad);
           return `<span style="bottom:${pct}%;${shift ? `transform:translateY(${shift}px)` : ''}">${v}</span>`;
         })
         .join('')}</div><div class="chart-bars">${bars}</div>`;

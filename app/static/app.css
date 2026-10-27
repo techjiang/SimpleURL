@@ -378,7 +378,11 @@ select option { background: var(--bg-soft); color: var(--text); }
 /* 柱状区要能撑开：放在横向滚动容器里、柱子又有最小宽度时，flex 会把 30 根柱子
    压回可视宽度，手机上这段图就是一片空白。fit-content 吃的是「柱子最小宽度之和」，
    图表外壳只负责留出左侧刻度位。 */
-.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; gap: 3px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
+.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
+/* 柱子有上限宽度：14 天在 1440px 下每根会被拉到四十多像素，看着像一排色块
+   不像柱状图；26px 封顶后柱子整组贴右，和图例上的「今天」对齐——
+   左边那片留白才对得上「前几天没数据」，而不是像图没画完 */
+.chart-bars .bar { max-width: 26px; }
 /* 顶部要留出 8px 给刻度上限那个数字：它挂在柱区上方，柱子区又在横向滚动容器里，
    overflow-y:hidden 会把它当溢出内容裁掉一半 */
 .chart-scroll { overflow-x: auto; overflow-y: hidden; padding: 8px 0 4px; scrollbar-width: thin; }
@@ -451,8 +455,15 @@ select option { background: var(--bg-soft); color: var(--text); }
   .topbar { gap: 10px; padding: 12px 0; }
   .brand { flex: none; }
   .brand strong { font-size: 1rem; }
-  /* min-width: 0 是横滑的前提：flex 子项默认不肯缩到内容宽度以下 */
-  .topnav { flex: 1 1 auto; min-width: 0; justify-content: flex-end; overflow-x: auto; scrollbar-width: none; }
+  /* 导航不许盖到品牌上：品牌是「我在哪」，导航是「能去哪」，挤不下的应该是后者。
+     390px 实测原来「首页」被顶到 SimpleURL 的字母上，看着像排版崩了。
+     flex-basis 给 4px（不是 auto）：auto 时浏览器按内容宽度分空间，导航会
+     一路顶到品牌边缘；左边那条渐隐让滑出去的字不会硬切在品牌旁边。 */
+  .topnav {
+    flex: 1 1 4px; min-width: 0; justify-content: flex-start; overflow-x: auto; scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 100%);
+  }
   .topnav::-webkit-scrollbar { display: none; }
   .nav-link { flex: none; padding: 6px 9px; font-size: 0.82rem; }
   .container { padding: 18px 0 60px; }
@@ -645,8 +656,12 @@ select option { background: var(--bg-soft); color: var(--text); }
 .admin-tab.active { color: #fff; background: linear-gradient(120deg, var(--brand), var(--brand-2)); box-shadow: 0 6px 18px -8px rgba(79,140,255,0.7); }
 .admin-panel { display: none; }
 .admin-panel.active { display: block; }
-/* 两栏：各卡按内容高度排，别拉齐——拉齐会在短的那栏底部留一大片空白 */
-.admin-cols { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; align-items: start; }
+/* 两栏等高：左边「点击 Top」只有 8 行、右边「最近访问」有 12 行，
+   按内容排会让左卡比右卡矮掉四行，两张卡底边错开一截，像排版没画完。
+   等高之后右边行数多就自己缩行距，两张卡的落脚线对齐。 */
+.admin-cols { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; align-items: stretch; }
+.admin-cols > .chart-card { display: flex; flex-direction: column; }
+.admin-cols .ref-list { flex: 1 1 auto; align-content: start; }
 .admin-cols .ref-list li span:first-child { font-family: var(--mono); font-size: 0.82rem; }
 .admin-cols .ref-list li { align-items: center; gap: 10px; }
 textarea { width: 100%; padding: 10px 12px; font-family: var(--mono); font-size: 0.84rem; color: var(--text); background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: var(--radius-sm); resize: vertical; line-height: 1.6; }
