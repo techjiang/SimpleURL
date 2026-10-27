@@ -6,7 +6,7 @@ import datetime as dt
 import json
 import logging
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -106,6 +106,7 @@ def create_link(db: Session, payload: LinkCreate, ip: str | None = None) -> Link
         tags=json.dumps(payload.tags, ensure_ascii=False) if payload.tags else None,
         expires_at=expires_at,
         max_clicks=payload.max_clicks,
+        daily_clicks_limit=payload.daily_clicks_limit,
         pass_hash=hash_pass(payload.password),
     )
     db.add(link)
@@ -230,7 +231,14 @@ def list_links(
 def update_link(db: Session, code: str, payload: LinkUpdate) -> Link:
     link = get_link_by_code(db, code)
     data = payload.model_dump(
-        exclude_unset=True, exclude={"set_password", "clear_password", "clear_expiry", "clear_max_clicks"}
+        exclude_unset=True,
+        exclude={
+            "set_password",
+            "clear_password",
+            "clear_expiry",
+            "clear_max_clicks",
+            "clear_daily_limit",
+        },
     )
 
     if "target" in data and data["target"] is not None:
@@ -252,6 +260,11 @@ def update_link(db: Session, code: str, payload: LinkUpdate) -> Link:
         link.pass_hash = None
     if payload.clear_max_clicks:
         link.max_clicks = None
+    if payload.clear_daily_limit:
+        link.daily_clicks_limit = None
+        # 额度跟着上限一起清，否则下次再设个更高的值会「继承」上一轮的已用数
+        link.daily_used = 0
+        link.daily_date = None
 
     db.flush()
     logger.info("更新短链 %s", link.code)
@@ -299,6 +312,8 @@ def resolve_redirect(db: Session, code: str) -> tuple[Link, str]:
         raise LinkUnavailable("该短链接已过期", "expired")
     if link.exhausted:
         raise LinkUnavailable("该短链接的访问次数已用完", "exhausted")
+    if link.daily_exhausted:
+        raise LinkUnavailable("该短链接今日额度已用完，明天再来", "daily")
     if not is_public_url(link.target):
         raise LinkUnavailable("目标地址已失效", "invalid")
     try:
@@ -314,8 +329,23 @@ def record_click(db: Session, link: Link, referrer: str | None, ua: str | None, 
 
     这里只把内存里的计数 +1，让同请求内的页面能立刻看到「刚被点过」，
     真正的持久化交给批量事务。
+
+    每日额度走同一条队列，不单独查库扣数：额度要和点击一起原子地记账，
+    否则「还剩 1 次」会被并发请求同时读到，一秒钟把额度超卖成一天。
     """
-    click_buffer.add(link.id, referrer=referrer, ua=ua, ip_hash=ip_hash(ip) or None)
+    limit = int(link.daily_clicks_limit) if link.has_daily_limit else None
+    if limit:
+        # 已用 = 库里落下的 + 缓冲里排队的，两者相加才是真实节奏
+        used = click_buffer.daily_used(link.id, persisted=link.daily_used_today)
+        if used >= limit:
+            raise LinkUnavailable("该短链接今日额度已用完，明天再来", "daily")
+    click_buffer.add(
+        link.id,
+        referrer=referrer,
+        ua=ua,
+        ip_hash=ip_hash(ip) or None,
+        daily_limit=limit,
+    )
 
 
 def log_guard_event(db: Session, code: str | None, kind: str, ua: str | None,
@@ -410,6 +440,17 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         select(func.max(ClickEvent.ts)).where(ClickEvent.link_id == link.id)
     ).scalar_one_or_none()
 
+    # 今日口径按 UTC 日切，和每日额度同一把尺子，免得两个数字互相打架
+    today_start = dt.datetime.combine(now.date(), dt.time.min, tzinfo=dt.timezone.utc)
+    clicks_today = int(
+        db.execute(
+            select(func.count(ClickEvent.id)).where(
+                ClickEvent.link_id == link.id, ClickEvent.ts >= today_start
+            )
+        ).scalar_one()
+        or 0
+    )
+
     recent = db.execute(
         select(ClickEvent.ts, ClickEvent.referrer, ClickEvent.ua)
         .where(ClickEvent.link_id == link.id)
@@ -423,6 +464,7 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
         "unique_visitors": int(unique or 0),
         "created_at": link.created_at,
         "last_click_at": last_click,
+        "clicks_today": clicks_today,
         "daily": [{"date": k, "count": v} for k, v in buckets.items()],
         "top_referrers": top,
         "recent": [
@@ -447,6 +489,70 @@ def device_label(ua: str | None) -> str:
         return "未知"
     mobile = ("mobile", "android", "iphone", "ipad", "ipod", "micromessenger", "mqqbrowser")
     return "移动端" if any(m in low for m in mobile) else "桌面端"
+
+
+def bulk_action(db: Session, codes: list[str], action: str) -> dict:
+    """批量启用 / 停用 / 删除。
+
+    逐条处理而不是一条 SQL 全扫：短码可能写错、可能已被别人删掉，让好的一条条
+    成功、坏的一条条报出来，比整批失败更有用。200 条上限在 schema 里挡着。
+    """
+    if action not in ("enable", "disable", "delete"):
+        raise ServiceError("不支持的批量动作", 422)
+
+    done = 0
+    missing: list[str] = []
+    for code in codes[:200]:
+        row = db.execute(select(Link).where(func.lower(Link.code) == code.lower())).scalar_one_or_none()
+        if row is None:
+            missing.append(code)
+            continue
+        if action == "delete":
+            db.delete(row)
+        else:
+            row.enabled = action == "enable"
+        done += 1
+    db.flush()
+    logger.info("批量%s：成功 %d，缺失 %d", action, done, len(missing))
+    return {"ok": True, "action": action, "done": done, "missing": missing[:20]}
+
+
+def public_board(db: Session, limit: int | None = None) -> list[dict]:
+    """公开热门榜：只吐已经在用的短码，不给后台开任何口子。
+
+    列表里刻意不带目标地址与标签——访客本来就不会拥有「全部链接」的视野，
+    这里只多给一个「最近被点得最多」的视角。
+    """
+    limit = max(1, min(20, int(limit if limit is not None else runtime.get_int("board_size"))))
+    rows = (
+        db.execute(
+            select(Link)
+            .where(Link.enabled.is_(True), Link.clicks > 0)
+            .order_by(Link.clicks.desc())
+            .limit(limit * 3)
+        )
+        .scalars()
+        .all()
+    )
+    items = []
+    for link in rows:
+        # 过期 / 点满 / 目标被拉黑的条目对访客没有意义，别拿它占榜位
+        if link.is_expired or link.exhausted or link.daily_exhausted:
+            continue
+        try:
+            check_target_policy(link.target)
+        except ServiceError:
+            continue
+        items.append(
+            {
+                "code": link.code,
+                "title": link.title or link.target,
+                "clicks": int(link.clicks or 0),
+            }
+        )
+        if len(items) >= limit:
+            break
+    return items
 
 
 def _host(referrer: str) -> str | None:

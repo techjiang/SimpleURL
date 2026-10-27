@@ -220,7 +220,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .sub-cell { display: block; font-size: 0.76rem; color: var(--text-faint); margin-top: 3px; }
 .tag-pill { display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; background: rgba(123,92,255,0.16); color: #c4b5fd; margin: 1px 3px 1px 0; border: 1px solid rgba(123,92,255,0.25); }
 
-.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 0.74rem; padding: 3px 9px; border-radius: 999px; border: 1px solid; }
+.badge { display: inline-flex; align-items: center; gap: 5px; font-size: 0.74rem; padding: 3px 9px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge.on { color: var(--accent); border-color: rgba(34,211,166,0.35); background: rgba(34,211,166,0.1); }
 .badge.off { color: var(--warn); border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.1); }
@@ -776,4 +776,68 @@ select option { background: var(--bg-soft); color: var(--text); }
 }
 @media (max-width: 720px) {
   .table td.cell-target { max-width: 100%; width: auto; }
+}
+
+/* ============ 每日额度 / 热门榜 / 批量操作 ============ */
+.badge.warn { color: var(--warn); border-color: rgba(255,184,77,0.35); background: rgba(255,184,77,0.1); }
+
+/* 高级选项收起时，创建卡片守回一张干净的输入框 */
+.advanced summary { cursor: pointer; }
+.advanced:not([open]) { border-top: 1px solid rgba(255,255,255,0.06); padding-top: var(--s3); }
+
+.preview-url {
+  margin: 0; padding: 0 var(--s3); height: 44px; display: flex; align-items: center;
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-sm);
+  color: var(--text-dim); font-size: 0.86rem; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 热门榜 */
+.hot-board { animation: rise .3s ease both; }
+.hot-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.hot-item {
+  display: grid; grid-template-columns: 26px minmax(84px, auto) 1fr auto auto;
+  align-items: center; gap: var(--s2);
+  padding: 9px var(--s2); border-radius: var(--radius-sm);
+  border: 1px solid transparent; transition: background .16s, border-color .16s;
+}
+.hot-item:hover { background: rgba(255,255,255,0.04); border-color: var(--border); }
+.hot-rank {
+  font-variant-numeric: tabular-nums; font-size: 0.78rem; color: var(--text-faint);
+  text-align: center;
+}
+.hot-item:nth-child(1) .hot-rank { color: var(--brand); font-weight: 700; }
+.hot-item:nth-child(2) .hot-rank,
+.hot-item:nth-child(3) .hot-rank { color: var(--text-dim); }
+.hot-code { font-size: 0.88rem; color: var(--text); text-decoration: none; }
+.hot-code:hover { color: var(--brand); }
+.hot-title {
+  color: var(--text-faint); font-size: 0.82rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hot-clicks { font-variant-numeric: tabular-nums; font-size: 0.82rem; color: var(--accent); }
+
+/* 批量操作 */
+.col-check { width: 34px; text-align: center; }
+.col-check input { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; }
+.table tbody tr.picked { background: rgba(79,140,255,0.08); }
+.bulk-bar {
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  margin: 0 0 var(--s3); padding: 10px var(--s3);
+  border: 1px solid rgba(79,140,255,0.28); border-radius: var(--radius-sm);
+  background: rgba(79,140,255,0.08); font-size: 0.84rem;
+}
+.bulk-bar #bulk-count { color: var(--text); font-weight: 600; }
+
+@media (max-width: 720px) {
+  .hot-item { grid-template-columns: 22px minmax(70px, auto) 1fr auto; gap: 8px; padding: 8px 4px; }
+  /* 窄屏上复制按钮让位给标题，点短码进页面也能复制 */
+  .hot-item .btn { display: none; }
+  .bulk-bar { padding: 8px var(--s2); }
+  .preview-url { height: 40px; }
+}
+
+/* 窄屏导航只留主路径：热门榜在页面里就在眼前，源码链接低频 */
+@media (max-width: 720px) {
+  .nav-link.nav-hide-sm { display: none; }
 }

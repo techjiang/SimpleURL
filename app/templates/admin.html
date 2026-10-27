@@ -52,7 +52,7 @@
     </div>
 
     {% elif panel == 'links' %}
-    <header class="admin-head"><h1>链接管理</h1><p class="hint">共 {{ total }} 条 · 第 {{ page }}/{{ pages }} 页</p></header>
+    <header class="admin-head"><h1>链接管理</h1><p class="hint">共 {{ total }} 条 · 第 {{ page }}/{{ pages }} 页 · 「今日」按 UTC 日切，含还在缓冲里没落库的点击</p></header>
     <form class="board-tools" id="admin-filter" method="get" action="/admin/links">
       <div class="search">
         <input name="q" type="search" value="{{ q }}" placeholder="搜索短码 / 目标 / 标题 / 标签" aria-label="搜索链接" />
@@ -87,9 +87,9 @@
             <td class="cell-target" title="{{ link.target }}">
               {% if link.title %}<span class="title-cell">{{ link.title }}</span>{% endif %}<span class="t-url">{{ link.target }}</span>
             </td>
-            <td class="clicks-cell cell-meta">{{ link.clicks }}</td>
+            <td class="clicks-cell cell-meta">{{ link.clicks }}{% if link.daily_clicks_limit %}<span class="sub-cell">今日 {{ link.daily_used }}/{{ link.daily_clicks_limit }}</span>{% endif %}</td>
             <td class="col-hide-sm hint">{{ link.expires_at[:10] if link.expires_at else '—' }}</td>
-            <td class="cell-status">{% if link.expired %}<span class="badge exp">已过期</span>{% elif link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
+            <td class="cell-status">{% if link.expired %}<span class="badge exp">已过期</span>{% elif link.state == 'daily' %}<span class="badge warn">今日已满</span>{% elif link.enabled %}<span class="badge on">已启用</span>{% else %}<span class="badge off">已停用</span>{% endif %}</td>
             <td class="cell-actions">
               <button class="btn tiny ghost" data-toggle="{{ link.code }}">{% if link.enabled %}停用{% else %}启用{% endif %}</button>
               <button class="btn tiny danger" data-del="{{ link.code }}">删除</button>

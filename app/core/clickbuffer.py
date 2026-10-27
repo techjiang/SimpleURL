@@ -27,6 +27,7 @@ logger = logging.getLogger("simpleurl")
 class _Pending:
     link_id: int
     ts: float
+    daily_limit: int | None = None
     referrer: str | None = None
     ua: str | None = None
     ip_hash: str | None = None
@@ -47,14 +48,22 @@ class ClickBuffer:
         self._items: list[_Pending] = []
         self._lock = threading.Lock()
         self._stats = Stats()
+        # 当天已占用额度（内存态），由 _write 与点击明细一起落库
+        self._daily_used: dict[int, int] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     # ---- 入队 ----
     def add(self, link_id: int, referrer: str | None = None, ua: str | None = None,
-            ip_hash: str | None = None) -> None:
+            ip_hash: str | None = None, daily_limit: int | None = None) -> None:
+        """入队一次点击。
+
+        `daily_limit` 不为空时同时占用当天的每日额度：额度按**内存里已经入队**的条数算，
+        不查库。否则同一秒里的并发请求会集体看到「今天还剩 1 次」，把额度超卖一整天。
+        """
         item = _Pending(
             link_id=link_id,
+            daily_limit=daily_limit,
             ts=time.time(),
             referrer=(referrer or "")[:512] or None,
             ua=(ua or "")[:512] or None,
@@ -63,9 +72,16 @@ class ClickBuffer:
         with self._lock:
             self._items.append(item)
             self._stats.queued += 1
+            if item.daily_limit:
+                self._daily_used[link_id] = self._daily_used.get(link_id, 0) + 1
             over = len(self._items) >= runtime.get_int("click_flush_batch")
         if over:
             self.flush()
+
+    def daily_used(self, link_id: int, persisted: int = 0) -> int:
+        """当天已用额度 = 已落库的 + 还在缓冲里没落的。"""
+        with self._lock:
+            return int(persisted) + self._daily_used.get(link_id, 0)
 
     @property
     def pending(self) -> int:
@@ -101,6 +117,15 @@ class ClickBuffer:
                     self._stats.dropped += dropped
             return 0
         with self._lock:
+            # 落库成功后把内存里的额度计数减掉，不然会一直叠加
+            for item in batch:
+                if not item.daily_limit:
+                    continue
+                left = self._daily_used.get(item.link_id, 0) - 1
+                if left > 0:
+                    self._daily_used[item.link_id] = left
+                else:
+                    self._daily_used.pop(item.link_id, None)
             self._stats.flushed += written
             self._stats.batches += 1
             self._stats.last_flush = time.time()
@@ -128,6 +153,7 @@ class ClickBuffer:
     def reset(self) -> None:
         with self._lock:
             self._items.clear()
+            self._daily_used.clear()
             self._stats = Stats()
 
 
@@ -135,8 +161,11 @@ def _write(batch: list[_Pending]) -> int:
     from app.core.db import session_scope
 
     counts: dict[int, int] = {}
+    daily: dict[int, int] = {}
     for item in batch:
         counts[item.link_id] = counts.get(item.link_id, 0) + 1
+        if item.daily_limit:
+            daily[item.link_id] = daily.get(item.link_id, 0) + 1
     with session_scope() as db:
         for item in batch:
             db.add(
@@ -152,8 +181,29 @@ def _write(batch: list[_Pending]) -> int:
         # 一次事务里把点击数加上去，比逐条 update 省得多
         for link_id, delta in counts.items():
             db.execute(update(Link).where(Link.id == link_id).values(clicks=Link.clicks + delta))
+        _add_daily_usage(db, daily)
         db.flush()
     return len(batch)
+
+
+def _add_daily_usage(db, daily: dict[int, int]) -> None:
+    """把每日额度一起记进库。跨天自动从 1 重新计，不需要定时任务清零。"""
+    if not daily:
+        return
+    import datetime as dt
+
+    from sqlalchemy import case
+
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    for link_id, delta in daily.items():
+        db.execute(
+            update(Link)
+            .where(Link.id == link_id)
+            .values(
+                daily_used=case((Link.daily_date == today, Link.daily_used + delta), else_=delta),
+                daily_date=today,
+            )
+        )
 
 
 def _to_dt(ts: float):

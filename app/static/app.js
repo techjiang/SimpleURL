@@ -4,6 +4,7 @@
 
   const $ = (sel) => document.querySelector(sel);
   const state = { page: 1, pageSize: 10, q: '', status: '', sort: 'created_desc', total: 0 };
+  const selected = new Set();
   let summary = { total_links: 0, total_clicks: 0 };
   let access = { mode: 'public', is_admin: false, can_create: true, mode_label: '开放外部可使用' };
 
@@ -228,6 +229,18 @@
     });
   }
 
+  // 短码预览：自定义填了显示自己填的，没填就提示自动生成——
+  // 让人在按下回车前就知道最终会长什么样
+  function bindPreview() {
+    const code = $('#code');
+    const out = $('#preview-url');
+    if (!code || !out) return;
+    const base = location.origin.replace(/^https?:\/\//, '') + '/';
+    const render = () => { out.textContent = base + (code.value.trim() || '自动生成'); };
+    code.addEventListener('input', render);
+    render();
+  }
+
   function bindCreate() {
     const form = $('#create-form');
     if (!form) return;
@@ -243,6 +256,8 @@
         password: ($('#password') && $('#password').value.trim()) || undefined,
         max_clicks: ($('#max_clicks') && $('#max_clicks').value)
           ? Number($('#max_clicks').value) : undefined,
+        daily_clicks_limit: ($('#daily_clicks_limit') && $('#daily_clicks_limit').value)
+          ? Number($('#daily_clicks_limit').value) : undefined,
       };
       if (!payload.target) { setStatus('请先粘贴一个链接', 'err'); return; }
       btn.disabled = true;
@@ -261,6 +276,7 @@
         if (dup) dup.hidden = true;
         loadSummary();
         loadLinks();
+        loadBoard();
       } catch (err) {
         setStatus(err.message, 'err');
         toast(err.message);
@@ -317,6 +333,7 @@
       disabled: '<span class="badge off">已停用</span>',
       expired: '<span class="badge exp">已过期</span>',
       exhausted: '<span class="badge exp">次数用完</span>',
+      daily: '<span class="badge warn">今日已满</span>',
     };
     const st = link.state || (link.expired ? 'expired' : link.enabled ? 'active' : 'disabled');
     return map[st] || map.active;
@@ -326,6 +343,7 @@
     const bits = [];
     if (link.locked) bits.push('口令');
     if (link.max_clicks) bits.push(`${link.clicks}/${link.max_clicks}`);
+    if (link.daily_clicks_limit) bits.push(`今日 ${link.daily_used}/${link.daily_clicks_limit}`);
     if (link.expires_at) bits.push('限时');
     return bits.join(' · ');
   }
@@ -336,7 +354,11 @@
       ? `<span class="title-cell" title="${escapeHtml(link.title)}">${escapeHtml(link.title)}</span>`
       : '';
     const meta = metaOf(link);
-    return `<tr>
+    return `<tr${selected.has(link.code) ? ' class="picked"' : ''}>
+      <td class="col-check">
+        <input type="checkbox" class="row-check" data-code="${escapeHtml(link.code)}"
+               aria-label="选择 /${escapeHtml(link.code)}"${selected.has(link.code) ? ' checked' : ''} />
+      </td>
       <td>
         <a class="code-cell" href="/s/${encodeURIComponent(link.code)}" title="查看统计">/${escapeHtml(link.code)}</a>
         ${title}
@@ -371,6 +393,9 @@
         `<span class="chip">总点击 ${summary.total_clicks}</span>`,
         `<span class="chip">本页 ${data.items.length} 条</span>`,
       ].join('');
+      // 换页后旧的选择已经不在眼前，留着只会误伤
+      selected.clear();
+      refreshBulkBar();
       $('#page-info').textContent = `第 ${data.page} 页 / 共 ${Math.max(1, Math.ceil(data.total / state.pageSize))} 页`;
       $('#prev-btn').disabled = data.page <= 1;
       $('#next-btn').disabled = data.page * state.pageSize >= data.total;
@@ -448,6 +473,9 @@
     $('#edit-tags').value = (link.tags || []).join(', ');
     $('#edit-expires').value = link.expires_at ? link.expires_at.slice(0, 16) : '';
     $('#edit-max-clicks').value = link.max_clicks || '';
+    $('#edit-daily').value = link.daily_clicks_limit || '';
+    $('#edit-clear-daily').checked = false;
+    $('#edit-clear-daily').disabled = !link.daily_clicks_limit;
     $('#edit-password').value = '';
     $('#edit-password').placeholder = link.locked ? '已设置口令，留空保持不变' : '留空表示不设口令';
     $('#edit-clear-password').checked = false;
@@ -479,6 +507,7 @@
       const btn = $('#edit-save');
       const expires = $('#edit-expires').value;
       const maxClicks = $('#edit-max-clicks').value.trim();
+      const dailyLimit = $('#edit-daily').value.trim();
       const password = $('#edit-password').value.trim();
       const payload = {
         target: $('#edit-target').value.trim(),
@@ -487,10 +516,12 @@
         // 清空要显式说一声：只传 null 等于「设为无」，后端分不清「没动」
         clear_expiry: !expires,
         clear_max_clicks: !maxClicks,
+        clear_daily_limit: !dailyLimit || $('#edit-clear-daily').checked,
         clear_password: $('#edit-clear-password').checked,
       };
       if (expires) payload.expires_at = expires;
       if (maxClicks) payload.max_clicks = Number(maxClicks);
+      if (dailyLimit && !$('#edit-clear-daily').checked) payload.daily_clicks_limit = Number(dailyLimit);
       if (password) payload.set_password = password;
       btn.disabled = true;
       $('#edit-status').textContent = '保存中…';
@@ -503,16 +534,116 @@
         toast('已保存');
         closeEditor();
         loadLinks();
+        loadBoard();
       } catch (err) {
         $('#edit-status').textContent = err.message;
       } finally { btn.disabled = false; }
     });
   }
 
-  const STATE_TEXT = { active: '已启用', disabled: '已停用', expired: '已过期', exhausted: '次数用完' };
+  const STATE_TEXT = {
+    active: '已启用', disabled: '已停用', expired: '已过期', exhausted: '次数用完', daily: '今日已满',
+  };
 
   function stateText(link) {
     return STATE_TEXT[link.state || (link.expired ? 'expired' : link.enabled ? 'active' : 'disabled')] || '已启用';
+  }
+
+  /* ---------- 批量操作 ---------- */
+  function refreshBulkBar() {
+    const bar = $('#bulk-bar');
+    const count = $('#bulk-count');
+    if (!bar) return;
+    bar.hidden = selected.size === 0;
+    if (count) count.textContent = `已选 ${selected.size} 条`;
+    const all = $('#check-all');
+    if (all) {
+      const boxes = document.querySelectorAll('.row-check');
+      all.checked = boxes.length > 0 && [...boxes].every((b) => b.checked);
+      all.indeterminate = !all.checked && [...boxes].some((b) => b.checked);
+    }
+  }
+
+  function clearSelection() {
+    selected.clear();
+    document.querySelectorAll('.row-check').forEach((b) => { b.checked = false; });
+    document.querySelectorAll('tr.picked').forEach((tr) => tr.classList.remove('picked'));
+    refreshBulkBar();
+  }
+
+  async function runBulk(action, label) {
+    const codes = [...selected];
+    if (!codes.length) return;
+    if (action === 'delete' && !confirm(`确定删除这 ${codes.length} 条短链？该操作不可恢复`)) return;
+    try {
+      const data = await api('/api/links/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codes, action }),
+      });
+      const miss = data.missing?.length ? `，${data.missing.length} 条不存在` : '';
+      toast(`${label} ${data.done} 条${miss}`);
+      clearSelection();
+      loadSummary();
+      loadLinks();
+      loadBoard();
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindBulk() {
+    const body = $('#links-body');
+    if (!body) return;
+    body.addEventListener('change', (e) => {
+      const box = e.target.closest('.row-check');
+      if (!box) return;
+      const tr = box.closest('tr');
+      if (box.checked) { selected.add(box.dataset.code); tr?.classList.add('picked'); }
+      else { selected.delete(box.dataset.code); tr?.classList.remove('picked'); }
+      refreshBulkBar();
+    });
+
+    const all = $('#check-all');
+    if (all) all.addEventListener('change', () => {
+      document.querySelectorAll('.row-check').forEach((box) => {
+        box.checked = all.checked;
+        if (all.checked) selected.add(box.dataset.code); else selected.delete(box.dataset.code);
+        box.closest('tr')?.classList.toggle('picked', all.checked);
+      });
+      refreshBulkBar();
+    });
+
+    $('#bulk-enable')?.addEventListener('click', () => runBulk('enable', '已启用'));
+    $('#bulk-disable')?.addEventListener('click', () => runBulk('disable', '已停用'));
+    $('#bulk-delete')?.addEventListener('click', () => runBulk('delete', '已删除'));
+    $('#bulk-clear')?.addEventListener('click', clearSelection);
+  }
+
+  /* ---------- 热门榜 ---------- */
+  async function loadBoard() {
+    const box = $('#hot');
+    const list = $('#hot-list');
+    if (!box || !list) return;
+    try {
+      const data = await api('/api/board?limit=8');
+      const items = data.items || [];
+      if (!items.length) { box.hidden = true; return; }
+      list.innerHTML = items.map((it, i) => `
+        <li class="hot-item">
+          <span class="hot-rank">${i + 1}</span>
+          <a class="hot-code mono" href="/${encodeURIComponent(it.code)}" target="_blank"
+             rel="noopener">/${escapeHtml(it.code)}</a>
+          <span class="hot-title" title="${escapeHtml(it.title)}">${escapeHtml(it.title)}</span>
+          <b class="hot-clicks">${it.clicks}</b>
+          <button class="btn tiny ghost" type="button"
+                  data-copy="${escapeHtml(location.origin + '/' + it.code)}">复制</button>
+        </li>`).join('');
+      box.hidden = false;
+      const empty = $('#hot-empty');
+      if (empty) empty.hidden = true;
+    } catch (_) {
+      // 热门榜是加分项，拿不到就不显示，别打扰创建主流程
+      box.hidden = true;
+    }
   }
 
   /* ---------- CSV 导出 ---------- */
@@ -578,14 +709,14 @@
 
   async function bootstrap() {
     // 各块互不依赖，一个接口慢不该拖住整页；任何一个挂了也不影响其余部分
-    await Promise.allSettled([loadAccess(), loadSummary(), loadAnnouncement()]);
+    await Promise.allSettled([loadAccess(), loadSummary(), loadAnnouncement(), loadBoard()]);
     if (access.is_admin) await loadLinks();
     scrollToHash();
   }
 
   document.addEventListener('DOMContentLoaded', () => {
     bindCreate(); bindCopy(); bindBoard(); bindConsole(); bindEditor();
-    bindCodeCheck(); bindDupCheck();
+    bindCodeCheck(); bindDupCheck(); bindPreview(); bindBulk();
     const loginForm = $('#login-form');
     if (loginForm) {
       loginForm.addEventListener('submit', async (e) => {
@@ -607,6 +738,13 @@
       });
     }
     bootstrap();
+  });
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('#hot-list button[data-copy]');
+    if (!btn) return;
+    await copyText(btn.dataset.copy);
+    toast('已复制短链接');
   });
 
   window.SimpleURL = { renderChart };

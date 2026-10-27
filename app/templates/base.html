@@ -18,9 +18,11 @@
     </a>
     <nav class="topnav" aria-label="主导航">
       <a href="/" class="nav-link">首页</a>
+      <a href="/#hot" class="nav-link nav-hide-sm">热门</a>
       <a href="/#list" class="nav-link" data-admin-only>链接库</a>
       {% if auth_enabled %}<a href="/admin" class="nav-link" data-admin-only>后台</a>{% endif %}
-      <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener" class="nav-link">仓库</a>
+      <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener"
+         class="nav-link nav-hide-sm">源码</a>
       {% include "_console.html" %}
     </nav>
   </header>

@@ -39,6 +39,8 @@ class LinkCreate(BaseModel):
     password: Optional[str] = Field(None, max_length=72)
     # 点击数上限，点满即失效；留空表示不限
     max_clicks: Optional[int] = Field(None, ge=1, le=1_000_000)
+    # 每日放行点击数，跨天自动清零；留空表示不限
+    daily_clicks_limit: Optional[int] = Field(None, ge=1, le=1_000_000)
 
     @field_validator("target")
     @classmethod
@@ -98,6 +100,8 @@ class LinkUpdate(BaseModel):
     clear_expiry: bool = Field(False, description="清除过期时间")
     max_clicks: Optional[int] = Field(None, ge=1, le=1_000_000)
     clear_max_clicks: bool = Field(False, description="取消点击上限")
+    daily_clicks_limit: Optional[int] = Field(None, ge=1, le=1_000_000)
+    clear_daily_limit: bool = Field(False, description="取消每日点击上限")
 
     @field_validator("set_password", mode="before")
     @classmethod
@@ -147,6 +151,9 @@ class LinkOut(BaseModel):
     locked: bool = False
     max_clicks: Optional[int] = None
     exhausted: bool = False
+    daily_clicks_limit: Optional[int] = None
+    daily_used: int = 0
+    daily_exhausted: bool = False
     state: str = "active"
 
 
@@ -163,6 +170,7 @@ class StatsOut(BaseModel):
     unique_visitors: int
     created_at: Optional[dt.datetime] = None
     last_click_at: Optional[dt.datetime] = None
+    clicks_today: int = 0
     daily: list[dict] = Field(default_factory=list)
     top_referrers: list[dict] = Field(default_factory=list)
 
@@ -170,3 +178,30 @@ class StatsOut(BaseModel):
 class MessageOut(BaseModel):
     ok: bool = True
     message: str
+
+
+class BulkAction(BaseModel):
+    """批量操作：一批短码 + 一个动作。
+
+    只做幂等动作（启用 / 停用 / 删除）。改目标地址这类需要逐个确认的事不放进批量，
+    点错一次就全废了，不值得图这点快。
+    """
+
+    codes: list[str] = Field(default_factory=list, max_length=200)
+    action: str = Field(..., pattern="^(enable|disable|delete)$")
+
+    @field_validator("codes", mode="before")
+    @classmethod
+    def _v_codes(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [p.strip() for p in v.replace("\n", ",").split(",")]
+        out, seen = [], set()
+        for item in v:
+            text = str(item or "").strip().lstrip("/")
+            if not text or text.lower() in seen:
+                continue
+            seen.add(text.lower())
+            out.append(text[:32])
+        return out[:200]

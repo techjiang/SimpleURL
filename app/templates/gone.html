@@ -8,6 +8,7 @@
   <p class="lede">
     {% if reason == 'expired' %}这条短链设了有效期，已经到期了。需要的话可以让管理者续期或重建一条。
     {% elif reason == 'exhausted' %}这条短链设了访问次数上限，额度已经用完。这是有意为之，不是故障。
+    {% elif reason == 'daily' %}这条短链设了每日访问额度，今天的份额已经用完，明天零点（UTC）自动恢复。
     {% elif reason == 'disabled' %}这条短链被管理者停用了，暂时无法访问。
     {% elif reason == 'blocked' %}这条短链指向的站点已被站点的域名策略拦下。
     {% else %}该短链接可能已被删除、停用或已过期。你可以回到首页创建一个新的。{% endif %}

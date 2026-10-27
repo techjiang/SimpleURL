@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core import auth, guard, runtime
+from app.core.clickbuffer import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
@@ -90,7 +91,14 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
         )
 
     if verdict.count_click:
-        record_click(db, link, referrer=request.headers.get("referer"), ua=ua, ip=ip)
+        try:
+            record_click(db, link, referrer=request.headers.get("referer"), ua=ua, ip=ip)
+        except LinkUnavailable as exc:
+            # 每日额度在并发下被抢光：这一跳不跳、也不计数，给个说人话的页面
+            return HTMLResponse(
+                render(request, "gone.html", code=code, message=exc.message, reason=exc.reason),
+                status_code=exc.status,
+            )
         db.commit()
 
     if verdict.interstitial:
@@ -174,5 +182,7 @@ def stats_page(code: str, request: Request, db: Session = Depends(get_db)):
     if not auth.resolve_access(request).is_admin:
         raise auth.AuthError("访问统计仅管理员可见", 401)
     link = get_link_by_code(db, code)
+    # 统计页是人在看，先把缓冲结算掉，免得刚点过的链显示 0 次
+    click_buffer.flush()
     data = get_stats(db, code, days=30)
     return HTMLResponse(render_stats(request, link, data))

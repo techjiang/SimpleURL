@@ -35,6 +35,12 @@ class Link(Base):
     # 点击数上限：归零后不再跳转。做限量领券、限量报名时不用自己盯着
     max_clicks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
+    # 每天放行的点击数。max_clicks 管总量，这个管节奏——一秒被点满的券等于没发
+    daily_clicks_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # 当天已用额度与日期（UTC），跨天自动清零，不需要定时任务
+    daily_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
+    daily_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
@@ -62,6 +68,25 @@ class Link(Base):
         return bool(self.pass_hash)
 
     @property
+    def daily_used_today(self) -> int:
+        """当天已用额度。日期对不上就当作没用过——跨天清零不需要任何定时任务。"""
+        from app.core.timeutil import utcnow
+
+        if self.daily_date != utcnow().date().isoformat():
+            return 0
+        return int(self.daily_used or 0)
+
+    @property
+    def daily_exhausted(self) -> bool:
+        if not self.daily_clicks_limit:
+            return False
+        return self.daily_used_today >= int(self.daily_clicks_limit)
+
+    @property
+    def has_daily_limit(self) -> bool:
+        return bool(self.daily_clicks_limit)
+
+    @property
     def state(self) -> str:
         """状态机的唯一出口：列表、统计页、跳转、后台展示都用它，避免各处各判一套。"""
         if not self.enabled:
@@ -70,6 +95,8 @@ class Link(Base):
             return "expired"
         if self.exhausted:
             return "exhausted"
+        if self.daily_exhausted:
+            return "daily"
         return "active"
 
     def to_dict(self) -> dict:
@@ -95,6 +122,9 @@ class Link(Base):
             "locked": self.is_locked,
             "max_clicks": self.max_clicks,
             "exhausted": self.exhausted,
+            "daily_clicks_limit": self.daily_clicks_limit,
+            "daily_used": self.daily_used_today,
+            "daily_exhausted": self.daily_exhausted,
             "state": self.state,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),

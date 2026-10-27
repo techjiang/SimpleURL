@@ -49,6 +49,15 @@ class Option:
         self.env = env  # 未落库时的取值来源（通常是环境变量）
 
 
+def _env_int(name: str, default: int) -> int:
+    import os
+
+    try:
+        return int(os.getenv(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
 def _s(key: str, label: str, default: str, **kw) -> Option:
     return Option(key, label, "str", default, **kw)
 
@@ -89,6 +98,9 @@ OPTIONS: tuple[Option, ...] = (
        help="每行一条，a.com 连同其子域一起屏蔽，*.a.com 只屏蔽子域"),
     _s("allowed_hosts", "目标域名允许名单", "",
        help="填了就只放行这些域名（含子域），留空表示不限制"),
+    Option("board_size", "首页热门榜条数", "int", 8, lo=3, hi=20,
+           help="按累计点击排序；访客可见，只露短码、标题与点击数",
+           env=lambda: _env_int("BOARD_SIZE", 8)),
     Option("retention_days", "点击明细保留天数", "int", 180, lo=0, hi=3650,
            help="超期明细由后台每小时自动清理，只保留累计点击数；0 表示永久保留"),
 )

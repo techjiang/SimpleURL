@@ -28,7 +28,7 @@
       <span class="status" id="create-status" role="status" aria-live="polite"></span>
     </div>
 
-    <details class="advanced" id="advanced" open>
+    <details class="advanced" id="advanced">
       <summary>自定义与高级选项</summary>
       <div class="advanced-body">
         <div class="row">
@@ -62,10 +62,23 @@
             <span class="field-status">点满后自动失效</span>
           </div>
           <div class="field">
+            <label for="daily_clicks_limit">每日次数上限</label>
+            <input id="daily_clicks_limit" name="daily_clicks_limit" type="number" min="1" max="1000000"
+                   placeholder="不限" />
+            <span class="field-status">每天放行的点击数，次日自动恢复</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
             <label for="password">访问口令</label>
             <input id="password" name="password" type="password" maxlength="72"
                    autocomplete="new-password" placeholder="留空表示公开可访问" />
             <span class="field-status">设置后打开前需输入口令</span>
+          </div>
+          <div class="field">
+            <label>预计短链</label>
+            <p class="preview-url mono" id="preview-url">留空自动生成</p>
+            <span class="field-status">短链前缀随当前域名</span>
           </div>
         </div>
       </div>
@@ -90,6 +103,15 @@
       </div>
     </div>
   </div>
+</section>
+
+<section class="board hot-board" id="hot" hidden>
+  <div class="board-head">
+    <h2>热门短链</h2>
+    <span class="hint">按累计点击排序，实时更新</span>
+  </div>
+  <ol class="hot-list" id="hot-list"></ol>
+  <p class="hint" id="hot-empty" hidden>还没有人点过任何短链，做第一个吧。</p>
 </section>
 
 <section class="board" id="list" data-admin-only hidden>
@@ -120,10 +142,18 @@
     </div>
   </div>
   <div class="summary" id="summary"></div>
+  <div class="bulk-bar" id="bulk-bar" hidden>
+    <span id="bulk-count">已选 0 条</span>
+    <button class="btn tiny ghost" id="bulk-enable" type="button">批量启用</button>
+    <button class="btn tiny ghost" id="bulk-disable" type="button">批量停用</button>
+    <button class="btn tiny danger" id="bulk-delete" type="button">批量删除</button>
+    <button class="btn tiny ghost" id="bulk-clear" type="button">取消选择</button>
+  </div>
   <div class="table-wrap">
     <table class="table">
       <thead>
         <tr>
+          <th class="col-check"><input type="checkbox" id="check-all" aria-label="全选本页" /></th>
           <th>短码 / 标题</th>
           <th class="col-hide-sm">目标</th>
           <th class="col-clicks">点击</th>
@@ -176,6 +206,11 @@
           <label for="edit-max-clicks">访问次数上限</label>
           <input id="edit-max-clicks" type="number" min="1" max="1000000" placeholder="不限" />
         </div>
+      </div>
+      <div class="field main">
+        <label for="edit-daily">每日次数上限</label>
+        <input id="edit-daily" type="number" min="1" max="1000000" placeholder="不限" />
+        <label class="check"><input id="edit-clear-daily" type="checkbox" /> 取消每日上限</label>
       </div>
       <div class="field main">
         <label for="edit-password">访问口令</label>

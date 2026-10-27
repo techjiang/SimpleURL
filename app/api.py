@@ -10,18 +10,22 @@ from sqlalchemy.orm import Session
 
 from app.core import auth
 from app.core.auth import Access, get_access, require_admin, require_create
+from app.core.clickbuffer import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip
 from app.models import ClickEvent, Link
 from app.qr import make_qr_png
-from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
+from app.schemas import BulkAction, LinkCreate, LinkListOut, LinkOut, LinkUpdate, StatsOut
 from app.services import (
+    ServiceError,
+    bulk_action,
     create_link,
     delete_link,
     get_link_by_code,
     get_stats,
     list_links,
+    public_board,
     update_link,
 )
 
@@ -47,6 +51,13 @@ def api_key_guard(request: Request, db: Session = Depends(get_db)) -> None:
 def _serialize(link: Link, request: Request) -> LinkOut:
     out = LinkOut.model_validate(link.to_dict())
     out.short_url = str(request.base_url).rstrip("/") + "/" + link.code
+    # 每日额度还没落库的那部分在缓冲区里，得一起算上，
+    # 否则后台会看到「今日 0/5」却怎么都跳不动，像一个说不清的 bug
+    if link.has_daily_limit:
+        out.daily_used = click_buffer.daily_used(link.id, persisted=link.daily_used_today)
+        out.daily_exhausted = out.daily_used >= int(link.daily_clicks_limit or 0)
+        if out.daily_exhausted and out.state == "active":
+            out.state = "daily"
     return out
 
 
@@ -114,6 +125,25 @@ def api_delete_link(
     return {"ok": True, "message": f"已删除 {code}"}
 
 
+@router.post("/links/bulk", summary="批量启用 / 停用 / 删除")
+def api_bulk_links(
+    payload: BulkAction,
+    _: Access = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if not payload.codes:
+        raise ServiceError("请先选择要操作的短码", 400)
+    result = bulk_action(db, payload.codes, payload.action)
+    db.commit()
+    return result
+
+
+@router.get("/board", summary="公开热门榜")
+def api_board(limit: int | None = Query(None, ge=1, le=20), db: Session = Depends(get_db)):
+    """访客也能看的热门短码。只暴露短码、标题与点击数，不含目标地址。"""
+    return {"items": public_board(db, limit=limit)}
+
+
 @router.get("/links/{code}/stats", response_model=StatsOut, summary="访问统计")
 def api_link_stats(
     code: str,
@@ -121,6 +151,8 @@ def api_link_stats(
     _: Access = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
+    # 同上：统计接口读到的是「人想看的结果」，不是「库里此刻恰好有什么」
+    click_buffer.flush()
     return StatsOut(**get_stats(db, code, days=days))
 
 
