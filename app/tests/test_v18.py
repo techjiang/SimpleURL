@@ -70,8 +70,15 @@ class TestDelayedFlush:
         link = _create(client, "https://example.com/concurrent")
         from app.core.clicks import click_buffer
 
+        # 每次跳转都会排一个 0.5 秒后的落库定时器。CI 上机器慢的时候，
+        # 这 20 个定时器里会有一个正好在下面「并发 flush」中间醒来：
+        # 它和四个线程抢同一批事件，总数不会多算，但断言跑在它后面时
+        # 读到的是 19 或者别的中间值——一条和被测逻辑无关的红。
+        # 先停掉定时器，手动攒满 20 条，再把四个线程同时放出去。
+        click_buffer.stop()
         for _ in range(20):
             client.get("/" + link["code"])
+        assert click_buffer.pending() == 20
         threads = [threading.Thread(target=click_buffer.flush) for _ in range(4)]
         for t in threads:
             t.start()
