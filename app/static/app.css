@@ -44,7 +44,15 @@
 .skip-link:focus-visible { transform: translate(-50%, 0); outline: none; }
 /* 焦点落到 main 上时不要描边——那是跳转目标，不是可点元素 */
 main:focus { outline: none; }
+/* 必须带 !important：`.badge` / `.btn` 这类规则把 display 写死成 inline-flex，
+   单靠一个 `[hidden]` 选择器压不住——状态徽标一旦被清空，
+   空着的圆角胶囊还挂在行里，看着像状态没加载出来。 */
 [hidden] { display: none !important; }
+/* 只给读屏的最小可见层：表单里为了对齐需要一个标签位，又不想让眼睛看见 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -93,6 +101,11 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 .hero { padding: 26px 0 34px; }
 .hero h1 { font-size: clamp(2.1rem, 5.4vw, 3.4rem); font-weight: 700; margin: 12px 0 14px; }
 .kicker { margin: 0; color: var(--accent); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; }
+/* 中文大写不了，但 0.18em 的字距会把「访问统计」四个字拉成一排散字，
+   在标题上像一行被撕开的字。中文页面的小标签统一收窄字距。 */
+.kicker.sheet-label { letter-spacing: 0.08em; text-transform: none; }
+/* 中文不参与 uppercase，但 0.18em 的字距会把「访问统计」四个字拉成一排散字。
+   给中文单独收一点字距，语义上也不再强转大写。 */
 .lede { margin: 0; color: var(--text-dim); font-size: 1.02rem; max-width: 56ch; overflow-wrap: anywhere; word-break: break-word; }
 
 /* ============ 卡片通用 ============ */
@@ -101,8 +114,10 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
 }
+/* 这里原来每张卡都挂 backdrop-filter: blur(14px)。卡片绝大多数是不透明的，
+   模糊没有任何视觉收益，代价却是每次滚动都要重新合成整页几十个图层。
+   只留给真正压在内容上的浮层（弹窗、门禁、toast）。 */
 
 .composer { padding: var(--s5); }
 .composer-form { display: grid; gap: var(--s3); }
@@ -173,7 +188,9 @@ select option { background: var(--bg-soft); color: var(--text); }
 }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.ghost { background: transparent; }
-.btn.tiny { height: 30px; padding: 0 10px; font-size: 0.78rem; border-radius: 8px; }
+/* 小按钮原来 30px 高、12.5px 字——桌面上一排「统计 编辑 停用 删除」看着
+   像整块缩放了 80%。改成 32px / 13px：尺寸差还在，但点得中、看得清。 */
+.btn.tiny { height: 32px; padding: 0 12px; font-size: 0.82rem; border-radius: 8px; }
 .btn.danger { color: var(--danger); border-color: rgba(255,107,129,0.35); background: rgba(255,107,129,0.1); }
 .btn.danger:hover { background: rgba(255,107,129,0.18); }
 .btn[disabled] { opacity: 0.55; cursor: not-allowed; transform: none; }
@@ -234,9 +251,11 @@ select option { background: var(--bg-soft); color: var(--text); }
 }
 /* 前三名给个轻重差：不做金铜银，只让人一眼看出头部 */
 .hotboard-item:nth-child(-n+3) .hotboard-rank { color: var(--accent); font-weight: 600; }
-/* 标题列占满剩余宽度，但别把点击数和按钮挤到最右边——
-   榜单读的是「第几名、什么链接、多少次」，三者该挨得近一点 */
-.hotboard-main { flex: 1; min-width: 0; max-width: 520px; display: grid; gap: 2px; }
+/* 榜单读的是「第几名、什么链接、多少次」，三者不该隔着半屏。
+   原来靠 max-width: 520px 拦一道，可 1440 下这一行有一千多像素，
+   520 之后仍然一路空到右边缘的复制按钮，中间那道白是纯浪费。
+   现在标题列只长到内容宽度，点击数和复制按钮就跟在它后面。 */
+.hotboard-main { flex: 1 1 auto; min-width: 0; max-width: 720px; display: grid; gap: 2px; justify-items: start; }
 .hotboard-clicks { margin-left: auto; }
 .hotboard-title {
   font-size: 0.9rem; color: var(--text); text-decoration: none;
@@ -246,10 +265,15 @@ select option { background: var(--bg-soft); color: var(--text); }
 .hotboard-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.75rem; color: var(--text-faint); }
 .hotboard-code { color: var(--text-dim); }
 .hotboard-clicks {
-  flex: none; font-size: 0.82rem; font-variant-numeric: tabular-nums;
+  /* 和复制按钮之间给一段空：两样东西本来就不是一件事，
+     挨着放会让人以为「12 次」是按钮的标签 */
+  flex: none; margin-left: auto; padding-right: 18px;
+  font-size: 0.82rem; font-variant-numeric: tabular-nums;
   color: var(--text-dim); min-width: 40px; text-align: right;
 }
-.hotboard-clicks::after { content: " 次"; font-size: 0.72rem; color: var(--text-faint); }
+/* 「次」做成真元素的一部分，不再用伪元素拼：伪元素塞进去的字宽度不受
+   右对齐控制，数字一长就和左边标题的行尾撞上 */
+.hotboard-clicks em { font-style: normal; font-size: 0.72rem; color: var(--text-faint); margin-left: 2px; }
 /* 复制按钮常驻但压暗：藏到 hover 才出现的话，触屏设备上永远摸不到 */
 .hotboard-copy { opacity: .45; transition: opacity .15s ease; }
 .hotboard-item:hover .hotboard-copy, .hotboard-copy:focus-visible { opacity: 1; }
@@ -262,7 +286,10 @@ select option { background: var(--bg-soft); color: var(--text); }
   font-variant-numeric: tabular-nums;
 }
 .quota-mark.used { color: var(--warn); background: rgba(255,184,77,0.12); }
-.field-note { display: block; padding-top: 26px; font-size: 0.76rem; line-height: 1.5; }
+/* 以前靠 padding-top: 26px 硬顶，去和右边输入框的基线对齐。
+   标签一折行、字号一变，它就飘到半空中，看着像忘了收进字段的东西。
+   现在老老实实待在自己的格子里，和标签同一列起头。 */
+.field-note { display: block; font-size: 0.78rem; line-height: 1.6; align-self: end; padding-bottom: 2px; }
 
 .board { margin-top: 30px; padding: 20px; }
 .board-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
@@ -437,7 +464,12 @@ select option { background: var(--bg-soft); color: var(--text); }
 .chart { padding-top: 14px; height: 174px; }
 /* 刻度用绝对定位钉在图表左上，不跟着柱子跑：柱子一多就横向滚动，
    纵轴跟着滚走等于没有纵轴。滚动时脚本用 translateX 把它拉回来。 */
-.chart-axis { position: absolute; left: 0; top: 14px; height: 160px; width: 26px; pointer-events: none; border-radius: 3px; border-right: 1px solid var(--border); background: var(--bg); z-index: 2; }
+/* 刻度条原来左右都有一道边：左边是卡片底色的渐变断口，右边一道 border-right，
+   中间夹一条 26px 的深色竖条，看着像误插的一根柱子。现在只留底边刻度线。 */
+.chart-axis {
+  position: absolute; left: 0; top: 14px; height: 160px; width: 26px;
+  pointer-events: none; background: var(--bg); z-index: 2;
+}
 /* 刻度是绝对定位的，容不下的时候会被压成两行（顶上的「10」看着像「1/0」）。
    只留数字，并把它钉在刻度线上。 */
 .chart-axis span { position: absolute; line-height: 1; right: 6px; transform: translateY(50%); font-size: .68rem; color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -473,7 +505,20 @@ select option { background: var(--bg-soft); color: var(--text); }
   color: var(--text-faint); font-size: 0.86rem;
 }
 .ref-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.ref-list li { display: flex; justify-content: space-between; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.88rem; }
+/* 每一行都是一个带边框的实心小块，一整列排下来像一排输入框，
+   数字和文字反而被这些格子淹掉。改成细分割线：行与行的边界一样清楚，
+   但视线是顺着读的，不是一个个格子去点。悬停时才浮起。 */
+.ref-list li {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 9px 4px; border-bottom: 1px solid var(--border);
+  font-size: 0.88rem; transition: background .15s ease, padding .15s ease;
+}
+.ref-list li:last-child { border-bottom: 0; }
+/* 悬停时只换底色、不加内边距：一加 padding 整行文字就往右挪 8px，
+   鼠标扫过一遍列表像有人在抖它。 */
+.ref-list li:hover { background: var(--surface); border-radius: 8px; }
+/* 只有一行统计（比如来源全是「直接访问」）时，卡片别跟着只剩一条细线 */
+.ref-list:has(> li:only-child) { padding: 6px 0; }
 .ref-list b { font-variant-numeric: tabular-nums; flex: none; }
 /* 拦截留痕里那一小片原因标签：不抢眼，但要能和平台名区分开 */
 .reason-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; font-size: .7rem; color: var(--text-dim); background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
@@ -690,7 +735,10 @@ select option { background: var(--bg-soft); color: var(--text); }
 @keyframes modal-in { from { opacity: 0; transform: translateY(14px) scale(.98); } to { opacity: 1; transform: none; } }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .modal-head h3 { margin: 0; font-size: 1.05rem; }
-.modal-actions { display: flex; align-items: center; gap: 14px; }
+/* 保存单独一行、靠左；「关闭」在标题栏，别和一个主操作挤在手边。
+   底部原来只有一颗孤零零的「保存」，左边一大片空——现在给它配上说明区。 */
+.modal-actions { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+.modal-actions .hint { margin-left: auto; text-align: right; }
 
 /* ============ 令牌门禁 ============ */
 .gate { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: rgba(3, 6, 12, 0.9); backdrop-filter: blur(6px); }
@@ -716,15 +764,31 @@ select option { background: var(--bg-soft); color: var(--text); }
 .admin-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 .admin-head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); margin: 8px 0; }
 .admin-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-.admin-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 20px; padding: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 999px; }
-.admin-tab { padding: 8px 16px; border: 0; border-radius: 999px; background: transparent; color: var(--text-dim); font-size: 0.86rem; font-family: inherit; white-space: nowrap; cursor: pointer; transition: color .18s, background .18s; }
+/* 十一个页签挤在一枚胶囊里，最右边的「设置」被挤成半个字，
+   中间那几个还得靠猜。改成块状导航：每个页签自己是一格，
+   宽度按内容走、折行也整齐，选中的那格用底色标出来。 */
+.admin-tabs {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 20px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+}
+.admin-tab {
+  padding: 8px 14px; border: 1px solid transparent; border-radius: 10px;
+  background: transparent; color: var(--text-dim); font-size: 0.86rem; font-family: inherit;
+  white-space: nowrap; cursor: pointer; transition: color .18s, background .18s, border-color .18s;
+}
 .admin-tab:hover { color: var(--text); background: var(--surface-strong); }
-.admin-tab.active { color: #fff; background: linear-gradient(120deg, var(--brand), var(--brand-2)); box-shadow: 0 6px 18px -8px rgba(79,140,255,0.7); }
+.admin-tab.active {
+  color: #fff; background: linear-gradient(120deg, var(--brand), var(--brand-2));
+  border-color: transparent; box-shadow: 0 6px 18px -10px rgba(79,140,255,0.9);
+}
 .admin-panel { display: none; }
 .admin-panel.active { display: block; }
 /* 两栏等高：左边「点击 Top」只有 8 行、右边「最近访问」有 12 行，
    按内容排会让左卡比右卡矮掉四行，两张卡底边错开一截，像排版没画完。
    等高之后右边行数多就自己缩行距，两张卡的落脚线对齐。 */
+/* 两栏等高：左边「点击 Top」6 行、右边「最近访问」12 行，等高的好处是
+   两张卡的底边对齐，扫一眼不会以为是两页拼起来的。短列表靠
+   align-content: start 顶在上沿，不被拉成一行行拉长的细条。 */
 .admin-cols { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; align-items: stretch; }
 .admin-cols > .chart-card { display: flex; flex-direction: column; }
 .admin-cols .ref-list { flex: 1 1 auto; align-content: start; }
@@ -732,7 +796,7 @@ select option { background: var(--bg-soft); color: var(--text); }
 .admin-cols .ref-list li { align-items: center; gap: 10px; }
 textarea { width: 100%; padding: 10px 12px; font-family: var(--mono); font-size: 0.84rem; color: var(--text); background: rgba(0,0,0,0.28); border: 1px solid var(--border); border-radius: var(--radius-sm); resize: vertical; line-height: 1.6; }
 textarea:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
-.check { display: flex; align-items: center; gap: 10px; font-size: 0.88rem; color: var(--text-dim); cursor: pointer; }
+.check { display: flex; align-items: center; gap: 10px; font-size: 0.88rem; color: var(--text-dim); cursor: pointer; min-height: 42px; }
 .check input { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
 code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(0,0,0,0.3); padding: 3px 7px; border-radius: 6px; border: 1px solid var(--border); word-break: break-all; }
 .admin .chart-card { margin-bottom: 18px; }
@@ -749,8 +813,10 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   .admin-cols { grid-template-columns: 1fr; }
   /* 窄屏：十一个页签横滑时右边永远有一个被切成半个字，看着像坏了。
      改成折行——每个页签都完整可见，也不用猜右边还有没有东西 */
-  .admin-tabs { border-radius: var(--radius); flex-wrap: wrap; gap: 4px; }
-  .admin-tab { flex: 1 1 auto; padding: 8px 12px; font-size: 0.82rem; text-align: center; }
+  .admin-tabs { border-radius: 12px; flex-wrap: wrap; gap: 4px; padding: 4px; }
+  /* 别再 `flex: 1 1 auto`：那会让每格平分一行，四个字的「数据迁移」被挤成
+     两行、两个字的「设置」占一格还空着半个。按内容宽度排，能放几个放几个。 */
+  .admin-tab { flex: 0 0 auto; padding: 8px 11px; font-size: 0.8rem; text-align: center; }
 }
 
 /* ============ 访问模式横幅 ============ */
@@ -949,12 +1015,19 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 }
 
 /* ---------- 统计页：二维码下载 / 逐日明细 / 回执换新 ---------- */
-.qr-block { display: grid; gap: 6px; justify-items: center; }
+.qr-block { display: grid; gap: 10px; justify-items: center; }
+/* 原来是一条 11.8px 的灰色虚线文字，压在二维码右下角 ——
+   看着像图片说明，而不像能点的东西。它是个动作，那就长成按钮的样子。 */
 .qr-download {
-  font-size: .74rem; color: var(--text-dim); text-decoration: none;
-  border-bottom: 1px dashed color-mix(in srgb, var(--text-dim) 45%, transparent);
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px; border-radius: 8px;
+  font-size: .82rem; font-weight: 600; color: var(--text);
+  border: 1px solid var(--border-strong); background: var(--surface-strong);
+  transition: background .16s ease, border-color .16s ease, transform .14s ease;
 }
-.qr-download:hover { color: var(--text); border-bottom-color: var(--text); }
+.qr-download::before { content: "⤓"; font-size: .9em; color: var(--accent); }
+.qr-download:hover { background: rgba(255,255,255,0.12); border-color: var(--accent); transform: translateY(-1px); }
+.qr-download:focus-visible { outline: none; box-shadow: var(--ring); }
 
 .chart-table { margin-top: 14px; font-size: .84rem; }
 .chart-table summary {
@@ -965,8 +1038,7 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .chart-table summary::before { content: "▸"; font-size: .7em; transition: transform .15s ease; }
 .chart-table[open] summary::before { transform: rotate(90deg); }
 .chart-table summary:hover { color: var(--text); }
-/* 明细默认展开：30 天里真有点击的日子通常只有几行，折起来反而让人
-   以为统计只剩那张图。给个高度上限，别让一整月的明细把页面撑长。 */
+/* 明细收起时的摘要就是一行小标题，展开后限高，别让一整月的明细把图撑走。 */
 .chart-table ul {
   list-style: none; margin: 10px 0 0; padding: 0;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 4px 14px;
@@ -995,6 +1067,9 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
 }
 .receipt-tip .self-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* 保存那一行单独占一行，和下面那排危险操作拉开 4px 的距离 */
+.receipt-tip .self-actions-save { margin-top: 2px; }
+.receipt-tip .self-actions-save + .self-actions { margin-top: -2px; }
 .receipt-tip .self-actions select {
   flex: 0 0 auto; width: auto; min-width: 6.5em;
   padding: 8px 10px; border-radius: 10px; font: inherit; font-size: .82rem;

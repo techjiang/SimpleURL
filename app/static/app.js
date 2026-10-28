@@ -348,12 +348,14 @@
         showResult(link);
         rememberClaimCode(link.code);
         loadGuestLinks();
+        // 「创建成功」原来挂在按钮右边，紧挨着「回执丢了？」，读起来像第三个按钮的说明。
+        // 结果卡片就在下面，戳一句状态在卡片头上更顺。
         if (link._code_swapped) {
-          setStatus(`短码 ${link._code_swapped} 已被占用，已改用 /${link.code}`, 'ok');
           toast(`短码已被占用，已改用 /${link.code}`);
-        } else {
-          setStatus(link.reused ? `已复用现成的短码 /${link.code}` : '创建成功', 'ok');
+        } else if (link.reused) {
+          toast(`已复用现成的短码 /${link.code}`);
         }
+        setStatus('');
         form.reset();
         setCodeStatus('');
         const dup = $('#dup-hint');
@@ -398,8 +400,10 @@
         manual: '标题按你填的来',
         off: '未开启自动取标题',
       };
-      const text = map[link.title_source] || '';
-      titleHint.textContent = link.title ? text : '';
+      // 没有标题就别留一行解释：卡片里已经有短链接和二维码，
+      // 再补一句「目标页抓不到标题」只是把失败念一遍
+      const text = link.title ? (map[link.title_source] || '') : '';
+      titleHint.textContent = text;
       titleHint.hidden = !text;
     }
     $('#result-tags').innerHTML = (link.tags || [])
@@ -588,7 +592,7 @@
             ${tags}
           </div>
         </div>
-        <span class="hotboard-clicks" title="累计点击 ${item.clicks} 次">${humanCount(item.clicks)}</span>
+        <span class="hotboard-clicks" title="累计点击 ${item.clicks} 次">${humanCount(item.clicks)}<em>次</em></span>
         <button class="btn tiny ghost hotboard-copy" type="button" data-copy="${escapeHtml(url)}">复制</button>
       </li>`;
     }).join('');

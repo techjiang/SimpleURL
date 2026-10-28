@@ -6,13 +6,18 @@
   <a class="back" href="/">← 返回首页</a>
   <div class="stats-hero">
     <div>
-      <p class="kicker">访问统计</p>
+      <p class="kicker sheet-label">访问统计</p>
       <h1><span class="mono">/{{ link.code }}</span></h1>
       <p class="lede"><a href="{{ link.target }}" target="_blank" rel="noopener">{{ link.target }}</a></p>
     </div>
+    {# 二维码走 /api/qr，加 download=1 让服务端回一个 attachment：
+       只靠 <a download> 的话，服务端没给出 Content-Disposition，
+       浏览器会在部分场景（如 iOS Safari、跨源重定向后）直接打开图片，
+       用户点完啥也没存下来，还以为按钮坏了。 #}
     <div class="qr-block">
-      <img src="{{ qr_src }}" alt="二维码" width="120" height="120" class="qr" />
-      <a class="qr-download" href="{{ qr_src }}" download="simpleurl-{{ link.code }}.png" title="保存二维码 PNG">下载二维码</a>
+      <img src="{{ qr_src }}" alt="/{{ link.code }} 的二维码" width="140" height="140" class="qr" />
+      <a class="qr-download" href="{{ qr_src }}{{ '&' if '?' in qr_src else '?' }}download=1"
+         download="simpleurl-{{ link.code }}.png" title="保存 {{ link.code }} 的二维码 PNG">下载二维码</a>
     </div>
   </div>
   <div class="stat-grid">
@@ -111,8 +116,13 @@
     <label for="self-target">目标地址</label>
     <input id="self-target" type="url" value="{{ link.target }}" />
   </div>
-  <div class="self-actions">
+  {# 一行里混着「保存修改」「续期」「停用」「删除」四个动作，前一个是主操作、
+     后三个是危险操作，全挤在一起时手指按错一格就删了。拆两行：改是一件事，
+     续期/停用/删除是另一件事。 #}
+  <div class="self-actions self-actions-save">
     <button class="btn primary" id="self-save" type="button">保存修改</button>
+  </div>
+  <div class="self-actions">
     <select id="self-days" aria-label="续期天数">
       <option value="7">7 天</option>
       <option value="30" selected>30 天</option>

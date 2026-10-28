@@ -70,7 +70,12 @@ def render_stats(request: Request, link, data: dict, db=None) -> str:
 
     if claim and not _claim_verify(db, link, claim):
         claim = ""
-    qr_src = f"{base}/api/qr/{link.code}" + (f"?t={claim}" if claim else "")
+    # 二维码地址带上尺寸和回执：统计页上那张图是给人看的 140px，
+    # 不指定尺寸时服务端按默认档出图，图片被浏览器缩到 140 反而糊
+    qr_qs = [f"size=320"]
+    if claim:
+        qr_qs.append(f"t={claim}")
+    qr_src = f"{base}/api/qr/{link.code}?" + "&".join(qr_qs)
     return render(
         "stats.html",
         request,

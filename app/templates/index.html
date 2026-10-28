@@ -16,7 +16,7 @@
 
 <section class="hero">
   <div class="hero-copy">
-    <p class="kicker">轻量 · 流畅 · 好用</p>
+    <p class="kicker sheet-label">轻量 · 流畅 · 好用</p>
     <h1>把冗长的链接<br /><span class="grad">收进一行短码</span></h1>
     <p class="lede">粘贴链接，回车即得。自带访问统计、二维码与标签管理，全程自托管。</p>
   </div>
@@ -60,8 +60,7 @@
             <input id="daily_limit" name="daily_limit" type="number" min="0" max="1000000" step="1" placeholder="0 = 不限制" />
           </div>
           <div class="field">
-            <label>&nbsp;</label>
-            <span class="hint field-note">限量兑换、内测名额用得上：跟「单 IP 防刷」是两套账。</span>
+            <span class="field-note">限量兑换、内测名额用得上：跟全站的「单 IP 防刷」是两套账，互不干扰。</span>
           </div>
         </div>
         <div class="field">
@@ -150,7 +149,9 @@
           <input id="recover-clue" type="text" placeholder="邮箱或那句自述" maxlength="120" required />
         </div>
         <div class="field">
-          <label>&nbsp;</label>
+          {# 按钮和输入框底边对齐：留个不念出来的标签位置，
+             比塞一个空占位标签干净——读屏也不会多念一行空的 #}
+          <label class="sr-only" for="recover-submit">找回</label>
           <button class="btn primary" type="submit" id="recover-submit">找回</button>
         </div>
       </div>
