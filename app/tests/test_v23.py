@@ -77,3 +77,54 @@ class TestCopy:
     def test_no_stray_empty_label_in_composer(self):
         """表单里那个 `&nbsp;` 标签只是为了撑对齐，代价是一行看不见的空标签。"""
         assert "&nbsp;" not in INDEX_HTML
+
+
+class TestStylesheetParses:
+    """样式表本身得能被浏览器解析完。
+
+    v23 那次改版在 `@media (max-width: 640px)` 里多留了一个闭括号：
+    块在 `.field-note` 之后就被收掉，后面跟着三条没有归属的声明和一个孤立的
+    `}`。CSS 的容错是「跳过直到下一个平衡的块」，于是**它之后的所有规则**
+    都被整段丢弃——`.qr-block` 那条正好在断点下面，从此从没生效过，
+    二维码旁边那条本该在正下方的按钮就一路挂在右侧。
+    这类错误在源码里读起来完全正常，只有把文件真正解析一遍才能发现。
+    """
+
+    @staticmethod
+    def _balanced(text: str) -> bool:
+        # 注释先剥掉：`/* a { */` 里的花括号不算数
+        stripped = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        depth = 0
+        for ch in stripped:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth < 0:
+                    return False
+        return depth == 0
+
+    def test_braces_balance(self):
+        assert self._balanced(CSS), "app.css 花括号不配对，浏览器会从错误处开始丢掉规则"
+
+    def test_rules_after_media_block_still_parse(self):
+        """断点块之后的第一条规则必须还能被找到。"""
+        head = CSS.split("/* ---------- 统计页")[0]
+        assert self._balanced(head), "「统计页」那段之前就已经不配对了"
+
+
+class TestQrDownloadSitsBelow:
+    """要求：二维码在下、按钮在正下方，不是右边。"""
+
+    def test_block_is_a_single_column(self):
+        body = block(".qr-block")
+        assert "grid-template-columns: minmax(0, max-content)" in body
+
+    def test_button_fills_the_column(self):
+        body = block(".qr-download")
+        assert "width: 100%" in body
+        assert "justify-content: center" in body
+
+    def test_template_order_qr_then_button(self):
+        """DOM 顺序也得是码在前、按钮在后——列宽一致时才会落到正下方。"""
+        assert STATS_HTML.index('class="qr"') < STATS_HTML.index('class="qr-download"')

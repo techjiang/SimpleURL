@@ -1008,18 +1008,23 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   .hotboard-clicks { min-width: 32px; font-size: 0.78rem; }
   .quota-mark { margin-left: 0; }
   .field-note { padding-top: 0; }
-}
+
   .bulk-bar { gap: 6px; }
   .bulk-bar > span { width: 100%; margin-right: 0; }
   #audit-list li { flex-direction: column; gap: 4px; }
 }
 
 /* ---------- 统计页：二维码下载 / 逐日明细 / 回执换新 ---------- */
-.qr-block { display: grid; gap: 10px; justify-items: center; }
+/* 竖着一列：二维码在上，下载按钮在正下方。
+   grid-template-columns 写死一列是关键——默认的单列 `auto` 会被最宽的子项
+   撑到 248px，而二维码只有 140px，按钮于是从右侧溢出到第二行，
+   看起来像贴在二维码右下角。锁成一列后按钮跟着二维码同宽居中。 */
+.qr-block { display: grid; grid-template-columns: minmax(0, max-content); gap: 10px; justify-items: center; }
 /* 原来是一条 11.8px 的灰色虚线文字，压在二维码右下角 ——
    看着像图片说明，而不像能点的东西。它是个动作，那就长成按钮的样子。 */
 .qr-download {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  width: 100%; min-width: 104px;
   height: 32px; padding: 0 12px; border-radius: 8px;
   font-size: .82rem; font-weight: 600; color: var(--text);
   border: 1px solid var(--border-strong); background: var(--surface-strong);
@@ -1081,6 +1086,8 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   /* 窄屏二维码靠左排：下面那行「下载二维码」原本是居中网格里的第二行，
      一左对齐就叠到二维码图上，把码压掉半行 */
   .qr-block { justify-items: start; gap: 8px; }
+  /* 窄屏按钮不再拉满列宽，靠左和二维码的左边对齐 */
+  .qr-download { justify-self: start; width: auto; }
   .chart-table ul { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 }
 
