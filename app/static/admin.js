@@ -318,7 +318,10 @@
     if (last < 0) return out;
     const bars = el && el.querySelector('.chart-bars');
     const width = (bars && bars.clientWidth) || (el && el.parentElement && el.parentElement.clientWidth) || 0;
-    const per = 21;
+    // 每根柱子额外吃 6px 的间距（.chart-bars 的 gap）。只按标签宽算的话
+    // 30 根柱子会在 390px 上挤出十几像素的横向滚动——图上看着好好的，
+    // 但整页多了一条能左右晃的缝
+    const per = 27;
     const room = Math.max(1, Math.floor(width / (per * 2.2)));
     const mark = (i) => out.set(i, String(daily[i].date).slice(5));
     if (width && width / Math.max(1, daily.length) >= per * 2.2) {

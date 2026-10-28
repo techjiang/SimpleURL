@@ -61,6 +61,15 @@ def render_stats(request: Request, link, data: dict, db=None) -> str:
     from app.core.middleware import CLAIM_COOKIE
 
     claim = request.query_params.get("t") or request.cookies.get(CLAIM_COOKIE) or ""
+    # 回执只对**它自己那条**链接有效。cookie 里那张通常是最近一次创建 / 换新
+    # 留下的，和管理员会话一样是「人身上的」而不是「链接上的」：管理员在后台
+    # 打开 A 的统计页，页面上的二维码却会带着 B 的回执去请求，
+    # 服务端按「回执不属于这条链接」拒绝，图就裂了——一张裂图在页面上
+    # 看起来纯粹是坏了，没人猜得到是回执串了链接。
+    from app.core.claim import verify as _claim_verify
+
+    if claim and not _claim_verify(db, link, claim):
+        claim = ""
     qr_src = f"{base}/api/qr/{link.code}" + (f"?t={claim}" if claim else "")
     return render(
         "stats.html",

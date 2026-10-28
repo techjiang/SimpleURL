@@ -355,8 +355,13 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
         # 线索只在开放模式下有意义：管理员不需要靠它找回任何东西
         if payload.clue and settings.claim_lookup:
             claim.register_clue(db, link, payload.clue)
-        token = claim.reissue(db, link) if existed else claim.issue(db, link)
-        request.state.claim_token = token
+        # 复用现成那条时**不能**重签：库里存的是哈希，重签等于把
+        # 第一位创建者手里的回执当场作废，而他什么也没做错——
+        # 创建页「已收录过这个地址，要不要复用」那个入口点了就会撞上。
+        token, fresh = claim.ensure(db, link)
+        if fresh:
+            # 新签发的那张顺手挂到 cookie 上，刷新页面后创建者身份还在
+            request.state.claim_token = token
     report.record(
         db,
         "create",

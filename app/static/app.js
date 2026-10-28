@@ -1202,7 +1202,10 @@
     const out = new Map();
     const last = daily.length - 1;
     // 每根柱子连缝留 21px：够放下「10-25」这种标签
-    const per = 21;
+    // 每根柱子额外吃 6px 的间距（.chart-bars 的 gap）。只按标签宽算的话
+    // 30 根柱子会在 390px 上挤出十几像素的横向滚动——图上看着好好的，
+    // 但整页多了一条能左右晃的缝
+    const per = 27;
     if (width / Math.max(1, daily.length) >= per * 2.2) {
       daily.forEach((d, i) => out.set(i, d.date.slice(5)));
       return out;

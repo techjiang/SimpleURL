@@ -31,6 +31,22 @@ def issue(db: Session, link: Link) -> str:
     return token
 
 
+def ensure(db: Session, link: Link) -> tuple[str, bool]:
+    """确保这条链接有回执；已经有就**原样保留**那一张。
+
+    返回 (明文, 是否新签发)。已有的那张拿不到明文（库里只有哈希），
+    所以复用路径必须走「用旧换新」——`reissue()`，不能走这里。
+
+    为什么需要这个：创建接口带 `reuse: true` 或短码撞车时会把现成的
+    那条还回去，如果这里也重新签一张，第一个人手里的回执就凭空作废了：
+    他只是想复用自己刚建的那条，回去一刷新，面板没了、页面提示
+    「回执已被收回」，而他从头到尾没做错任何事。
+    """
+    if link.claim_hash:
+        return "", False
+    return issue(db, link), True
+
+
 def verify(db: Session, link: Link, token: str) -> bool:
     """校验领取码是否属于该链接。恒定时间比较，不泄露前缀。"""
     if not token or not link or not link.claim_hash:

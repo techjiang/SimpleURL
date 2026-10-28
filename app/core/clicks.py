@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import get_engine, get_sessionmaker
 from app.core.security import ip_hash
-from app.core.timeutil import utcnow
-from app.models import ClickEvent, Link
+from app.core.timeutil import today_local, utcnow
+from app.models import ClickEvent, Link, LinkVisitor
 
 logger = logging.getLogger("simpleurl")
 
@@ -31,9 +31,9 @@ DELAYED_FLUSH_SECONDS = 0.5
 class _Pending:
     """一条待写入的点击。"""
 
-    __slots__ = ("link_id", "referrer", "ua", "device", "platform", "ip", "blocked", "reason", "ts")
+    __slots__ = ("link_id", "referrer", "ua", "device", "platform", "ip", "blocked", "reason", "ts", "ip_hash")
 
-    def __init__(self, link_id: int, referrer, ua, device, platform, ip, blocked, reason, ts) -> None:
+    def __init__(self, link_id: int, referrer, ua, device, platform, ip, blocked, reason, ts, ip_digest="") -> None:
         self.link_id = link_id
         self.referrer = referrer
         self.ua = ua
@@ -43,6 +43,9 @@ class _Pending:
         self.blocked = blocked
         self.reason = reason
         self.ts = ts
+        # 摘要算一次就够：下面既要用它判重，又要写进 click_events.ip_hash。
+        # 未加盐的 sha256 截断对 IPv4 等于没脱敏，所以统一走 ip_hash()。
+        self.ip_hash = ip_digest
 
 
 class ClickBuffer:
@@ -54,6 +57,8 @@ class ClickBuffer:
         self._counts: dict[int, int] = {}
         # 还没落库的「今日额度占用」，与 _counts 同生共死
         self._daily: dict[int, int] = {}
+        # 还没落库的「按天的访问者集合」：(link_id, 本地日期) -> {ip_hash}
+        self._visitors: dict[tuple[int, object], set[str]] = {}
         self._dropped = 0
         self._timer: threading.Timer | None = None
         self._delay_timer: threading.Timer | None = None
@@ -87,6 +92,7 @@ class ClickBuffer:
         from app.core.security import parse_user_agent
 
         _, device = parse_user_agent(ua)
+        digest = ip_hash(ip) or ""
         item = _Pending(
             link_id=link_id,
             referrer=(referrer or "")[:512] or None,
@@ -97,6 +103,7 @@ class ClickBuffer:
             blocked=blocked or bool(reason),
             reason=reason,
             ts=utcnow(),
+            ip_digest=digest,
         )
         with self._lock:
             # 队列上限：数据库长时间写不进去时，内存不能跟着请求数一起涨。
@@ -108,6 +115,13 @@ class ClickBuffer:
             # 被 UA 屏蔽 / 平台拦截 / 超出配额的事件只留痕、不算点击
             if not blocked and not reason:
                 self._counts[link_id] = self._counts.get(link_id, 0) + 1
+                if digest:
+                    key = (link_id, today_local())
+                    bucket = self._visitors.get(key)
+                    if bucket is None:
+                        bucket = set()
+                        self._visitors[key] = bucket
+                    bucket.add(digest)
                 if daily_limit > 0:
                     self._daily[link_id] = self._daily.get(link_id, 0) + 1
         if schedule:
@@ -122,7 +136,10 @@ class ClickBuffer:
         """
         if not daily:
             return
-        today = utcnow().date()
+        # 日期必须是**本地**自然日：判定侧（Link.daily_used_today）比的是
+        # utcnow().date()，而页面文案写的是「明天零点恢复」。两边都按 UTC 切，
+        # 东八区的用户看到的截止点是本地早上 8 点——和文案差一整个上午。
+        today = today_local()
         table = Link.__table__
         for link_id, delta in daily.items():
             session.execute(
@@ -136,6 +153,37 @@ class ClickBuffer:
                     daily_date=today,
                 )
             )
+
+    def _add_visitors(self, session: Session, visitors: dict) -> None:
+        """把这一批的「谁来过」写进 link_visitors，已存在的组合直接跳过。
+
+        唯一访客以前是查点击明细算 `count(distinct ip_hash)`，可明细会被
+        `click_events` 的保留期清掉（默认 180 天）——清完之后「独立访客」
+        一格一格往下掉，而「总点击」不变。数字自己会缩水，比报错更难受。
+        所以单独一张表按 (链接, 本地日期) 记住谁来过，明细清了也不影响。
+        """
+        if not visitors:
+            return
+        table = LinkVisitor.__table__
+        for (link_id, day), digests in visitors.items():
+            if not digests:
+                continue
+            existing = set(
+                session.execute(select(table.c.ip_hash).where(table.c.link_id == link_id, table.c.day == day)).scalars()
+            )
+            fresh = [
+                {"link_id": link_id, "day": day, "ip_hash": digest}
+                for digest in digests
+                if digest and digest not in existing
+            ]
+            if not fresh:
+                continue
+            if session.bind is not None and session.bind.dialect.name == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert as _insert
+
+                session.execute(_insert(table).values(fresh).on_conflict_do_nothing())
+            else:
+                session.execute(table.insert().values(fresh))
 
     # ---------- 观测 ----------
     def pending_daily(self, link_id: int) -> int:
@@ -151,6 +199,11 @@ class ClickBuffer:
         """某个链接还没落库的点击数。"""
         with self._lock:
             return self._counts.get(link_id, 0)
+
+    def pending_visitors(self, link_id: int) -> int:
+        """某个链接今天还没落库的独立访客数（按 IP 摘要去重）。"""
+        with self._lock:
+            return len(self._visitors.get((link_id, today_local()), ()))
 
     def dropped(self) -> int:
         with self._lock:
@@ -170,6 +223,8 @@ class ClickBuffer:
             dropped = before - len(self._queue)
             self._counts.pop(link_id, None)
             self._daily.pop(link_id, None)
+            for key in [k for k in self._visitors if k[0] == link_id]:
+                self._visitors.pop(key, None)
         return dropped
 
     # ---------- 落库 ----------
@@ -192,6 +247,8 @@ class ClickBuffer:
             self._counts = {}
             daily = self._daily
             self._daily = {}
+            visitors = self._visitors
+            self._visitors = {}
         if not batch:
             return 0
 
@@ -207,7 +264,7 @@ class ClickBuffer:
                         ua=item.ua,
                         device=item.device,
                         platform=item.platform,
-                        ip_hash=ip_hash(item.ip) or None,
+                        ip_hash=item.ip_hash or None,
                         blocked=item.blocked,
                         block_reason=item.reason,
                     )
@@ -221,6 +278,7 @@ class ClickBuffer:
                     .values(clicks=func.coalesce(Link.clicks, 0) + delta)
                 )
             self._add_daily_usage(session, daily)
+            self._add_visitors(session, visitors)
             session.commit()
             if self._dropped:
                 logger.warning("延迟计数期间因队列超限丢弃 %d 条点击", self._dropped)
@@ -237,6 +295,8 @@ class ClickBuffer:
                     self._counts[link_id] = self._counts.get(link_id, 0) + delta
                 for link_id, delta in daily.items():
                     self._daily[link_id] = self._daily.get(link_id, 0) + delta
+                for key, digests in visitors.items():
+                    self._visitors.setdefault(key, set()).update(digests)
             logger.exception("延迟计数 flush 失败，已回退队列")
             raise
         finally:
@@ -314,6 +374,7 @@ class ClickBuffer:
             self._queue = []
             self._counts = {}
             self._daily = {}
+            self._visitors = {}
             self._dropped = 0
 
 

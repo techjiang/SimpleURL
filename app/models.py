@@ -5,11 +5,11 @@ from __future__ import annotations
 import datetime as dt
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
-from app.core.timeutil import ensure_aware, iso, utcnow
+from app.core.timeutil import ensure_aware, iso, today_local, utcnow
 
 # 主键在 SQLite 上必须是字面的 `INTEGER` 才等于 rowid，只有它才会跟着插入自动分配号
 # （写成 BIGINT 就只是个普通列，插入直接 NOT NULL 报错）。收成一个常量是为了
@@ -85,8 +85,13 @@ class Link(Base):
 
     @property
     def daily_used_today(self) -> int:
-        """今天的已用次数。日期不是今天就算 0——日切靠比对，不靠定时清零。"""
-        if self.daily_date is None or self.daily_date != utcnow().date():
+        """今天的已用次数。日期不是今天就算 0——日切靠比对，不靠定时清零。
+
+        这里比的必须是**本地**自然日：页面写的是「明天（零点）恢复」。
+        按 UTC 切的话，东八区用户的额度会在早上 8 点忽然回满，
+        而文案说的是零点——两头对不上，比不限额更让人困惑。
+        """
+        if self.daily_date is None or self.daily_date != today_local():
             return 0
         return int(self.daily_used or 0)
 
@@ -158,6 +163,30 @@ class ClickEvent(Base):
 
     __table_args__ = (
         Index("ix_click_events_link_ts", "link_id", "ts"),
+    )
+
+
+class LinkVisitor(Base):
+    """某条链接在某个本地自然日来过谁（按 IP 摘要去重）。
+
+    「独立访客」原来是查 click_events 算 `count(distinct ip_hash)`。可明细
+    按保留期清理（默认 180 天，见 `prune_click_events`），清完之后这个数字
+    会跟着往下掉——总点击不变、独立访客缩水，同一个页面上两个数字各说各话。
+
+    所以单开一张小表把「谁来过」留住：一行 = (链接, 日期, 摘要)，明细清掉
+    也不影响累计。写入跟着延迟计数那一批走（`ClickBuffer._add_visitors`），
+    唯一键让重复写入直接跳过，并发下不会写重。
+    """
+
+    __tablename__ = "link_visitors"
+
+    id: Mapped[int] = mapped_column(AUTO_ID, primary_key=True, autoincrement=True)
+    link_id: Mapped[int] = mapped_column(ForeignKey("links.id", ondelete="CASCADE"), index=True, nullable=False)
+    day: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    ip_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("link_id", "day", "ip_hash", name="uq_link_visitors"),
     )
 
 

@@ -24,7 +24,7 @@ from app.core.clicks import click_buffer
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import client_ip, rate_limiter
-from app.core.timeutil import local_day_sql, local_day_start
+from app.core.timeutil import local_day_sql, local_day_start, today_local
 from app.core.settings_store import EDITABLE, code_length_value, effective, get_all, set_value
 from app.core.yourls import parse as parse_yourls
 from app.models import ApiKey, ClickEvent, Link, Setting
@@ -112,9 +112,11 @@ def api_logout(response: Response):
 def api_dashboard(request: Request, db: Session = Depends(get_db)):
     require_admin(request)
     now = dt.datetime.now(dt.timezone.utc)
-    # 「今日」一律指本地自然日：容器跑 UTC 时 now.date() 是服务器日期，
-    # 跟用户在页面上看到的「今天」差 8 小时
-    today = now.astimezone().date()
+    # 「今日」一律指本地自然日，和统计页、限额判定同一口径。
+    # 以前这里写 `now.astimezone().date()`：取的是**系统**时区，容器里通常是 UTC，
+    # 于是「TZ=Asia/Shanghai + 系统跑 UTC」这个最常见的组合下，仪表盘的
+    # 「今日点击」在本地 00:00~08:00 之间全程挂在昨天，柱状图最后一根也是空的。
+    today = today_local()
 
     total_links = db.execute(select(func.count()).select_from(Link)).scalar_one() or 0
     total_clicks = db.execute(select(func.coalesce(func.sum(Link.clicks), 0))).scalar_one() or 0

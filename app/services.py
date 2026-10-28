@@ -28,7 +28,7 @@ from app.core.timeutil import (
     local_day_sql,
     utcnow,
 )
-from app.models import ClickEvent, Link
+from app.models import ClickEvent, Link, LinkVisitor
 from app.schemas import LinkCreate, LinkUpdate
 
 logger = logging.getLogger("simpleurl")
@@ -766,13 +766,18 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     if legacy:
         no_click.append({"reason": "legacy", "label": "历史未分类", "hint": "升级前入库的拦截记录", "count": legacy})
 
-    unique = db.execute(
-        select(func.count(func.distinct(ClickEvent.ip_hash))).where(
-            ClickEvent.link_id == link.id,
-            ClickEvent.ip_hash.is_not(None),
-            ClickEvent.blocked.is_(False),
-        )
+    # 独立访客：按「链接 + 本地日期 + IP 摘要」去重，跨天算新访客
+    # （跨天再来的还是同一个人，但他确实又访问了一次，旧口径就是这样）。
+    #
+    # 不再直接数 click_events 的 distinct：那张表按保留期清理，
+    # 清完之后「独立访客」会自己往下掉，总点击却不变——两个数字打架。
+    # link_visitors 专门记这件事，明细清了也不受影响。
+    #
+    # 缓冲里还没落库的那部分要补上：点完立刻刷新页面，访客数不该还是 0。
+    unique_db = db.execute(
+        select(func.count()).select_from(LinkVisitor).where(LinkVisitor.link_id == link.id)
     ).scalar_one()
+    unique = int(unique_db or 0) + click_buffer.pending_visitors(link.id)
 
     last_click = db.execute(
         select(func.max(ClickEvent.ts)).where(ClickEvent.link_id == link.id)
@@ -781,7 +786,7 @@ def get_stats(db: Session, code: str, days: int = 30) -> dict:
     return {
         "code": link.code,
         "clicks": link.clicks or 0,
-        "unique_visitors": int(unique or 0),
+        "unique_visitors": int(unique),
         "created_at": link.created_at,
         "last_click_at": last_click,
         "daily": [{"date": k, "count": v} for k, v in buckets.items()],

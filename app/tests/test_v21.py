@@ -41,8 +41,9 @@ class TestChartLabels:
         assert "if (i === 0 || i === last || i % step === 0) mark(i);" in ADMIN_JS
 
     def test_room_accounts_for_label_width(self):
-        # 一个字宽 21px，日期「MM-DD」要留两倍多；按柱宽算而不是按柱子数算
-        assert "const per = 21;" in ADMIN_JS
+        # 每根柱子连缝带标签要留 27px（标签 21px + gap 6px），日期「MM-DD」还要再翻一倍多；
+        # 按柱宽算而不是按柱子数算
+        assert "const per = 27;" in ADMIN_JS
         assert "Math.floor(width / (per * 2.2))" in ADMIN_JS
 
     def test_zero_tick_not_shifted(self):

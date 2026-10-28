@@ -396,7 +396,19 @@ select option { background: var(--bg-soft); color: var(--text); }
 .stats-hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 26px; }
 .stats-hero h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); margin: 8px 0; overflow-wrap: anywhere; word-break: break-word; }
 .qr { border-radius: var(--radius); background: #fff; padding: 6px; }
-.stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 22px; }
+/* 固定档位而不是 `auto-fit minmax(170px,1fr)`：自动填充会在某些宽度下
+   排出「4 + 1」——最后一行孤零零一张卡，右边空出一大片，看着像没画完。
+   五张卡（总点击 / 独立访客 / 近 30 天 / 最近点击 / 创建时间）正好一行排满。
+   窄屏也不掉成单列：日期那种值本身两行就够，卡片占满一行反而更好读。 */
+.stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 22px; }
+@media (max-width: 1180px) { .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 860px) { .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) {
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .stat-card { padding: 14px; }
+  .stat-card strong { font-size: 1.42rem; }
+  .stat-card strong.wide { font-size: 1rem; }
+}
 .stat-card { padding: 18px; display: grid; gap: 6px; }
 .stat-label { font-size: 0.76rem; color: var(--text-faint); letter-spacing: 0.1em; text-transform: uppercase; }
 /* 数字默认不换行；日期这种长值在窄卡片里会撑破 170px 的格子，
