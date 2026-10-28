@@ -41,9 +41,9 @@ class TestChartLabels:
         assert "if (i === 0 || i === last || i % step === 0) mark(i);" in ADMIN_JS
 
     def test_room_accounts_for_label_width(self):
-        # 每根柱子连缝带标签要留 27px（标签 21px + gap 6px），日期「MM-DD」还要再翻一倍多；
+        # 每根柱子连缝带标签要留 26px（标签 20px + gap 6px），日期「MM-DD」还要再翻一倍多；
         # 按柱宽算而不是按柱子数算
-        assert "const per = 27;" in ADMIN_JS
+        assert "const per = 26;" in ADMIN_JS
         assert "Math.floor(width / (per * 2.2))" in ADMIN_JS
 
     def test_zero_tick_not_shifted(self):
@@ -54,7 +54,11 @@ class TestChartLabels:
 
 class TestBarWidth:
     def test_bars_capped(self):
-        assert "max-width: 26px" in block(CSS, ".chart-bars .bar")
+        # 上下限都定在柱子上：上限防止 14 天在宽屏被拉成色块，
+        # 下限防止 30 天在窄屏细到日期标签探出图表被裁
+        body = block(CSS, ".bar")
+        assert "max-width: 34px" in body
+        assert "min-width: 20px" in body
 
     def test_bars_anchor_right(self):
         # 柱子靠右排：日期从左往右读，右边的「今天」要贴住右边界

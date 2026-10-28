@@ -71,18 +71,66 @@ def is_public_url(url: str) -> bool:
     # `http://10.0.0.1.nip.io` 这种自带解析的域名能直接绕过整道 SSRF 防线
     if not settings.ssrf_resolve_check:
         return True
-    return not resolves_to_internal(host)
+    # 字面 IP 走上面的 is_public_ip，那里保留段一律拒——那是用户明着填的地址。
+    # 域名这次只看「解析到哪」：解析器可能返回保留段地址（198.18/15 是常见的
+    # 本地代理 / VPN 分流域），那不是内网，只是这台机器上网走了别的路。
+    # 把网关认成内网，用户在开了代理的机器上建什么都会被判「地址不合法」。
+    return not resolves_to_internal(host, literal=False)
 
 
-def is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """公网地址才算安全。内网 / 回环 / 链路本地 / 保留段一律不收。"""
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+# 这几段是「无论从哪来都不能放」：RFC1918 私网、CGNAT、回环、链路本地、
+# 组播、未指定。ipaddress 在 3.13 之前把 100.64/10 只当成 reserved，
+# 在 3.13 之后又把 CGNAT 并进 private——判断口径随 Python 版本漂，
+# 挡 SSRF 这种事不能跟着解释器走，所以自己列一遍。
+_NEVER_PUBLIC = tuple(
+    ipaddress.ip_network(c)
+    for c in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "224.0.0.0/4",
+        "255.255.255.255/32",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+    )
+)
+
+
+def _in_cidrs(ip, networks) -> bool:
+    try:
+        return any(ip in net for net in networks)
+    except TypeError:  # 版本不同的地址不能比，交给后面按 private 判断
         return False
-    if ip.is_unspecified:
+
+
+def is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address, literal: bool = True) -> bool:
+    """公网地址才算安全。内网 / 回环 / 链路本地 / 保留段一律不收。
+
+    `literal=False` 表示这个地址来自域名解析而不是用户直接填的：保留段
+    （198.18/15、192.0.2/24 这类）放行，但内网 / 回环 / 链路本地照旧拦。
+    保留段本来就不可路由，落上去也摸不到内网，反倒是不少代理与 VPN
+    的分流域——一律拒会让「开了代理就建不了短链」。
+    """
+    # 回环 / 链路本地 / 组播 / 未指定：不论从哪来都不能放，这些是真能摸到
+    # 本机与内网的门
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
         return False
-    # IPv4 映射的 IPv6 地址（::ffff:127.0.0.1）等畸形写法
+    # IPv4 映射的 IPv6 地址（::ffff:127.0.0.1）等畸形写法，先按里面的 v4 判
     mapped = getattr(ip, "ipv4_mapped", None)
-    if mapped is not None and not is_public_ip(mapped):
+    if mapped is not None and not is_public_ip(mapped, literal=literal):
+        return False
+    if _in_cidrs(mapped or ip, _NEVER_PUBLIC):
+        return False
+    # 剩下还说自己是 private / reserved 的，只可能是文档与实验段
+    # （198.18/15、192.0.2/24 等）。用户直接填的一律拒；域名解析出来的放行，
+    # 见 docstring——那多半是代理的分流域，落上去摸不到任何内网。
+    if (ip.is_private or ip.is_reserved) and literal:
         return False
     return True
 
@@ -91,7 +139,7 @@ _dns_cache: dict[str, tuple[float, bool]] = {}
 _dns_lock = threading.Lock()
 
 
-def resolves_to_internal(host: str) -> bool:
+def resolves_to_internal(host: str, literal: bool = True) -> bool:
     """域名解析出的任一地址落在内网就判不安全（失败时按不安全处理）。
 
     结果缓存几十秒：同一域名被反复贴进来时不用每次都问 DNS，
@@ -106,7 +154,7 @@ def resolves_to_internal(host: str) -> bool:
             hit = _dns_cache.get(host)
             if hit and now - hit[0] < ttl:
                 return hit[1]
-    result = _resolve_internal_uncached(host)
+    result = _resolve_internal_uncached(host, literal=literal)
     if ttl > 0:
         with _dns_lock:
             if len(_dns_cache) > 4096:
@@ -164,7 +212,7 @@ def _getaddrinfo_bounded(host: str) -> list[str] | None:
         return None
 
 
-def _resolve_internal_uncached(host: str) -> bool:
+def _resolve_internal_uncached(host: str, literal: bool = True) -> bool:
     """解析域名，任一条结果落在内网就判不安全。
 
     必须有硬超时：`getaddrinfo` 是同步阻塞调用，域名服务器不回话时
@@ -186,7 +234,7 @@ def _resolve_internal_uncached(host: str) -> bool:
         except ValueError:
             continue
         seen = True
-        if not is_public_ip(ip):
+        if not is_public_ip(ip, literal=literal):
             return True
     # 一条地址都没解析出来：按不安全处理，别把「解析失败」当「公网」放过去
     return not seen

@@ -321,7 +321,7 @@
     // 每根柱子额外吃 6px 的间距（.chart-bars 的 gap）。只按标签宽算的话
     // 30 根柱子会在 390px 上挤出十几像素的横向滚动——图上看着好好的，
     // 但整页多了一条能左右晃的缝
-    const per = 27;
+    const per = 26;
     const room = Math.max(1, Math.floor(width / (per * 2.2)));
     const mark = (i) => out.set(i, String(daily[i].date).slice(5));
     if (width && width / Math.max(1, daily.length) >= per * 2.2) {
@@ -355,7 +355,7 @@
         // 屏幕上就多出十来个贴底的圆角块，像一排没画完的柱子
         const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
         const label = labels.has(i) ? labels.get(i) : '';
-        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? '' : ' no-label'}" title="${d.date}：${d.count} 次点击">${fill}${label ? `<b>${label}</b>` : ''}</div>`;
+        return `<div class="bar${d.count ? '' : ' is-zero'}${label ? ' has-label' : ''}" title="${d.date}：${d.count} 次点击">${fill}${label ? `<b>${label}</b>` : ''}</div>`;
       })
       .join('');
     el.innerHTML =

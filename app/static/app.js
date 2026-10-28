@@ -209,6 +209,9 @@
     const box = $('#dup-hint');
     const list = $('#dup-list');
     if (!input || !box || !list) return;
+    // 查重只给管理员：结果是「别人也建过」的短码，访客发请求只会换回 401，
+    // 控制台红一行，而他本来也看不到别人的链接
+    if (!access.is_admin) { box.hidden = true; return; }
     let timer = null;
     let seq = 0;
     const hide = () => { box.hidden = true; list.innerHTML = ''; };
@@ -401,13 +404,32 @@
         off: '未开启自动取标题',
       };
       // 没有标题就别留一行解释：卡片里已经有短链接和二维码，
-      // 再补一句「目标页抓不到标题」只是把失败念一遍
-      const text = link.title ? (map[link.title_source] || '') : '';
+      // 再补一句「目标页抓不到标题」只是把失败念一遍。
+      // 「标题按你填的来」也不用说——那是他自己刚打的字。
+      const text = link.title && map[link.title_source] && link.title_source !== 'manual'
+        ? map[link.title_source]
+        : '';
       titleHint.textContent = text;
       titleHint.hidden = !text;
     }
     $('#result-tags').innerHTML = (link.tags || [])
       .map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
+    // 二维码右边那块只放「这一条自己是什么」：标题、备注、标签。
+    // 以前只挂一句「标题已自动抓取」——没标题没标签时那里就孤零零一句话，
+    // 既没说抓到了什么，也没说为什么要告诉我。
+    const facts = $('.result-facts');
+    if (facts) {
+      const lead = facts.querySelector('.result-title');
+      if (lead) lead.remove();
+      if (link.title) {
+        facts.insertAdjacentHTML(
+          'afterbegin',
+          `<p class="result-title">${escapeHtml(link.title)}</p>`,
+        );
+      }
+      // 没标题没标签就整块收起来，别在二维码右边留一片空白
+      facts.classList.toggle('is-empty', !link.title && !(link.tags || []).length);
+    }
     renderSelfTools(link, showResultFresh);
     box.hidden = false;
     box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -811,6 +833,11 @@
     if (state.q) params.set('q', state.q);
     if (state.tag) params.set('tag', state.tag);
     if (state.status) params.set('status', state.status);
+    // 访客没有链接库：这两条接口对他是 403/401，控制台白响两声
+    if (!access.is_admin) {
+      renderGuestBoard();
+      return;
+    }
     try {
       const data = await withToken('/api/links?' + params.toString());
       state.total = data.total;
@@ -849,6 +876,11 @@
   async function loadTags() {
     const sel = $('#tag-filter');
     if (!sel) return;
+    // 标签下拉是给链接库筛的，访客既没有库也没有这个下拉，别去问一个他拿不到的接口
+    if (!access.is_admin) {
+      sel.innerHTML = '<option value="">全部标签</option>';
+      return;
+    }
     try {
       const data = await withToken('/api/tags');
       const items = data.items || [];
@@ -1150,7 +1182,7 @@
         const fill = d.count ? `<i style="height:${h}%"></i>` : '<i class="zero"></i>';
         // 有标签才叫日期行：14 天宽屏下每根都有日期，30 天窄屏下只有几根有
         const day = labels.has(i) ? `<b>${labels.get(i)}</b>` : '';
-        return `<div class="bar${d.count ? '' : ' is-zero'}${day ? '' : ' no-label'}" title="${d.date}：${d.count} 次点击">${fill}${day}</div>`;
+        return `<div class="bar${d.count ? '' : ' is-zero'}${day ? ' has-label' : ''}" title="${d.date}：${d.count} 次点击">${fill}${day}</div>`;
       })
       .join('');
     el.innerHTML =
@@ -1205,11 +1237,12 @@
   function chartLabels(width, daily) {
     const out = new Map();
     const last = daily.length - 1;
-    // 每根柱子连缝留 21px：够放下「10-25」这种标签
+    // 柱子连缝留 26px：日期不居中、从柱右沿往回写，「10-25」实测 29px，
+    // 错开一格正好够看
     // 每根柱子额外吃 6px 的间距（.chart-bars 的 gap）。只按标签宽算的话
     // 30 根柱子会在 390px 上挤出十几像素的横向滚动——图上看着好好的，
     // 但整页多了一条能左右晃的缝
-    const per = 27;
+    const per = 26;
     if (width / Math.max(1, daily.length) >= per * 2.2) {
       daily.forEach((d, i) => out.set(i, d.date.slice(5)));
       return out;

@@ -28,12 +28,15 @@
 * { box-sizing: border-box; }
 /* 跳到正文：平时藏在视口外，键盘聚焦才落下来。用 transform 而不是
    `left:-9999px`，旧式写法在 RTL 和缩放时会露出一条边。 */
+/* 藏起来靠的是 clip 而不是位移：位移只是把它挪出视口，元素仍占着
+   「视口内的位置」，浏览器的滚动到可见元素、截图、`Ctrl+A` 都还可能摸到它——
+   首页那张截图里「跳到正文」就那样压在标题上，看着像多出来一个按钮。
+   用 clip-path 把它裁成零面积，键盘一聚焦再恢复。 */
 .skip-link {
   position: fixed; top: 0; left: 50%; z-index: 200;
-  /* 不用百分比：元素自身高度 42px，-120% 只能退 50px，兜帽上那点圆角
-     还会挂在视口上沿留一道蓝边。直接退到自身高度之外。 */
-  transform: translate(-50%, calc(-100% - 8px));
-  transition: transform .18s ease;
+  transform: translate(-50%, 0);
+  clip-path: inset(0 0 100% 0);
+  transition: clip-path .18s ease;
   padding: 10px 18px; border-radius: 0 0 12px 12px;
   background: var(--brand); color: #fff; font-size: 0.86rem; font-weight: 600;
   text-decoration: none;
@@ -41,7 +44,7 @@
 /* 聚焦时落下来。`:focus` 也给一份：Safari 里 `:focus-visible` 的判定
    比 Chrome 保守，键盘用户会按了 Tab 却什么都没看见。 */
 .skip-link:focus,
-.skip-link:focus-visible { transform: translate(-50%, 0); outline: none; }
+.skip-link:focus-visible { clip-path: inset(0 0 -8px 0); outline: none; }
 /* 焦点落到 main 上时不要描边——那是跳转目标，不是可点元素 */
 main:focus { outline: none; }
 /* 必须带 !important：`.badge` / `.btn` 这类规则把 display 写死成 inline-flex，
@@ -144,7 +147,12 @@ input, select {
 input::placeholder { color: var(--text-faint); }
 input:focus, select:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); background: rgba(6, 10, 20, 0.85); }
 select { cursor: pointer; appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%), linear-gradient(135deg, var(--text-dim) 50%, transparent 50%); background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 34px; }
-select option { background: var(--bg-soft); color: var(--text); }
+/* 下拉项是系统弹层画的，只有 Firefox 和部分 Windows 主题肯听 `option` 的
+   颜色。这里显式给底色和字色，并声明 `color-scheme`——少了它，
+   上面那条 rgba 透明底会被系统当成「没设」，弹层退回白底，字也一起白掉。 */
+select { color-scheme: dark; }
+select option,
+select optgroup { background-color: #0c1322; color: #e8edf7; }
 
 /* ============ 高级选项折叠 ============ */
 /* 默认收起：七行输入框铺开时，第一屏几乎全是表单，粘完链接还得滚半天才看见按钮。
@@ -213,7 +221,15 @@ select option { background: var(--bg-soft); color: var(--text); }
 .result-meta { display: flex; align-items: center; gap: 16px; }
 .result-meta img { border-radius: 10px; background: #fff; padding: 4px; }
 .result-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.result-facts { display: grid; gap: 6px; min-width: 0; }
+.result-facts { display: grid; gap: 6px; min-width: 0; align-content: center; }
+/* 二维码右边：先给人看「这条链接是什么」，再是一句它是怎么来的。
+   抓来的标题压成两行，太长的地址不至于把卡片撑开 */
+.result-facts .result-title {
+  margin: 0; font-size: 0.9rem; font-weight: 600; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; overflow-wrap: anywhere;
+}
+.result-facts.is-empty { display: none; }
 /* 结果卡片里的自助区：目标 / 到期两行加三个动作，别让人为了改一个字重开一条 */
 .result-self:not([hidden]) { display: grid; gap: 8px; padding-top: 12px; border-top: 1px dashed var(--border); }
 .result-self[hidden] { display: none; }
@@ -456,8 +472,10 @@ select option { background: var(--bg-soft); color: var(--text); }
 /* 图表 = 左侧刻度 + 柱状区。刻度绝对定位贴在容器左上，柱子区照旧 flex 撑满。
    原来是单纯的一排柱子，没有任何量纲：1 次和 100 次看起来是同一种东西。 */
 /* 柱区必须有确定高度：柱高是百分比，父级只给 min-height 时百分比无处可依，
-   柱子会退回 2px 的保底高度——30 天里只有一天有点击时，整张图看着像空的。 */
-.chart { position: relative; display: flex; align-items: stretch; width: 100%; height: 160px; padding-left: 30px; box-sizing: border-box; }
+   柱子会退回 2px 的保底高度——30 天里只有一天有点击时，整张图看着像空的。
+   160px 是「带日期行的柱区」高度：柱子自己留 16px 底边给日期（.bar 的
+   margin-bottom），百分比量的是剩下那 160px，纵轴刻度和它对齐。 */
+.chart { position: relative; display: flex; align-items: stretch; width: 100%; height: 176px; padding-left: 30px; box-sizing: border-box; }
 /* 刻度上限那个数字挂在柱区上方，得在 .chart 里留出位置：
    它是绝对定位的子元素，没有这段 padding 时会直接伸到元素外，被
    .chart-scroll 的 overflow 裁掉一半——截图里坐标轴顶端就是半条横线 */
@@ -466,9 +484,12 @@ select option { background: var(--bg-soft); color: var(--text); }
    纵轴跟着滚走等于没有纵轴。滚动时脚本用 translateX 把它拉回来。 */
 /* 刻度条原来左右都有一道边：左边是卡片底色的渐变断口，右边一道 border-right，
    中间夹一条 26px 的深色竖条，看着像误插的一根柱子。现在只留底边刻度线。 */
+/* 刻度区不铺底色：卡片本身是半透明的，糊一块 --bg 上去就是一根纯黑竖条，
+   在深色玻璃卡片上格外扎眼。柱子区本来就从 26px 之后才开始（.chart 的
+   padding-left），横向滚动时柱子不会跑到刻度底下，也就用不着遮挡。 */
 .chart-axis {
   position: absolute; left: 0; top: 14px; height: 160px; width: 26px;
-  pointer-events: none; background: var(--bg); z-index: 2;
+  pointer-events: none; z-index: 2;
 }
 /* 刻度是绝对定位的，容不下的时候会被压成两行（顶上的「10」看着像「1/0」）。
    只留数字，并把它钉在刻度线上。 */
@@ -476,11 +497,13 @@ select option { background: var(--bg-soft); color: var(--text); }
 /* 柱状区要能撑开：放在横向滚动容器里、柱子又有最小宽度时，flex 会把 30 根柱子
    压回可视宽度，手机上这段图就是一片空白。fit-content 吃的是「柱子最小宽度之和」，
    图表外壳只负责留出左侧刻度位。 */
-.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px; height: 160px; width: fit-content; min-width: min(100%, 320px); }
-/* 柱子有上限宽度：14 天在 1440px 下每根会被拉到四十多像素，看着像一排色块
-   不像柱状图；26px 封顶后柱子整组贴右，和图例上的「今天」对齐——
-   左边那片留白才对得上「前几天没数据」，而不是像图没画完 */
-.chart-bars .bar { max-width: 26px; }
+.chart-bars { flex: 1 1 auto; display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px; height: 176px; min-width: 100%; }
+/* 柱子有上限宽度：14 天在 1440px 下每根会被拉到七十多像素，看着像一排色块
+   不像柱状图；封顶后柱子整组贴右，和图例上的「今天」对齐——
+   左边那片留白才对得上「前几天没数据」，而不是像图没画完。
+   也给个下限宽度：日期是从柱子右沿往左写的，柱子太细字就探到图表
+   外面被裁掉，30 天里只看得见一半的日期 */
+
 /* 顶部要留出 8px 给刻度上限那个数字：它挂在柱区上方，柱子区又在横向滚动容器里，
    overflow-y:hidden 会把它当溢出内容裁掉一半 */
 .chart-scroll { overflow-x: auto; overflow-y: hidden; padding: 8px 0 4px; scrollbar-width: thin; }
@@ -488,15 +511,21 @@ select option { background: var(--bg-soft); color: var(--text); }
 .chart-swipe { margin: 6px 0 0; font-size: .74rem; text-align: right; }
 .chart-scroll::-webkit-scrollbar { height: 6px; }
 .chart-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
-.bar { position: relative; flex: 1 0 auto; min-width: 14px; height: 100%; }
+/* 柱子不许被分掉：`flex: 1 0 auto` 的 basis 是 0，30 根柱子会把容器的
+   可用宽度按比例分完，每根最后只剩 5px 左右——截图里那 30 天看着像
+   只有一根柱子。改成按自身宽度排（basis auto），装不下就交给外层横滑。 */
+.bar { position: relative; flex: 1 0 auto; width: 20px; min-width: 20px; max-width: 34px; height: 100%; margin-bottom: 16px; }
 .bar i { position: absolute; left: 0; right: 0; bottom: 0; flex: 0 0 auto; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--brand), rgba(79,140,255,0.25)); min-height: 2px; transition: height .5s cubic-bezier(.22,1,.36,1), filter .18s; }
 .bar:hover i { filter: brightness(1.3); }
 /* 日期挂在柱子底下：横向滚动时跟着自己那根走，不会滚丢 */
-.bar b { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 4px; font-size: .62rem; color: var(--text-faint); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* 没有日期标签的柱子要把那 16px 也占住：只在个别柱子上有 b 时，
-   滚动容器底部会随最后一根柱子有没有标签而跳一下，图整体高矮不一。
-   同一层级的图表还得一样高，横向扫一眼才顺。 */
-.bar.no-label { padding-bottom: 16px; }
+/* 日期标签别用 top:100% 甩到柱子外面：.chart-scroll 是 overflow-x:auto，
+   溢出部分按规范一律裁掉，横轴下面的日期就全没了。改成贴着柱子底部内侧。
+   不居中：柱子 14px 宽，「01-10」有 32px 宽，居中后左右都压到邻柱，
+   20 根挤在一起就糊成一片。从柱子左沿开始写，每根只占自己那一格。 */
+.bar b { position: absolute; bottom: 0; right: 0; font-size: .62rem; color: var(--text-faint); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 日期标签挪进柱子内侧之后，这根柱子得给字留出位置，不然字和贴底的
+   细柱子叠在一起 */
+.bar.has-label { padding-bottom: 14px; }
 /* 零点击的日子不画线：一排贴底的短横比空白更像「坏了」 */
 .bar i.zero { display: none; }
 /* 一根柱子都没有时不再画一条贴底的细线，改成一句人话 */
@@ -580,13 +609,14 @@ select option { background: var(--bg-soft); color: var(--text); }
   .container { padding: 18px 0 60px; }
   .stats-hero .qr { order: -1; }
   .chart-card { padding: 16px; }
-  .chart { padding-left: 26px; height: 144px; }
-  .chart-bars { height: 130px; }
-  /* 刻度容器高度写死 160px，柱区在窄屏改成 130px 之后刻度不再贴着柱子走：
-     顶部那个数字浮在框外像条怪线，「0」躺在底部几像素之下。跟着一起缩 */
+  .chart { padding-left: 26px; height: 146px; }
+  /* 柱区高度要把柱子下面那条日期行算进去（见 .bar 的 margin-bottom），
+     否则日期会顶到纵轴「0」那一行上 */
+  .chart-bars { height: 146px; }
+  /* 刻度框跟柱区同高：柱区在窄屏改成 146px 之后刻度不再贴着柱子走，
+     顶部那个数字浮在框外像条怪线，「0」躺在底部几像素之下 */
   .chart-axis { height: 130px; }
   /* 手机上柱子给足宽度，宁可横滑也别全挤成一根线 */
-  .chart .bar { min-width: 22px; }
   .bar b { font-size: .58rem; }
   .chart-axis { width: 22px; height: 130px; top: 14px; }
   .chart-axis span { font-size: .64rem; right: 4px; }
@@ -594,7 +624,7 @@ select option { background: var(--bg-soft); color: var(--text); }
      窄屏给柱子一个下限宽度让图横向可滑，右端留 4px 内边距，免得最后一根贴边被裁。
      标签同时抽稀，不然滚起来满屏都是字 */
   .chart-bars { padding-right: 4px; }
-  .chart .bar { min-width: 24px; }
+  .chart .bar { width: 24px; min-width: 24px; }
   /* 30 根柱子在 390px 里只放得下一半：日期抽稀，别糊成一片 */
   .bar:nth-child(even) b { visibility: hidden; }
 }
