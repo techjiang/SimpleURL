@@ -264,7 +264,12 @@ def api_board(request: Request, db: Session = Depends(get_db)):
     size = int(effective(db, "board_size") or 0)
     if size <= 0:
         return {"items": []}
-    return {"items": public_board(db, limit=size)}
+    # 回执只用来标出「榜上哪条是你自己建的」。访客的「我的链接」在开放模式下
+    # 是空的，而他明明刚在首页建过一条——榜上那条其实就在眼前，只是没人告诉他。
+    from app.core.middleware import CLAIM_COOKIE
+
+    claim = request.cookies.get(CLAIM_COOKIE) or request.query_params.get("t") or ""
+    return {"items": public_board(db, limit=size, claim_token=claim or None)}
 
 
 @router.get("/tags", summary="标签列表")

@@ -253,13 +253,23 @@ select optgroup { background-color: #0c1322; color: #e8edf7; }
 .hotboard[hidden] { display: none; }
 .hotboard-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
 .hotboard-head h2 { font-size: 1.05rem; white-space: nowrap; }
-.hotboard-head .hint { font-size: 0.78rem; }
-.hotboard-list { list-style: none; display: grid; gap: 2px; margin: 0; padding: 0; }
+.hotboard-head .hint { font-size: 0.78rem; min-width: 0; }
+/* 行高从内容来，不要网格隐式行把数字行撑高：一旦有行长到 66px，
+   其余行跟着变 66px，行距看着就散了 */
+.hotboard-list { list-style: none; display: block; margin: 0; padding: 0; }
+/* 榜单读的是「第几名、什么链接、多少次」。以前一行里塞了五样东西
+   （名次 / 标题+短码 / 标签 / 点击数 / 独立复制按钮），1440 下标题列被拉到
+   max-width 之后中间空出大半屏，三样信息被拉成一根橡皮筋。现在短码自己
+   就是复制按钮，行尾只留点击数，一行三样东西。 */
 .hotboard-item {
-  display: flex; align-items: center; gap: var(--s3);
+  display: flex; gap: var(--s3);
   padding: 9px 8px; border-radius: var(--r-sm);
   transition: background .15s ease;
 }
+/* 名次要对齐标题第一行，别对齐两行整体：标题一折行，flex 居中会把
+   名次和点击数推到垂直中线上，第 4 名的「4」就掉到短码那一行去了。
+   固定行高（和 .hotboard-title 一致）让名次、标题头、点击数坐在同一条线上 */
+.hotboard-item > .hotboard-rank { line-height: 1.45; }
 .hotboard-item:hover { background: var(--surface-2, rgba(255,255,255,0.03)); }
 .hotboard-rank {
   flex: none; width: 20px; text-align: center;
@@ -267,32 +277,51 @@ select optgroup { background-color: #0c1322; color: #e8edf7; }
 }
 /* 前三名给个轻重差：不做金铜银，只让人一眼看出头部 */
 .hotboard-item:nth-child(-n+3) .hotboard-rank { color: var(--accent); font-weight: 600; }
-/* 榜单读的是「第几名、什么链接、多少次」，三者不该隔着半屏。
-   原来靠 max-width: 520px 拦一道，可 1440 下这一行有一千多像素，
-   520 之后仍然一路空到右边缘的复制按钮，中间那道白是纯浪费。
-   现在标题列只长到内容宽度，点击数和复制按钮就跟在它后面。 */
-.hotboard-main { flex: 1 1 auto; min-width: 0; max-width: 720px; display: grid; gap: 2px; justify-items: start; }
-.hotboard-clicks { margin-left: auto; }
+.hotboard-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 3px; justify-items: start; }
 .hotboard-title {
-  font-size: 0.9rem; color: var(--text); text-decoration: none;
+  max-width: 100%;
+  font-size: 0.9rem; line-height: 1.45; color: var(--text); text-decoration: none;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .hotboard-title:hover { color: var(--accent); }
 .hotboard-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.75rem; color: var(--text-faint); }
-.hotboard-code { color: var(--text-dim); }
+
+/* 短码本身就是复制按钮：要复制的就是它，没必要在行尾再挂一个按钮
+   让人做一次「哪个对应哪个」的配对。hover / focus 时才亮出「复制」二字，
+   触屏上靠 :active 也能给到即时反馈。 */
+.copy-code {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 1px 7px; margin-left: -7px;
+  border: 1px solid transparent; border-radius: 7px;
+  background: none; color: var(--text-dim);
+  font: inherit; font-size: 0.75rem; line-height: 1.6; cursor: pointer;
+  transition: color .15s ease, background .15s ease, border-color .15s ease;
+}
+.copy-code:hover, .copy-code:focus-visible {
+  color: var(--text); background: rgba(255,255,255,0.05); border-color: var(--line);
+}
+.copy-mark { font-size: 0.7rem; color: var(--text-faint); opacity: 0; transition: opacity .15s ease; }
+.copy-code:hover .copy-mark, .copy-code:focus-visible .copy-mark, .copy-code[data-busy] .copy-mark { opacity: 1; }
+/* 「我的」：凭回执认出来的那一条。榜单是公开的，能在这里认出自己建的链接，
+   比在「我的链接」区块摆一句「这里还是空的」有用得多。 */
+.hotboard-mine {
+  padding: 0 6px; border-radius: 999px; font-size: 0.7rem;
+  color: var(--accent); border: 1px solid rgba(120,140,255,0.4);
+  white-space: nowrap;
+}
+/* 榜单里的数字和「次」一直隐隐对不齐：汉字和等宽数字的基线差半个像素，
+   加个对齐就能让 6 和「次」坐在同一条线上 */
+.hotboard-clicks { display: inline-flex; align-items: baseline; justify-content: flex-end; gap: 2px; line-height: 1.45; }
+/* 名次、短码也一并等宽：1 和 3 宽度不同会让整列看着在抖 */
+.hotboard-rank, .hotboard-clicks { font-variant-numeric: tabular-nums; }
 .hotboard-clicks {
-  /* 和复制按钮之间给一段空：两样东西本来就不是一件事，
-     挨着放会让人以为「12 次」是按钮的标签 */
-  flex: none; margin-left: auto; padding-right: 18px;
+  flex: none; margin-left: auto;
   font-size: 0.82rem; font-variant-numeric: tabular-nums;
   color: var(--text-dim); min-width: 40px; text-align: right;
 }
 /* 「次」做成真元素的一部分，不再用伪元素拼：伪元素塞进去的字宽度不受
    右对齐控制，数字一长就和左边标题的行尾撞上 */
 .hotboard-clicks em { font-style: normal; font-size: 0.72rem; color: var(--text-faint); margin-left: 2px; }
-/* 复制按钮常驻但压暗：藏到 hover 才出现的话，触屏设备上永远摸不到 */
-.hotboard-copy { opacity: .45; transition: opacity .15s ease; }
-.hotboard-item:hover .hotboard-copy, .hotboard-copy:focus-visible { opacity: 1; }
 
 /* 点击列后面的额度账：限量链接真正想知道的是「还剩几次」 */
 .quota-mark {
@@ -305,7 +334,7 @@ select optgroup { background-color: #0c1322; color: #e8edf7; }
 /* 以前靠 padding-top: 26px 硬顶，去和右边输入框的基线对齐。
    标签一折行、字号一变，它就飘到半空中，看着像忘了收进字段的东西。
    现在老老实实待在自己的格子里，和标签同一列起头。 */
-.field-note { display: block; font-size: 0.78rem; line-height: 1.6; align-self: end; padding-bottom: 2px; }
+.field-note { display: block; font-size: 0.78rem; line-height: 1.6; color: var(--text-faint); }
 
 .board { margin-top: 30px; padding: 20px; }
 .board-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; margin-bottom: var(--s3); }
@@ -458,6 +487,10 @@ select optgroup { background-color: #0c1322; color: #e8edf7; }
    给它一个更小的起点 + 允许在空格处折行 */
 .stat-card strong { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
 .stat-card strong.wide { font-size: 1.18rem; line-height: 1.35; overflow-wrap: anywhere; }
+/* 时间类数字：日期一行、时分一行，字重压回正文。
+   1.8rem 的粗体日期在 170px 的格子里必然折行，一折就比旁边的纯数字卡高出一截。 */
+.stat-card strong.compact { display: grid; gap: 1px; font-size: 1.05rem; font-weight: 600; line-height: 1.3; letter-spacing: 0; color: var(--text-dim); }
+.stat-card strong.compact em { font-style: normal; font-size: 0.82rem; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .chart-card { padding: 20px; margin-bottom: 18px; position: relative; }
 /* 卡片本身定位：图表要在自己的框里自成一层——刻度上限那个数字比图高半个字，
    不给容器定位就会让它跑到标题底下去（截图里就是标题被画了一道横） */
@@ -1034,7 +1067,8 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   .hotboard-item { gap: 8px; padding: 8px 4px; align-items: flex-start; }
   .hotboard-rank { padding-top: 2px; }
   .hotboard-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-  .hotboard-copy { opacity: 1; }
+  /* 触屏没有 hover，「复制」二字得一直亮着，否则手机上永远看不到它 */
+  .copy-mark { opacity: 1; }
   .hotboard-clicks { min-width: 32px; font-size: 0.78rem; }
   .quota-mark { margin-left: 0; }
   .field-note { padding-top: 0; }

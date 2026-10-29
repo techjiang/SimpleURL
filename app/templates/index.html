@@ -54,18 +54,18 @@
             <input id="expires_at" name="expires_at" type="datetime-local" placeholder="2026-12-31 23:59" />
           </div>
         </div>
+        {# 每日上限和备注都是「偶尔填一次」的短字段，各自独占一行等于
+           在两张宽卡片里各摆一个小盒子。并成一行，顺便把上限的说明放进
+           label 的 hint 里，不再占一整行的位置。 #}
         <div class="row">
           <div class="field">
-            <label for="daily_limit">每日上限 <span class="hint">可选 · 这条链接一天最多被打开几次</span></label>
+            <label for="daily_limit">每日上限 <span class="hint">可选 · 0 或留空即不限</span></label>
             <input id="daily_limit" name="daily_limit" type="number" min="0" max="1000000" step="1" placeholder="0 = 不限制" />
           </div>
           <div class="field">
-            <span class="field-note">限量兑换、内测名额用得上：跟全站的「单 IP 防刷」是两套账，互不干扰。</span>
+            <label for="note">备注 <span class="hint">可选 · 只有你和站长看得到</span></label>
+            <input id="note" name="note" type="text" placeholder="用在哪、跟谁对的、什么时候撤" maxlength="400" />
           </div>
-        </div>
-        <div class="field">
-          <label for="note">备注 <span class="hint">可选 · 只有你自己和管理员看得到</span></label>
-          <input id="note" name="note" type="text" placeholder="这条链接用在哪、跟谁对的、什么时候撤" maxlength="400" />
         </div>
         <div class="row">
           <div class="field">

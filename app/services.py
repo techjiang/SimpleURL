@@ -299,7 +299,7 @@ def list_tags(db: Session, limit: int = 60) -> list[dict]:
     return [{"tag": name, "count": count} for name, count in ordered[:limit]]
 
 
-def public_board(db: Session, limit: int = 5) -> list[dict]:
+def public_board(db: Session, limit: int = 5, claim_token: str | None = None) -> list[dict]:
     """公开热门榜：全站点击最多、还能用的那几条。
 
     刻意只给短码、标题和点击数——**不给目标地址**。访客没有「全部链接」的
@@ -321,12 +321,27 @@ def public_board(db: Session, limit: int = 5) -> list[dict]:
         .limit(limit)
     )
     rows = list(db.execute(stmt).scalars().all())
+
+    def _mine(link: Link) -> bool:
+        """这个请求是不是带着这条链接的回执进来的。
+
+        只回一个布尔，**不回回执本身**：榜单是公开接口，把凭据顺着响应
+        递出去，等于替创建者把它写进日志、写进别人的缓存。前端要的也只是
+        「哪条是我的」，一个标记就够。
+        """
+        if not claim_token or not link.claim_hash:
+            return False
+        from app.core.claim import verify
+
+        return verify(db, link, claim_token)
+
     return [
         {
             "code": link.code,
             "title": link.title or "",
             "clicks": int(link.clicks or 0) + click_buffer.pending_for(link.id),
             "tags": link.to_dict()["tags"][:3],
+            "owner": _mine(link),
         }
         for link in rows
     ]

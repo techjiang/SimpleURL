@@ -69,10 +69,12 @@
   <div class="chart-card">
     <div class="chart-head">
       <h2>接口清单</h2>
-      <span class="hint">点一下展开</span>
+      <span class="hint">{{ endpoints.values() | map('length') | sum }} 个接口 · 点分组可收起</span>
     </div>
+    {# 默认展开：这一页的用处就是「我要什么请求，怎么发」，
+       全折起来等于让人先猜分组再点三下。收起是权限，展开才是默认。 #}
     {% for group, items in endpoints.items() %}
-    <details class="api-group">
+    <details class="api-group" open>
       <summary>{{ group }}</summary>
       <ul class="api-list">
         {% for e in items %}

@@ -24,8 +24,11 @@
     <div class="stat-card"><span class="stat-label">总点击</span><strong>{{ data.clicks }}</strong></div>
     <div class="stat-card"><span class="stat-label">独立访客</span><strong>{{ data.unique_visitors }}</strong></div>
     <div class="stat-card"><span class="stat-label">近 30 天</span><strong>{{ data.daily | sum(attribute='count') }}</strong></div>
-    <div class="stat-card"><span class="stat-label">最近点击</span><strong class="wide">{{ data.last_click_at | fmt_local('%m-%d %H:%M') if data.last_click_at else '—' }}</strong></div>
-    <div class="stat-card"><span class="stat-label">创建时间</span><strong class="wide">{{ link.created_at | fmt_local }}</strong></div>
+    {# 两张「时间」卡走 compact：「2026-10-29 17:47」排到 1.18rem 时会折成两行，
+       卡片被撑得比其他三张高出一截，一排五张看着像没对齐。日期在上、
+       时分在下，各自一行，高度就跟数字卡齐了。 #}
+    <div class="stat-card"><span class="stat-label">最近点击</span><strong class="compact">{% if data.last_click_at %}{{ data.last_click_at | fmt_local('%m-%d') }}<em>{{ data.last_click_at | fmt_local('%H:%M') }}</em>{% else %}—{% endif %}</strong></div>
+    <div class="stat-card"><span class="stat-label">创建时间</span><strong class="compact">{{ link.created_at | fmt_local('%Y-%m-%d') }}<em>{{ link.created_at | fmt_local('%H:%M') }}</em></strong></div>
   </div>
   {% set daily_counts = data.daily | map(attribute='count') | list %}
   {% set peak = daily_counts | max if daily_counts else 0 %}

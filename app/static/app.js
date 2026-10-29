@@ -15,6 +15,8 @@
   };
   let summary = { total_links: 0, total_clicks: 0, access_required: false };
   let editing = null;
+  // 热门榜里有没有「我建的那条」（服务端凭回执认出来的）
+  let boardHasMine = false;
   // 站点访问模式快照，来自 /api/access
   const access = {
     mode: 'open', admin_mode: false, is_admin: false, can_create: true, can_browse: true,
@@ -591,11 +593,20 @@
       const btn = e.target.closest('[data-copy]');
       if (!btn) return;
       e.preventDefault();
+      const mark = btn.querySelector('.copy-mark');
       try {
         await writeClipboard(btn.dataset.copy);
-        const original = btn.textContent;
-        btn.textContent = '已复制 ✓';
-        setTimeout(() => { btn.textContent = original; }, 1600);
+        if (btn.dataset.busy) return;
+        btn.dataset.busy = '1';
+        if (mark) {
+          const original = mark.textContent;
+          mark.textContent = '已复制 ✓';
+          setTimeout(() => { mark.textContent = original; delete btn.dataset.busy; }, 1600);
+        } else {
+          const original = btn.textContent;
+          btn.textContent = '已复制 ✓';
+          setTimeout(() => { btn.textContent = original; delete btn.dataset.busy; }, 1600);
+        }
       } catch (_) {
         toast('复制失败，请手动选中', 'err');
       }
@@ -619,25 +630,38 @@
       return;
     }
     if (!items.length) { box.hidden = true; return; }
+    // 榜单里有没有「我建的那条」——访客面板的空态要靠它换一句话
+    boardHasMine = items.some((item) => item.owner);
     const origin = location.origin;
+    // 一行只留三样东西：名次、链接、点击数。短码本身就是「要复制的东西」，
+    // 让它自己就是复制按钮，比在行尾再挂一个单独的「复制」少一次目光往返。
+    // 以前的排法是标题一行、短码一行、点击数靠右、复制再一个按钮，
+    // 1440 下中间空出大半屏，三样信息被拉成了一根橡皮筋。
     list.innerHTML = items.map((item, idx) => {
       const url = `${origin}/${item.code}`;
-      const title = item.title ? escapeHtml(item.title) : `<span class="hint">/${escapeHtml(item.code)}</span>`;
+      const title = item.title ? escapeHtml(item.title) : '未命名链接';
       const tags = (item.tags || []).map((t) => `<span class="tag-pill">${escapeHtml(t)}</span>`).join('');
+      const mine = item.owner
+        ? '<span class="hotboard-mine" title="凭回执认出来的：这条是你建的">我的</span>'
+        : '';
       return `<li class="hotboard-item">
         <span class="hotboard-rank">${idx + 1}</span>
         <div class="hotboard-main">
           <a class="hotboard-title" href="${escapeHtml(url)}" target="_blank" rel="noopener">${title}</a>
           <div class="hotboard-meta">
-            <span class="mono hotboard-code">/${escapeHtml(item.code)}</span>
-            ${tags}
+            <button class="hotboard-code copy-code" type="button" data-copy="${escapeHtml(url)}"
+              title="复制 ${escapeHtml(url)}">/${escapeHtml(item.code)}<span class="copy-mark" aria-hidden="true">复制</span></button>
+            ${mine}${tags}
           </div>
         </div>
         <span class="hotboard-clicks" title="累计点击 ${item.clicks} 次">${humanCount(item.clicks)}<em>次</em></span>
-        <button class="btn tiny ghost hotboard-copy" type="button" data-copy="${escapeHtml(url)}">复制</button>
       </li>`;
     }).join('');
     box.hidden = false;
+    // 榜单渲染完才知道「有没有我那条」，空态文案跟着更新一次。
+    // 只在空态正显示的时候刷 —— 否则会把已经有内容的「我的链接」重画成说明板。
+    const empty = $('#empty');
+    if ($('#list')?.classList.contains('is-guest') && empty && !empty.hidden) updateGuestEmpty(true);
   }
 
   /* 点击数上万之后还写全数字，一格就撑不住了 */
@@ -819,9 +843,13 @@
     if (!show) return;
     // 这段文案以前只是「说明这里为什么是空的」，看完还是不知道该干什么。
     // 访客手上那张回执丢了是常态（换了设备、清了缓存），所以直接把路给出来。
+    // 榜上已经标出「我的」了，就别再说「这里什么都没有」——
+    // 一句「你那条在上面」比一句解释有用。
     empty.querySelector('p').textContent = access.admin_mode
       ? '站点仅管理员可使用，登录后台后查看自己建过的链接'
-      : '这里放的是你建过的链接。没登录时只记得最近那一条的凭据——凭回执能看它、也能改它。';
+      : (boardHasMine
+        ? '你刚建的那条就在上面的热门榜里，「我的」标记那条。点短码即可复制，打开统计看点击。'
+        : '这里放的是你建过的链接。没登录时只记得最近那一条的凭据——凭回执能看它、也能改它。');
     // 空着的时候最需要那条出口，别让人再滚回上面去找「回执丢了？」
     const rec = document.querySelector('#empty-recover');
     if (rec) rec.hidden = Boolean(access.admin_mode);
@@ -1302,7 +1330,10 @@
     // 没有链接库的页面（工具页、统计页）根本不需要这几个请求，
     // 少发三个 GET，也少三条可能报错的地方
     if ($('#list')) {
-      loadSummary(); loadTags(); loadLinks(); loadBoard();
+      // 榜单先拉：「我的链接」空着时的文案要知道榜上有没有自己那条。
+      // 两个请求本来就并行，只是别再让空态文案抢在榜单前面写下来。
+      loadBoard();
+      loadSummary(); loadTags(); loadLinks();
       scrollToHash();
     }
   });
