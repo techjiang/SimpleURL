@@ -48,6 +48,17 @@ ensure_python() {
   else die "无法自动安装 python3，请手动安装后重试"; fi
 }
 
+install_venv_pkg() {
+  if need_cmd apt-get; then
+    apt-get update -qq
+    apt-get install -y -qq "python$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')-venv" \
+      || apt-get install -y -qq python3-venv
+  elif need_cmd apk; then apk add --no-cache python3 py3-pip
+  elif need_cmd dnf; then dnf install -y python3-pip
+  elif need_cmd brew; then :  # brew 的 python 自带 venv
+  else return 1; fi
+}
+
 gen_key() {
   if need_cmd openssl; then openssl rand -hex "$1"
   else python3 -c "import secrets;print(secrets.token_hex($1))"; fi
@@ -105,7 +116,11 @@ install_python_mode() {
   ensure_python
   PYVER=$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])')
   case "$PYVER" in 3.1[0-9]|3.[2-9][0-9]) : ;; *) die "需要 Python 3.10+，当前 $PYVER" ;; esac
-  python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null || die "创建虚拟环境失败，请安装 python3-venv"
+  if ! python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null; then
+    warn "创建虚拟环境失败，尝试补装 python3-venv…"
+    install_venv_pkg || true
+    python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null || die "创建虚拟环境失败，请手动安装 python3-venv 后重试"
+  fi
   "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
   info "安装依赖…"
   "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements.txt"
@@ -189,7 +204,9 @@ wait_health() {
     fi
     i=$((i + 1)); sleep 1
   done
-  warn "健康检查超时，请查看日志：$INSTALL_DIR/simpleurl.log"
+  warn "健康检查超时，最近的日志："
+  tail -n 15 "$INSTALL_DIR/simpleurl.log" 2>/dev/null || true
+  warn "完整日志：$INSTALL_DIR/simpleurl.log"
   return 1
 }
 
