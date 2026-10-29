@@ -23,6 +23,19 @@
 - **精致界面** — 深色玻璃质感、响应式、无框架依赖、极光动效
 - **无背景 Logo** — 提供 SVG 矢量与 16~512px PNG，深浅底色通用
 
+## 一键安装
+
+```bash
+wget -O simpleurl-install.sh https://raw.githubusercontent.com/techjiang/SimpleURL/main/install.sh \
+  && chmod +x simpleurl-install.sh && ./simpleurl-install.sh
+```
+
+脚本会自动拉源码、生成随机密钥、装依赖、起服务并做健康检查。
+有可用 Docker 就走容器，没有就用 Python venv；装了 systemd 的环境会顺手注册成服务。
+默认装到 `~/simpleurl`，跑在 `8000` 端口，装完会打印管理密钥。
+
+装完想换端口：`PORT=9000 ./simpleurl-install.sh`。
+
 ## 快速开始
 
 ```bash
@@ -44,6 +57,15 @@ docker compose up -d         # 首次需构建
 ```
 
 首次启动自动建表（SQLite），无需任何额外配置。
+
+## 署名
+
+页脚固定显示 **Powered by SimpleURL**，其中 `SimpleURL` 指向
+<https://github.com/techjiang/SimpleURL>。
+
+这段文字不读环境变量、不进后台设置项，`/api/admin/settings` 收到同名键也会直接丢弃，
+想改只能改代码（`app/web.py` 的 `ATTRIBUTION_TEXT` / `ATTRIBUTION_URL`）。
+改站点名称、换主题、改数据都不会影响它。
 
 ## 界面
 

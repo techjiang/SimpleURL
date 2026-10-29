@@ -21,14 +21,16 @@
       <a href="/#hot" class="nav-link nav-hide-sm">热门</a>
       <a href="/#list" class="nav-link" data-admin-only>链接库</a>
       {% if auth_enabled %}<a href="/admin" class="nav-link" data-admin-only>后台</a>{% endif %}
-      <a href="https://cnb.cool/broccoli_xi/TechSauce/SimpleURL" target="_blank" rel="noopener"
+      <a href="https://github.com/techjiang/SimpleURL" target="_blank" rel="noopener"
          class="nav-link nav-hide-sm">源码</a>
       {% include "_console.html" %}
     </nav>
   </header>
   <main class="container">{% block content %}{% endblock %}</main>
   <footer class="footer">
-    <span>Built with ⚡ by <b>{{ site_name }}</b></span>
+    <span class="signature">{{ attribution_text | replace("SimpleURL", "") }}<a
+        href="{{ attribution_url }}" target="_blank" rel="noopener noreferrer"
+        class="signature-mark">SimpleURL</a></span>
     <span class="dot">·</span>
     <span>数据可自托管，隐私尽在掌握</span>
   </footer>

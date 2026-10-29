@@ -19,9 +19,17 @@ def _dt(value, fmt: str = "%Y-%m-%d %H:%M") -> str:
 
 
 templates.env.filters["dt"] = _dt
+
+# 署名是写死的，不走 runtime、不走环境变量、后台设置里也删不掉。
+# 想改只能改代码，这样「Powered by SimpleURL」才算是真的永久锁定。
+ATTRIBUTION_TEXT = "Powered by SimpleURL"
+ATTRIBUTION_URL = "https://github.com/techjiang/SimpleURL"
+
 templates.env.globals.update(
     site_name=settings.site_name,
     auth_enabled=auth.admin_enabled(),
+    attribution_text=ATTRIBUTION_TEXT,
+    attribution_url=ATTRIBUTION_URL,
 )
 
 

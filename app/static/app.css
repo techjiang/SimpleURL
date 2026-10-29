@@ -295,7 +295,14 @@ select option { background: var(--bg-soft); color: var(--text); }
 
 /* ============ 页脚 ============ */
 .footer { width: min(1080px, 92vw); margin: 0 auto; padding: 26px 0; border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; font-size: 0.8rem; color: var(--text-faint); }
-.footer b { color: var(--text-dim); }
+.footer .signature { display: inline-flex; align-items: center; gap: 4px; }
+.footer .signature-mark {
+  color: var(--text-dim); font-weight: 600; text-decoration: none;
+  background: linear-gradient(90deg, var(--brand), var(--accent));
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  background-size: 100% 100%;
+}
+.footer .signature-mark:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 /* ============ 响应式 ============ */
 @media (max-width: 860px) {
