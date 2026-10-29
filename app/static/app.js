@@ -82,7 +82,13 @@
       }
     }
     if (res.status === 403 && access.access_required) showGate();
-    if (!res.ok) throw new Error(data.message || `请求失败（${res.status}）`);
+    if (!res.ok) {
+      // 把状态码挂在错误上：调用方要区分「回执作废了」和「网抖了一下」，
+      // 只能靠它——消息文本是拿来给人看的，不该被当成判断依据
+      const err = new Error(data.message || `请求失败（${res.status}）`);
+      err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
@@ -467,6 +473,18 @@
     setSelfStatus('');
   }
 
+  /* 结果卡上的那条被改过之后，把它自己的那几行跟着刷新一遍。
+     没有回执（管理员在后台改的、或者卡片不是这一条）就什么都不做。 */
+  async function refreshSelfTools(code) {
+    if (!code || !$('#result-self')) return;
+    try {
+      const link = await api('/api/links/' + encodeURIComponent(code) + '/self');
+      renderSelfTools({ ...link, claim_token: currentClaim.token }, true);
+    } catch (_) {
+      // 刷新失败就让卡面停在旧值：这只是一块附带的说明，不该因此报错
+    }
+  }
+
   function setSelfStatus(msg, kind) {
     const el = $('#result-self-status');
     if (!el) return;
@@ -536,6 +554,7 @@
         toast('已删除');
         const box = $('#result');
         if (box) box.hidden = true;
+        if (!access.is_admin) forgetClaimCode();
         loadLinks();
       } catch (err) {
         setSelfStatus(err.message, 'err');
@@ -688,7 +707,7 @@
     if (!link.enabled) return '<span class="badge off">已停用</span>';
     // 额度用尽的链接「启用着但进不去」，只显示「已启用」等于骗人
     if (link.daily_exhausted) {
-      return `<span class="badge warn" title="今天已用满 ${link.daily_limit} 次，UTC 零点重置">额度用尽</span>`;
+      return `<span class="badge warn" title="今天已用满 ${link.daily_limit} 次，明天零点重置">额度用尽</span>`;
     }
     return '<span class="badge on">已启用</span>';
   }
@@ -763,6 +782,14 @@
     try { if (code) localStorage.setItem(GUEST_LAST_KEY, code); } catch (_) { /* 隐私模式下存不了就算了 */ }
   }
 
+  /* 回执一旦作废（自助删除、换新），本地记着的那个短码就是个死入口：
+     留着它，下次一进首页就去请求一个永远 401 的接口，然后「我的链接」
+     永远是空的——而刚建的那条还在。所以作废的那一刻就得一起忘掉。
+     留空即忘，调用点不用各自去删 localStorage。 */
+  function forgetClaimCode() {
+    try { localStorage.removeItem(GUEST_LAST_KEY); } catch (_) { /* 忽略 */ }
+  }
+
   async function loadGuestLinks() {
     const body = $('#links-body');
     if (!body) return;
@@ -774,10 +801,13 @@
       body.innerHTML = rowOf({ ...link, claim_token: null });
       updateGuestEmpty(false);
       $('#empty').hidden = true;
-    } catch (_) {
-      // 回执过期、换新过、或者换了台设备：都退回说明板，不吓人
+    } catch (err) {
+      // 回执过期、被换新、或者换了台设备：都退回说明板，不吓人。
+      // 但只有服务端**明确回绝**（401/404）才算作废——把网络抖动、
+      // 5xx 也当成「回执没了」，会把这台设备上唯一的入口直接抹掉，
+      // 而那张回执其实还好好的。
       body.innerHTML = '';
-      try { localStorage.removeItem(GUEST_LAST_KEY); } catch (_) { /* 忽略 */ }
+      if (err && (err.status === 401 || err.status === 404)) forgetClaimCode();
       updateGuestEmpty(true);
     }
   }
@@ -1109,6 +1139,9 @@
         closeEdit();
         loadSummary();
         loadLinks();
+        // 改完额度，顶部那张结果卡还是旧的：把额度从 1 提到 20 之后，
+        // 上面依旧挂着「额度用尽」——同一屏里两个说法，人只会信那个红的。
+        refreshSelfTools(editing.code);
       } catch (err) {
         setEditStatus(err.message, 'err');
       } finally {

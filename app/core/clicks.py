@@ -136,9 +136,9 @@ class ClickBuffer:
         """
         if not daily:
             return
-        # 日期必须是**本地**自然日：判定侧（Link.daily_used_today）比的是
-        # utcnow().date()，而页面文案写的是「明天零点恢复」。两边都按 UTC 切，
-        # 东八区的用户看到的截止点是本地早上 8 点——和文案差一整个上午。
+        # 日期必须是**本地**自然日：判定侧（Link.daily_used_today）比的也是
+        # today_local()。原始实现两边都按 UTC 切，东八区用户看到的截止点是
+        # 本地早上 8 点，而页面写的是「明天零点恢复」——差一整个上午。
         today = today_local()
         table = Link.__table__
         for link_id, delta in daily.items():

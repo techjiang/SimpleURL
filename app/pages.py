@@ -323,7 +323,7 @@ def redirect(code: str, request: Request, db: Session = Depends(get_db)):
                 db,
                 code=code,
                 message="这条链接今天的额度已经用完了",
-                detail="明天（UTC 零点）会重新计算额度。你是创建者的话，回执里可以把上限调大。",
+                detail="明天零点会重新计算额度。你是创建者的话，回执里可以把上限调大。",
             ),
             status_code=429,
         )

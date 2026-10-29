@@ -36,11 +36,23 @@ class TestDelayedFlush:
         client.get("/" + link["code"])
         from app.core.clicks import click_buffer
 
+        # 「点完一秒内就该看得到」有两个阶段，得分开等：
+        # 先是缓冲把这条处理掉（`pending()` 归零），再是库里读得出 1。
+        # 原来只等第一步就断言数字——那一步只是把事件从队列里摘走，
+        # 库里还没 commit，CI 上机器一慢就正好撞进这道缝里读到 0。
         deadline = time.time() + 1.5
         while time.time() < deadline and click_buffer.pending() > 0:
             time.sleep(0.05)
         assert click_buffer.pending() == 0
-        assert client.get(f"/api/links/{link['code']}").json()["clicks"] == 1
+
+        deadline = time.time() + 5
+        clicks = 0
+        while time.time() < deadline:
+            clicks = client.get(f"/api/links/{link['code']}").json()["clicks"]
+            if clicks:
+                break
+            time.sleep(0.05)
+        assert clicks == 1
 
     def test_blocked_hit_does_not_schedule_flush(self):
         """被拦下的访问不排落库：否则刷量的人每来一次就唤醒一次写库。

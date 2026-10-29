@@ -483,7 +483,7 @@
     if (!l.daily_limit) return '';
     const used = Math.min(l.daily_limit, l.daily_used || 0);
     const cls = used >= l.daily_limit ? 'quota-mark used' : 'quota-mark';
-    return `<span class="${cls}" title="今日已用 ${used} / ${l.daily_limit}，UTC 零点重置">额度 ${used}/${l.daily_limit}</span>`;
+    return `<span class="${cls}" title="今日已用 ${used} / ${l.daily_limit}，明天零点重置">额度 ${used}/${l.daily_limit}</span>`;
   }
 
   /* 「启用着但进不去」只显示「已启用」等于骗人 */
@@ -491,7 +491,7 @@
     if (l.expired) return '<span class="badge exp">已过期</span>';
     if (!l.enabled) return '<span class="badge off">已停用</span>';
     if (l.daily_exhausted) {
-      return `<span class="badge warn" title="今天已用满 ${l.daily_limit} 次，UTC 零点重置">额度用尽</span>`;
+      return `<span class="badge warn" title="今天已用满 ${l.daily_limit} 次，明天零点重置">额度用尽</span>`;
     }
     return '<span class="badge on">已启用</span>';
   }
