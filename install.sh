@@ -912,6 +912,59 @@ wait_health() { # [max]
   return 1
 }
 
+# 健康检查只证明「进程活着」。装完能不能用，还得真打一遍业务接口：
+# 登录拿签名 cookie、用凭据建一条短链、访问它拿到跳转。
+# 这一步抓的是健康检查永远抓不到的事——口令写坏、CSRF 中间件把接口拦死、
+# 短码生成炸了。任一条不过都不算安装成功。
+verify_end_to_end() {
+  if [ "$SKIP_HEALTH" = "y" ] || ! need_cmd curl; then return 0; fi
+  step "验收：用管理员凭据真建一条短链"
+  local base="http://127.0.0.1:${PORT}" jar code csrf login resp hop target
+  jar="$(mktemp)"
+  target="https://example.com/simpleurl-install-check"
+  # 收尾：不管走到哪一步失败，验收用的临时 cookie 都不留下来
+  trap 'rm -f "$jar"' RETURN 2>/dev/null || true
+
+  # 先拿一个 CSRF 令牌。登录接口也在校验范围内，跳过这步会直接 403，
+  # 看上去像「密码不对」——这正是那种能把人带偏半小时的假象。
+  curl -s -m 8 -o /dev/null -c "$jar" "$base/" 2>/dev/null || true
+  csrf="$(awk '/su_csrf/{print $7}' "$jar" 2>/dev/null | head -1)"
+
+  login="$(curl -s -m 8 -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
+      -H 'Content-Type: application/json' -H "Origin: $base" \
+      ${csrf:+-H "X-CSRF-Token: $csrf"} \
+      -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
+      "$base/api/admin/login" 2>/dev/null || echo 000)"
+  if [ "$login" != "200" ]; then
+    warn "管理员登录验收失败（HTTP $login）：后台密码进不去，等于没装好"
+    return 1
+  fi
+
+  resp="$(curl -s -m 10 -b "$jar" \
+      -H 'Content-Type: application/json' -H "Origin: $base" \
+      ${csrf:+-H "X-CSRF-Token: $csrf"} \
+      -d "{\"target\":\"$target\",\"fetch_title\":false}" \
+      "$base/api/links" 2>/dev/null || echo '')"
+  code="$(printf '%s' "$resp" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p' | head -1)"
+  if [ -z "$code" ]; then
+    warn "建链验收失败，接口返回：$(printf '%s' "$resp" | head -c 160)"
+    return 1
+  fi
+
+  # 短链的命根子是「点得开」：刚生成的码必须给出 3xx，而不是 404 / 500
+  hop="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$base/$code" 2>/dev/null || echo 000)"
+  case "$hop" in
+    301|302|303|307|308) : ;;
+    *) warn "短链 /$code 跳转验收失败（HTTP $hop）"; return 1 ;;
+  esac
+
+  # 清场：验收造出来的这条不能留在用户的库里
+  curl -s -m 8 -b "$jar" -X DELETE -H "Origin: $base" \
+    ${csrf:+-H "X-CSRF-Token: $csrf"} "$base/api/links/$code" >/dev/null 2>&1 || true
+  ok "登录 / 建链 / 跳转 全通过（暗号短码 /$code 已清理）"
+  return 0
+}
+
 # ---------------------------------------------------------------- 反向代理
 # HTTPS 不该让用户自己拼 nginx 配置：短链发出去就是 https，配错一次等于断链。
 # 这里按检测到的 Web 服务器生成一份能直接用的配置，并给出 certbot 的后续命令。
@@ -1415,6 +1468,16 @@ do_install() {
     warn "按参数跳过健康检查"
   else
     wait_health 60 || die "服务起来了但健康检查没过，看 simpleurl log 定位（数据已备份，可 simpleurl restore 回滚）"
+    # 健康检查过了不等于能用：口令写坏、接口被拦都还是 200 的壳
+    if ! verify_end_to_end; then
+      warn "服务在跑，但业务自检没过 —— 这不算装好。下面是定位入口："
+      warn "  simpleurl log        看服务日志"
+      warn "  simpleurl doctor     重新体检环境"
+      warn "  数据未受影响，可 simpleurl restore <备份> 回滚"
+      printf "\n%s服务已启动，但验收未通过（站点仍可访问：http://127.0.0.1:%s）%s\n\n" \
+        "$YELLOW" "$PORT" "$RST" >&2
+      exit 1
+    fi
   fi
   summary
 }

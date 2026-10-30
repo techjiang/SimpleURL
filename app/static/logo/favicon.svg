@@ -1,5 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="4.5 10.5 82 82" width="100" height="100" role="img" aria-label="SimpleURL">
-  <defs><linearGradient id="gMain" x1="0" y1="0" x2="1" y2=".42"><stop offset="0" stop-color="#30c6ff"/><stop offset=".5" stop-color="#966cff"/><stop offset="1" stop-color="#f876c4"/></linearGradient></defs>
-  <path d="M22 19L46 19L62 24L72 34L76 48L74 62L67 74L57 82L50 86" fill="none" stroke="url(#gMain)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M50 86L44 76L34 64L22 52L12 44" fill="none" stroke="url(#gMain)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 12 80 80" width="100" height="100" role="img" aria-label="SimpleURL"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="0.42"><stop offset="0" stop-color="#4cc9ff"/><stop offset="0.55" stop-color="#8b6bff"/><stop offset="1" stop-color="#ff5fbf"/></linearGradient></defs><path d="M24 22H44C66 22 76 34 76 51C76 67 64 80 44 80" fill="none" stroke="url(#g)" stroke-width="13" stroke-linecap="round"/><path d="M50 81L68 81.5L63 88.4Z" fill="url(#g)"/></svg>

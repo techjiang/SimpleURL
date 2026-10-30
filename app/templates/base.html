@@ -15,7 +15,8 @@
   <title>{% block title %}{{ site_name }} · 让长链接更短{% endblock %}</title>
   <link rel="icon" href="/static/favicon.ico" sizes="any" />
   <link rel="icon" href="/static/logo/favicon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="/static/logo/icon-192.png" />
+  {# 180 才是 iOS 主屏图标的标准尺寸；给它 192 会被系统再压一次，边缘发虚 #}
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/logo/icon-180.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/static/app.css" />
   <meta name="csrf-token" content="{{ csrf_token(request) }}" />

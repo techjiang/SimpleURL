@@ -270,6 +270,10 @@ curl -fsSL -H "Authorization: Basic $(printf 'cnb:%s' "$CNB_TOKEN" | base64)" \
 - 填了域名就顺手生成一份能直接用的反向代理配置（nginx / caddy / apache，按检测到的来），
   并给出 certbot 签证书的命令
 - 装完打印一张卡片：站点地址、后台地址、账号、密码、运行方式
+- **装完真用一遍**：不只是看 `/healthz` 返回 200。脚本会拿刚设好的管理员凭据登录、
+  建一条暗号短链、再访问它确认拿到 307 跳转，最后把这条清掉。
+  任一步不过就不打「安装完成」——口令写坏、CSRF 把接口拦死这类事，
+  健康检查永远看不出来，只会让人第二天发不出短链
 
 ### 先体检，再动手
 
@@ -639,26 +643,35 @@ NOTIFY_ENABLED=true NOTIFY_WEBHOOK_URL=https://example.com/hook ./run.sh
 
 ## Logo
 
-位于 `app/static/logo/`，全部**纯透明背景、无底板**，深浅底色都能直接用：
+位于 `app/static/logo/`，**纯透明背景、无底板**，深浅底色都能直接用：
 
-- `icon.svg` / `icon-{16,32,48,64,96,128,180,192,256,512}.png` — 主图标
-- `favicon.svg` / `../favicon.ico` — 站点图标（画布收窄，小尺寸更清楚）
-- `icon-mono.svg` — 单色版，用 `currentColor` 即可换色
+- `icon.svg` / `icon-{16,20,24,32,48,64,96,128,180,192,256,512,1024}.png` — 主图标
+- `favicon.svg` / `../favicon.ico` — 站点图标
+- `icon-mono.svg` / `icon-mono-{48,256}.png` — 单色版，用 `currentColor` 换色
+- `icon-maskable.svg` / `icon-maskable.png` — PWA 用，四周留了 20% 安全区
 - `logo-horizontal.svg` — 图标 + 字标横版（字标跟 `currentColor` 走）
 
-造型是**折返**：一条线向右绕回来，再把去路折成一支指向左上的箭头，讲的就是
-「长链接被折短」。主笔拉成一条完整的水平长笔、折返处用半圆收口、箭头独立成笔，
-重心落在左下——这一版的目的是「缩到 16px 还有一个能认出来的轮廓」，
-而不只是大图好看。渐变沿对角线铺，深蓝 → 紫 → 品红。
+造型是**一笔折返**：自左向右绕一个大弯折回来，末端收成一个箭头，指向来路 ——
+讲的就是「长链接在这里被折短」。整枚图形只有这一笔，没有底板、没有圆角方块，
+所以贴到任何底色上都只是那条线本身。
 
-描边随输出尺寸分档（16px 加到 17、96px 以上回到 12），小图标不会糊成一团。
-PNG 四角一律透明，`test_v17.py` 里有用例钉着这一点——有底板的话贴到深色页面上
-会露出一块方形色块，而缩略图里看不出来。
+出图有三条硬规矩，`app/tests/test_v27.py` 都钉着：
 
-重新生成（需要 `cairosvg` + `Pillow`）：
+1. **真透明**：四角 alpha 为 0，透明像素的 RGB 也是 0（不留白底残影）
+2. **同一造型**：所有 PNG 都从同一条路径 8 倍超采样渲染再缩回，
+   不按尺寸改线宽 —— 上一版给小尺寸换了描边，结果 16px 和高清版是两个形状
+3. **画布按包围盒算**：留白是算出来的，不是手填 viewBox
+
+PWA 清单里 `any` 和 `maskable` 是两份图分开给的。写成一个
+`purpose: "any maskable"` 会让安卓按 maskable 裁掉外圈，连普通图标那份也一起被裁。
+
+改色改形只动 `scripts/gen_logo.py` 顶部的常量，然后重新生成
+（需要 `cairosvg` + `Pillow`，两者都只出图用，不是运行时依赖）：
 
 ```bash
-python scripts/gen_logo.py
+pip install cairosvg Pillow
+python scripts/gen_logo.py      # 出图
+open app/static/logo/preview.html   # 深浅底 / 各尺寸并排自查
 ```
 
 ## 测试

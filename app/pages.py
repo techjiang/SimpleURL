@@ -193,16 +193,20 @@ def manifest(request: Request, db: Session = Depends(get_db)):
     start_url 用相对路径，部署在子路径下也能装。
     """
     brand = branding(db)
-    icons = []
-    for size in (192, 512):
-        icons.append(
-            {
-                "src": f"/static/logo/icon-{size}.png",
-                "sizes": f"{size}x{size}",
-                "type": "image/png",
-                "purpose": "any maskable",
-            }
-        )
+    # purpose 别写 "any maskable"：同一张图两种用途，安卓会按 maskable 裁掉外圈，
+    # 结果「any」那份也被裁了。图标本身是透明无底板的，两份要分开给。
+    icons = [
+        {"src": f"/static/logo/icon-{s}.png", "sizes": f"{s}x{s}", "type": "image/png", "purpose": "any"}
+        for s in (192, 512)
+    ]
+    icons.append(
+        {
+            "src": "/static/logo/icon-maskable.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable",
+        }
+    )
     icons.append({"src": "/static/logo/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"})
     payload = {
         "name": brand["site_name"],
