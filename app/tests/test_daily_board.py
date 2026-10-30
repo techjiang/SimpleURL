@@ -14,7 +14,7 @@ import datetime as dt
 
 from app.core import settings_store
 from app.core.clicks import click_buffer
-from app.core.timeutil import utcnow
+from app.core.timeutil import today_local, utcnow
 
 
 def make(client, **kwargs):
@@ -106,7 +106,7 @@ class TestDailyLimit:
         make(client, code="dlima", daily_limit=2)
         row = db.execute(select(Link).where(Link.code == "dlima")).scalar_one()
         row.daily_used = 2
-        row.daily_date = (utcnow() - dt.timedelta(days=1)).date()
+        row.daily_date = today_local() - dt.timedelta(days=1)
         db.commit()
 
         assert hit(client, "dlima").status_code == 307
@@ -119,7 +119,9 @@ class TestDailyLimit:
         make(client, code="dlimb", daily_limit=2)
         row = db.execute(select(Link).where(Link.code == "dlimb")).scalar_one()
         row.daily_used = 2
-        row.daily_date = utcnow().date()
+        # 额度按**本地**自然日切（页面上写的是「明天零点恢复」）。这里跟着用本地日，
+        # 否则跑在 UTC 容器里、又正好跨零点时，这个用例会莫名其妙挂掉。
+        row.daily_date = today_local()
         db.commit()
 
         assert hit(client, "dlimb").status_code == 429

@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -58,7 +58,8 @@ elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/.simpleurl-managed" ]; then
 else
   INSTALL_DIR="$HOME/simpleurl"
 fi
-PORT="${PORT:-8000}"
+# 8000 是各种开发服务器的默认口，撞车概率太高；8940 冷门、好记、不占常用段
+PORT="${PORT:-8940}"
 SERVICE_NAME="${SERVICE_NAME:-simpleurl}"
 SITE_NAME="${SITE_NAME:-SimpleURL}"
 USE_CN_MIRROR="${USE_CN_MIRROR:-auto}"     # auto | 1 | 0
@@ -134,7 +135,7 @@ SimpleURL 安装脚本 v$VERSION
 
 环境变量（都可选）：
   SIMPLEURL_HOME   安装目录，默认 ~/simpleurl
-  PORT             监听端口，默认 8000
+  PORT             监听端口，默认 8940
   SITE_NAME        站点名称
   USE_CN_MIRROR    auto（默认）/ 1 强制国内加速 / 0 用官方源
   PIP_INDEX_URL    指定 pip 源
@@ -312,7 +313,8 @@ version_lt() { # a b  —— a<b 时返回 0
 same_as_remote() {
   [ -s "$MARK_FILE" ] || return 1
   local local_v remote_v url tmp
-  local_v="$(sed -n 's/^version=//p' "$MARK_FILE" | head -1)"
+  # 本地代码版本：优先读标记里的 code_version，旧标记退回直接看代码
+  local_v="$(sed -n 's/^code_version=//p' "$MARK_FILE" | head -1)"
   local_v="${local_v:-$(remote_version "$INSTALL_DIR")}"
   [ -n "$local_v" ] || return 1
   need_cmd curl || return 1
@@ -355,6 +357,35 @@ port_in_use() { # port
   elif need_cmd lsof; then lsof -ti "tcp:$1" >/dev/null 2>&1
   elif need_cmd netstat; then netstat -lnt 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {found=1} END{exit !found}'
   else return 1; fi
+}
+
+# 端口被谁占着、占着它的是不是「自己人」。命中返回 0 并把 pid 写进 PORT_HOLDER_PID。
+# 用 ss 拿 pid 要 root；拿不到就没法判断，按「不是自己人」处理 —— 宁可不杀，
+# 也不要因为认错而误杀别人的服务。
+PORT_HOLDER_PID=""
+port_holder_pid() { # port
+  PORT_HOLDER_PID=""
+  need_cmd ss || return 1
+  local line
+  line="$(ss -lntp 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {print; exit}')"
+  [ -n "$line" ] || return 1
+  PORT_HOLDER_PID="$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+  [ -n "$PORT_HOLDER_PID" ]
+}
+
+# 这个 pid 是上次本脚本留下的服务进程吗？两条件：它自己的命令行落在安装目录里，
+# 或者它就是标记文件里记下的那个 pid。除此之外一律不动。
+is_our_service() { # pid
+  local pid="$1" cwd=""
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  if [ -f "$INSTALL_DIR/simpleurl.pid" ] && [ "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" = "$pid" ]; then
+    return 0
+  fi
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  [ "$cwd" = "$INSTALL_DIR" ] && return 0
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$INSTALL_DIR" && return 0
+  return 1
 }
 
 doctor() {
@@ -463,11 +494,25 @@ backup_data() {
 SOURCE_ENTRIES="app requirements.txt requirements-dev.txt .env.example Dockerfile docker-compose.yml
 .dockerignore .gitignore pytest.ini run.sh scripts README.md .cnb.yml"
 
+# 早期版本把 app/ 里的模块平铺着拷进了安装根目录（main.py / core/ / templates/ …）。
+# 换代码时这些副本必须一起清掉：它们既是伸手不见的垃圾，又会在 Python 的
+# 包解析里和真正的 app/ 抢位置——`import core` 会先命中根目录那份。
+LEGACY_ENTRIES="main.py web.py pages.py admin.py api.py services.py schemas.py models.py
+qr.py core templates static tests admin_api.py yourls_api.py gen_logo.py __init__.py"
+
 clear_source() {
   local entry
   for entry in $SOURCE_ENTRIES; do
     rm -rf "${INSTALL_DIR:?}/$entry"
   done
+  # 平铺副本只在「安装根目录里还躺着模块文件」时才清：正常安装根目录只有
+  # app/ 一个包，出现 main.py / core/ 就说明是旧脚本留下的。判据从宽——
+  # 这些名字在项目里本该只存在于 app/ 之下。
+  if [ -f "$INSTALL_DIR/main.py" ] || [ -d "$INSTALL_DIR/core" ] || [ -d "$INSTALL_DIR/templates" ]; then
+    for entry in $LEGACY_ENTRIES; do
+      rm -rf "${INSTALL_DIR:?}/$entry"
+    done
+  fi
 }
 
 is_tarball() { # file：先认 gzip 魔数，比 `file` 稳，也不依赖它
@@ -555,12 +600,23 @@ install_source() {
     die "源码下载失败。可手动下载后解压到 $INSTALL_DIR 再重跑本脚本"
   fi
 
-  # 防降级：远端比本地旧时不再覆盖，否则「升级」会把人升回旧版
+  # 防降级：远端比本地旧时不再覆盖，否则「升级」会把人升回旧版。
+  # 只比代码版本（app/__init__.py），不要比脚本版本 —— 早期版本把脚本自己的
+  # VERSION 写进了标记文件，结果 2.0.0 的脚本对上 1.5.0 的代码就判定「远端更旧」，
+  # 从此再也升不动。标记文件里 code_version 才是代码版本。
   local new_v old_v
   new_v="$(remote_version "$stage")"
   old_v=""
   if [ -f "$MARK_FILE" ]; then
-    old_v="$(sed -n 's/^version=//p' "$MARK_FILE" | head -1)"
+    old_v="$(sed -n 's/^code_version=//p' "$MARK_FILE" | head -1)"
+    if [ -z "$old_v" ]; then
+      # 旧标记：没有 code_version 字段。本地就有代码的话以代码为准，否则认版本字段
+      if [ -f "$INSTALL_DIR/app/__init__.py" ]; then
+        old_v="$(remote_version "$INSTALL_DIR")"
+      else
+        old_v="$(sed -n 's/^version=//p' "$MARK_FILE" | head -1)"
+      fi
+    fi
   fi
   if version_lt "$new_v" "$old_v"; then
     warn "远端版本 $new_v 比本地 $old_v 旧，保留本地代码（换 REPO_BRANCH=<分支> 可强行覆盖）"
@@ -756,9 +812,29 @@ pip_install() {
   "$pip" install "${opts[@]}" "$@"
 }
 
+# requirements.txt 的指纹。升级时如果依赖清单变了（新增包、改版本），
+# 只重启进程是不够的——import 会当场炸。指纹一致才跳过安装。
+deps_fingerprint() { # file
+  [ -f "$1" ] || { printf ''; return 0; }
+  if need_cmd sha256sum; then sha256sum "$1" | cut -d' ' -f1
+  elif need_cmd shasum; then shasum -a 256 "$1" | cut -d' ' -f1
+  else cksum "$1" | cut -d' ' -f1-2 | tr -d ' '; fi
+}
+DEPS_FILE="$INSTALL_DIR/.deps.sha256"
+
 install_python_mode() {
   step "Python 方式部署（venv）"
   ensure_python
+  local want_deps
+  want_deps="$(deps_fingerprint "$INSTALL_DIR/requirements.txt")"
+  if [ -x "$INSTALL_DIR/.venv/bin/python" ] && [ -f "$DEPS_FILE" ] \
+     && [ -n "$want_deps" ] && [ "$(cat "$DEPS_FILE" 2>/dev/null)" = "$want_deps" ] \
+     && "$INSTALL_DIR/.venv/bin/python" -c "import fastapi, uvicorn, httpx" 2>/dev/null; then
+    # 依赖没变就别重装：升级二十秒能完事，不必每次等 pip 转圈
+    ok "依赖清单未变化，跳过安装"
+    RUNTIME="python"
+    return 0
+  fi
   if ! python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null; then
     warn "创建 venv 失败，补装 python3-venv"
     pkg_install python3-venv python3-pip || true
@@ -777,6 +853,7 @@ install_python_mode() {
     "$pip" install -q --disable-pip-version-check -r "$INSTALL_DIR/requirements.txt" \
       || rollback_or_die "依赖装不上。可手改 $INSTALL_DIR/requirements.txt 后重跑"
   fi
+  [ -n "$want_deps" ] && printf '%s\n' "$want_deps" > "$DEPS_FILE"
   RUNTIME="python"
 }
 
@@ -883,17 +960,49 @@ stop_running() {
     local pid; pid="$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null || echo "")"
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$INSTALL_DIR/simpleurl.pid"
+  elif port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
+    # 没有 pid 文件（被删过、或是手动起的进程），但端口上确实是自己那个服务：
+    # 照样停，否则接下来的启动会撞端口，报一个和真正原因无关的错
+    kill "$PORT_HOLDER_PID" 2>/dev/null || true
   fi
+  # 等它真的放开端口：紧接着就要覆盖源码了，进程还在读旧文件就是在给自己挖坑
+  local i=0
+  while [ "$i" -lt 10 ]; do
+    port_in_use "$PORT" || break
+    i=$((i + 1)); sleep 1
+  done
 }
 
 # 停掉「占了目标端口但不是本脚本管理的」进程前先问一声，不默默动手
+next_free_port() { # start —— 往后找 40 个，都没有就返回空
+  local p
+  for p in $(seq $(( $1 + 1 )) $(( $1 + 40 ))); do
+    port_in_use "$p" || { printf '%s' "$p"; return 0; }
+  done
+  printf ''
+}
+
 check_port_free() {
   port_in_use "$PORT" || return 0
   local who=""
   if need_cmd ss; then who="$(ss -lntp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $NF; exit}')"; fi
+  # 占着端口的就是上次装的那个进程（重装 / 升级时的常态）：这是自己人，
+  # 不算冲突。真正要拦的是「别人的服务」——这时候不能默认硬上，也不能自作主张 kill。
+  if port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
+    ok "端口 $PORT 由 SimpleURL 自己在用（重装时会先停掉）"
+    return 0
+  fi
   warn "端口 $PORT 被占用${who:+：$who}"
-  ask "换个端口（留空沿用 $PORT，安装可能会冲突）" ""
+  local alt; alt="$(next_free_port "$PORT")"
+  # 非交互（CI / 面板 / curl | bash --yes）时问不了人，也别硬撞：自己换个空的
+  if [ "$INTERACTIVE" = "0" ] || [ -z "$TTY" ]; then
+    if [ -n "$alt" ]; then PORT="$alt"; ok "自动改用空闲端口 $PORT"
+    else warn "附近端口都占着，仍按 $PORT 继续（大概率起不来）"; fi
+    return 0
+  fi
+  ask "换个端口（留空${alt:+用 $alt}）" "$alt"
   [ -n "$ANSWER" ] && PORT="$ANSWER"
+  return 0
 }
 
 wait_health() { # [max]
@@ -913,36 +1022,61 @@ wait_health() { # [max]
 }
 
 # 健康检查只证明「进程活着」。装完能不能用，还得真打一遍业务接口：
-# 登录拿签名 cookie、用凭据建一条短链、访问它拿到跳转。
+# 登录拿签名 cookie、用凭据建一条短链、访问它拿到跳转、删掉善后。
 # 这一步抓的是健康检查永远抓不到的事——口令写坏、CSRF 中间件把接口拦死、
 # 短码生成炸了。任一条不过都不算安装成功。
+#
+# 两个坑记在这里：
+#  · 登录接口本身也在 CSRF 校验范围内。跳过去直接 POST 会拿到 403，
+#    看上去像「密码不对」，能把人带偏半小时。必须先 GET 首页拿 su_csrf。
+#  · 验收流程里每一步都得能被后面的收尾引用（登录态 jar、建出了哪个码），
+#    所以状态放在全局而不是全靠 local —— `local` + `set -u` 在 RETURN trap
+#    里访问会直接 unbound variable。
+VERIFY_SESSION_DIR=""
+VERIFY_CODE=""
+
+verify_cleanup() {
+  local rc=$?
+  if [ -n "${VERIFY_SESSION_DIR:-}" ]; then
+    rm -rf "$VERIFY_SESSION_DIR" 2>/dev/null || true
+    VERIFY_SESSION_DIR=""
+  fi
+  return $rc
+}
+
 verify_end_to_end() {
   if [ "$SKIP_HEALTH" = "y" ] || ! need_cmd curl; then return 0; fi
-  step "验收：用管理员凭据真建一条短链"
-  local base="http://127.0.0.1:${PORT}" jar code csrf login resp hop target
-  jar="$(mktemp)"
-  target="https://example.com/simpleurl-install-check"
-  # 收尾：不管走到哪一步失败，验收用的临时 cookie 都不留下来
-  trap 'rm -f "$jar"' RETURN 2>/dev/null || true
+  step "验收：用管理员凭据真建一条短链、点开它、再删掉"
 
-  # 先拿一个 CSRF 令牌。登录接口也在校验范围内，跳过这步会直接 403，
-  # 看上去像「密码不对」——这正是那种能把人带偏半小时的假象。
+  local base="http://127.0.0.1:${PORT}"
+  local jar csrf login resp code hop target
+  VERIFY_CODE=""
+  target="https://example.com/simpleurl-install-check"
+  # 整个流程共用一份 cookie 罐，收尾在 verify_cleanup 里统一删
+  VERIFY_SESSION_DIR="$(mktemp -d 2>/dev/null || { mkdir -p "/tmp/.simpleurl-verify.$$" && printf '%s' "/tmp/.simpleurl-verify.$$"; })"
+  jar="$VERIFY_SESSION_DIR/cookies"
+  trap verify_cleanup EXIT
+  : > "$jar"
+
   curl -s -m 8 -o /dev/null -c "$jar" "$base/" 2>/dev/null || true
   csrf="$(awk '/su_csrf/{print $7}' "$jar" 2>/dev/null | head -1)"
+  if [ -z "$csrf" ]; then
+    warn "拿不到 CSRF 令牌（首页没下发 su_csrf），站点可能没正常起来"
+    return 1
+  fi
 
   login="$(curl -s -m 8 -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
-      -H 'Content-Type: application/json' -H "Origin: $base" \
-      ${csrf:+-H "X-CSRF-Token: $csrf"} \
+      -H 'Content-Type: application/json' -H "Origin: $base" -H "X-CSRF-Token: $csrf" \
       -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
       "$base/api/admin/login" 2>/dev/null || echo 000)"
   if [ "$login" != "200" ]; then
     warn "管理员登录验收失败（HTTP $login）：后台密码进不去，等于没装好"
     return 1
   fi
+  ok "管理员登录通过"
 
-  resp="$(curl -s -m 10 -b "$jar" \
-      -H 'Content-Type: application/json' -H "Origin: $base" \
-      ${csrf:+-H "X-CSRF-Token: $csrf"} \
+  resp="$(curl -s -m 10 -b "$jar" -c "$jar" \
+      -H 'Content-Type: application/json' -H "Origin: $base" -H "X-CSRF-Token: $csrf" \
       -d "{\"target\":\"$target\",\"fetch_title\":false}" \
       "$base/api/links" 2>/dev/null || echo '')"
   code="$(printf '%s' "$resp" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p' | head -1)"
@@ -950,18 +1084,24 @@ verify_end_to_end() {
     warn "建链验收失败，接口返回：$(printf '%s' "$resp" | head -c 160)"
     return 1
   fi
+  VERIFY_CODE="$code"
+  ok "建链通过（/$code）"
 
   # 短链的命根子是「点得开」：刚生成的码必须给出 3xx，而不是 404 / 500
   hop="$(curl -s -m 8 -o /dev/null -w '%{http_code}' "$base/$code" 2>/dev/null || echo 000)"
   case "$hop" in
-    301|302|303|307|308) : ;;
+    301|302|303|307|308) ok "跳转通过（HTTP $hop）" ;;
     *) warn "短链 /$code 跳转验收失败（HTTP $hop）"; return 1 ;;
   esac
 
   # 清场：验收造出来的这条不能留在用户的库里
-  curl -s -m 8 -b "$jar" -X DELETE -H "Origin: $base" \
-    ${csrf:+-H "X-CSRF-Token: $csrf"} "$base/api/links/$code" >/dev/null 2>&1 || true
-  ok "登录 / 建链 / 跳转 全通过（暗号短码 /$code 已清理）"
+  if curl -s -m 8 -o /dev/null -b "$jar" -X DELETE -H "Origin: $base" \
+        -H "X-CSRF-Token: $csrf" "$base/api/links/$code" 2>/dev/null; then
+    ok "验收数据已清理（/$code）"
+    VERIFY_CODE=""
+  else
+    warn "验收用的短链 /$code 没能删掉，可到后台手动删"
+  fi
   return 0
 }
 
@@ -1213,7 +1353,9 @@ do_restore() {
   say "已从 \$src 恢复，服务已重启"
 }
 
-case "\${1:-help}" in
+# 不带参数就报状态：`simpleurl` 敲下去是想知道「现在怎么样」，不是想读一屏用法。
+# 但它必须排在 `*` 分支之前——case 是从上往下匹配的，`*` 在前面就永远轮不到。
+case "\${1:-status}" in
   start)   do_start ;;
   stop)    do_stop ;;
   restart) do_stop >/dev/null; sleep 1; do_start ;;
@@ -1240,24 +1382,30 @@ case "\${1:-help}" in
     if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" doctor
     else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   uninstall)
-    if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" --uninstall
+    # 卸载会把 \$DIR 整个删掉，跑在里面的 install.sh 也会一起消失；
+    # 先拷一份到临时目录再跑，否则中途读不到脚本后半截
+    if [ -f "\$DIR/install.sh" ]; then
+      local tmp; tmp="\$(mktemp -d 2>/dev/null || echo "/tmp/.su-uninstall.\$\$")"
+      cp "\$DIR/install.sh" "\$tmp/install.sh" && chmod +x "\$tmp/install.sh"
+      SIMPLEURL_HOME="\$DIR" exec bash "\$tmp/install.sh" --uninstall
     else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
+  "")      site_status ;;
   help|--help|-h|*)
-    cat <<USAGE
+    cat <<'\USAGE' | sed "s/^/  /;s/^  \$//"
 SimpleURL 管理命令
 
-  simpleurl status              运行状态与健康检查
-  simpleurl start | stop | restart
-  simpleurl log                 跟踪日志
-  simpleurl url                 打印站点与后台地址
-  simpleurl password [新密码]    重置管理员密码（不给参数就随机生成）
-  simpleurl config              查看 / 编辑配置
-  simpleurl backup [路径]        备份数据库与配置
-  simpleurl restore <备份>       从备份恢复数据
-  simpleurl upgrade             拉新代码升级（失败自动回滚数据）
-  simpleurl doctor              环境体检
-  simpleurl uninstall           卸载
-USAGE
+simpleurl status              运行状态与健康检查
+simpleurl start | stop | restart
+simpleurl log                 跟踪日志
+simpleurl url                 打印站点与后台地址
+simpleurl password [新密码]    重置管理员密码（不给参数就随机生成）
+simpleurl config              查看 / 编辑配置
+simpleurl backup [路径]        备份数据库与配置
+simpleurl restore <备份>       从备份恢复数据
+simpleurl upgrade             拉新代码升级（失败自动回滚数据）
+simpleurl doctor              环境体检
+simpleurl uninstall           卸载
+\USAGE
     ;;
 esac
 EOF
@@ -1378,6 +1526,12 @@ do_install() {
     exit 0
   fi
 
+  # 旧进程要在换代码之前停：它占着端口、拿着 SQLite 的写锁，还在 import 即将被覆盖的
+  # 文件。等装完再停，就会出现「服务其实一直在跑旧代码」这种最难查的状态。
+  if [ "$reuse" = "y" ]; then
+    stop_running
+  fi
+
   if [ "$reuse" = "n" ]; then
     echo
     hr; printf "%s装之前先确认几件事（回车用默认值）%s\n" "$BOLD" "$RST"; hr
@@ -1438,16 +1592,13 @@ do_install() {
   esac
 
   if [ "$want" = "docker" ]; then
-    [ "$reuse" = "y" ] && stop_running
     install_docker_mode
   else
     if [ "$reuse" = "y" ] && [ "$prev_runtime" = "docker" ]; then
       warn "上次是 Docker 装的，这次改用 Python：数据留在数据卷里，需手动搬迁"
-      stop_running
       docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
     fi
     warn "使用 Python 直装（更省资源）"
-    stop_running
     install_python_mode
     DATABASE_URL="sqlite:///$INSTALL_DIR/simpleurl.db"
     write_env "$existing_env"
@@ -1461,8 +1612,9 @@ do_install() {
     fi
   fi
 
-  printf 'version=%s\nruntime=%s\nport=%s\ninstalled_at=%s\n' \
-    "$VERSION" "$RUNTIME" "$PORT" "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARK_FILE"
+  printf 'version=%s\ncode_version=%s\nruntime=%s\nport=%s\ninstalled_at=%s\n' \
+    "$VERSION" "$(remote_version "$INSTALL_DIR")" "$RUNTIME" "$PORT" \
+    "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARK_FILE"
   install_cli
   if [ "$SKIP_HEALTH" = "y" ]; then
     warn "按参数跳过健康检查"

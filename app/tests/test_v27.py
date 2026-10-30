@@ -64,11 +64,15 @@ def test_all_sizes_draw_the_same_shape():
 
 
 def test_16px_still_readable():
-    """16px 里图形要占住画布大半，否则浏览器标签栏上只剩一个点。"""
+    """16px 里图形要占住画布大半，否则浏览器标签栏上只剩一个点。
+
+    门槛 9px：图形是 1:1 画布里的非正方形（宽高比约 1.2），16px 下横向 12px、
+    纵向 10px 左右。要的是「不被留白吃掉」，不是「填满」——填满恰恰是糊的成因。
+    """
     img = Image.open(LOGO / "icon-16.png").convert("RGBA")
     box = _ink_bbox(img)
     assert box, "icon-16.png 是空图"
-    assert (box[2] - box[0]) >= 12 and (box[3] - box[1]) >= 12
+    assert (box[2] - box[0]) >= 9 and (box[3] - box[1]) >= 9
 
 
 def test_favicon_ico_has_16_and_32():
