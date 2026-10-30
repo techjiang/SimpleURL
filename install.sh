@@ -1,52 +1,99 @@
 #!/usr/bin/env bash
-# SimpleURL 一键安装 / 管理脚本
+# SimpleURL 一键安装 / 运维脚本
 #
-#   交互安装   curl -fsSL <安装地址> | bash
-#   全默认     ./install.sh --yes          不提问，密码自动生成
-#   重装/升级  ./install.sh                已有安装会沿用配置，只更新代码
-#   卸载       ./install.sh --uninstall
+#   交互安装   curl -fsSL https://cnb.cool/<仓库>/-/raw/main/install.sh | bash -s -- --yes
+#   本地安装   ./install.sh                 问几个问题，其余全自动
+#   全默认     ./install.sh --yes           不问，密码随机生成
+#   只做诊断   ./install.sh doctor          不写任何文件，先看环境行不行
+#   升级       ./install.sh upgrade         拉新代码，失败自动回滚
+#   卸载       ./install.sh uninstall
 #
-# 有 Docker 用 Docker，没有就用 Python venv。国内网络自动启用镜像加速。
-# 装完给一个 `simpleurl` 命令管后续：status / log / password / backup / update ...
+# 设计上的几条硬规矩：
+#   · 装完的目录能自己管自己：cp install.sh 到目录里就能修，不依赖 /usr/local/bin
+#   · 升级失败必须能回去：先备份数据和 .env，构建或启动不成就回滚
+#   · 不许悄悄降级：远端版本比本地旧时不再覆盖代码
+#   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="2.0.0"
+# 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
 
 # ---------------------------------------------------------------- 常量
-# 默认从当前仓库安装；换镜像源只改这两个变量
+# 默认从本项目仓库安装；换镜像源只改这两个变量
 GIT_HOST="${GIT_HOST:-https://cnb.cool}"
 REPO_SLUG="${REPO_SLUG:-broccoli_xi/TechSauce/SimpleURL}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 REPO_URL="${REPO_URL:-$GIT_HOST/$REPO_SLUG.git}"
-# 归档地址按平台区分：CNB 是 /-/archive/<分支>.tar.gz
-# 归档地址按平台区分：CNB 是 /-/archive/<分支>.tar.gz
-REPO_TARBALL="${REPO_TARBALL:-$GIT_HOST/$REPO_SLUG/-/archive/$REPO_BRANCH.tar.gz}"
+# 平台 OpenAPI 域名：CNB 的网页路由（/-/raw、/-/archive）是前端页面，
+# 直接 curl 拿到的是 HTML 外壳，所以版本探测和源码包都优先走 API。
+API_HOST="${API_HOST:-https://api.cnb.cool}"
+# 源码包地址：CNB 走 OpenAPI 的 archive 接口；其它平台用各自的归档地址
+default_tarball() {
+  case "$GIT_HOST" in
+    *cnb.cool*)
+      # 有令牌走 OpenAPI（私库也能拉、拿得到真 tar.gz）；没令牌退回网页路由，
+      # 由 is_tarball 挡掉 HTML 外壳后自动改用 git clone
+      if [ -n "${CNB_TOKEN:-}" ]; then
+        printf '%s/%s/-/git/archive/%s.tar.gz' "$API_HOST" "$REPO_SLUG" "$REPO_BRANCH"
+      else
+        printf '%s/%s/-/archive/%s.tar.gz' "$GIT_HOST" "$REPO_SLUG" "$REPO_BRANCH"
+      fi ;;
+    *)
+      printf '%s/%s/-/archive/%s.tar.gz' "$GIT_HOST" "$REPO_SLUG" "$REPO_BRANCH" ;;
+  esac
+}
+REPO_TARBALL="${REPO_TARBALL:-$(default_tarball)}"
 # 源码加速前缀：只对 GitHub 有用。CNB / Gitee 本身在国内，
 # 再套一层加速反而多一跳（实测还会 403），所以按域名自动判断要不要用。
 GIT_MIRROR="${GIT_MIRROR:-https://ghfast.top/}"
 
-INSTALL_DIR="${SIMPLEURL_HOME:-$HOME/simpleurl}"
+# 安装目录：显式 SIMPLEURL_HOME 优先；其次是「脚本自己就躺在安装目录里」
+# （./install.sh upgrade 这种最自然的用法，不该还要人再设一次变量）
+if [ -n "${SIMPLEURL_HOME:-}" ]; then
+  INSTALL_DIR="$SIMPLEURL_HOME"
+elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/.simpleurl-managed" ]; then
+  INSTALL_DIR="$SELF_DIR"
+else
+  INSTALL_DIR="$HOME/simpleurl"
+fi
 PORT="${PORT:-8000}"
 SERVICE_NAME="${SERVICE_NAME:-simpleurl}"
 SITE_NAME="${SITE_NAME:-SimpleURL}"
 USE_CN_MIRROR="${USE_CN_MIRROR:-auto}"     # auto | 1 | 0
 PIP_MIRRORS="${PIP_MIRRORS:-https://pypi.tuna.tsinghua.edu.cn/simple https://mirrors.aliyun.com/pypi/simple https://mirrors.cloud.tencent.com/pypi/simple https://mirrors.ustc.edu.cn/pypi/simple}"
 DOCKER_MIRRORS="${DOCKER_MIRRORS:-https://docker.1ms.run,https://docker.m.daocloud.io,https://docker.xuanyuan.me,https://dockerproxy.net}"
+COMPOSE_FILE_NAME="docker-compose.yml"
 LOG_FILE="$INSTALL_DIR/simpleurl.log"
 MARK_FILE="$INSTALL_DIR/.simpleurl-managed"   # 有它才认作本脚本装的目录（内含运行方式等）
 
 RUNTIME=""          # docker | python，安装时定，simpleurl 命令会读它
+SOURCE_REUSED=""    # y 表示这轮没换代码，只重装了依赖 / 重启了服务
+ACTION_UPGRADE="n"  # 由 `upgrade` 子命令置 y，用来走「版本没变就别折腾」的短路
+BANNER_SHOWN="n"
+PROXY_FILE=""       # 生成的反向代理配置文件路径
+PROXY_KIND=""       # nginx | caddy | apache
+RUNTIME_OVERRIDE="" # --runtime docker|python
 INTERACTIVE=1
 ACTION="install"
 ASSUME_YES="n"
+SKIP_HEALTH="n"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --yes|-y)      INTERACTIVE=0 ;;
-    --uninstall)   ACTION="uninstall"; INTERACTIVE=0 ;;
-    --force)       ASSUME_YES="y" ;;
-    --help|-h)     ACTION="help" ;;
+    install)     ACTION="install" ;;
+    upgrade|update) ACTION="upgrade" ;;
+    --yes|-y)    INTERACTIVE=0 ;;
+    uninstall|remove) ACTION="uninstall"; INTERACTIVE=0 ;;
+    doctor|check) ACTION="doctor" ;;
+    --runtime)   shift; RUNTIME_OVERRIDE="${1:-}" ;;
+    --branch)    shift; REPO_BRANCH="${1:-main}"; REPO_TARBALL="$(default_tarball)" ;;
+    --port)      shift; PORT="${1:-$PORT}" ;;
+    --dir)       shift; INSTALL_DIR="${1:-$INSTALL_DIR}" ;;
+    --no-health) SKIP_HEALTH="y" ;;
+    --force)     ASSUME_YES="y" ;;
+    --help|-h)   ACTION="help" ;;
     *) echo "未知参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -76,10 +123,14 @@ usage() {
   cat <<EOS
 SimpleURL 安装脚本 v$VERSION
 
-  ./install.sh              交互安装（问站点名、端口、域名、账号密码）
-  ./install.sh --yes        全默认安装，密码自动生成
-  ./install.sh --uninstall  卸载（会二次确认）
-  ./install.sh --help       这段说明
+  ./install.sh                交互安装（问站点名、端口、域名、账号密码）
+  ./install.sh --yes          全默认安装，密码自动生成
+  ./install.sh doctor         只做环境体检，不装任何东西
+  ./install.sh upgrade        更新到最新代码（失败自动回滚）
+  ./install.sh uninstall      卸载（会二次确认）
+  ./install.sh --help         这段说明
+
+  可选参数：--port 8000  --dir ~/simpleurl  --runtime docker|python  --no-health
 
 环境变量（都可选）：
   SIMPLEURL_HOME   安装目录，默认 ~/simpleurl
@@ -90,9 +141,9 @@ SimpleURL 安装脚本 v$VERSION
   DOCKER_MIRRORS   逗号分隔的 Docker 镜像加速地址
   REPO_URL / REPO_TARBALL / GIT_HOST / REPO_SLUG   换安装来源
 
-装完用 simpleurl 管理：
-  simpleurl status | start | stop | restart | log
-  simpleurl url | password | config | backup | update | uninstall
+装完用 simpleurl 管理（或 ./install.sh <子命令>）：
+  status | start | stop | restart | log | url | password
+  config | backup | restore | upgrade | doctor | uninstall
 EOS
 }
 
@@ -148,6 +199,13 @@ detect_ip() {
   ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || ip=""
   [ -n "$ip" ] || ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')" || true
   printf '%s' "${ip:-127.0.0.1}"
+}
+
+is_private_ip() { # ip
+  case "$1" in
+    10.*|192.168.*|127.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # ---------------------------------------------------------------- 网络与镜像
@@ -216,10 +274,169 @@ mirror_url() { # url
   printf '%s' "$1"
 }
 
+# 私有仓库：CNB_TOKEN（或环境里的 CNB 令牌）会被换成 Basic 头，可直接拉私库源码
+auth_header() {
+  local tok="${CNB_TOKEN:-}"
+  [ -n "$tok" ] || return 0
+  printf 'Authorization: Basic %s' "$(printf 'cnb:%s' "$tok" | base64 | tr -d '\n')"
+}
+
 fetch() { # url out
-  if need_cmd curl; then curl -fL --retry 2 --connect-timeout 10 -m 300 -o "$2" "$1"
-  elif need_cmd wget; then wget -q -T 30 -O "$2" "$1"
+  local auth; auth="$(auth_header)"
+  if need_cmd curl; then
+    if [ -n "$auth" ]; then curl -fL --retry 2 --connect-timeout 10 -m 300 -H "$auth" -o "$2" "$1"
+    else curl -fL --retry 2 --connect-timeout 10 -m 300 -o "$2" "$1"; fi
+  elif need_cmd wget; then
+    if [ -n "$auth" ]; then wget -q -T 30 --header="$auth" -O "$2" "$1"
+    else wget -q -T 30 -O "$2" "$1"; fi
   else die "需要 curl 或 wget"; fi
+}
+
+# ---------------------------------------------------------------- 版本
+# 远端版本号：源码包里读得到。用来防止「旧脚本覆盖新代码」。
+remote_version() { # dir
+  local f="$1/app/__init__.py" v=""
+  [ -f "$f" ] || { printf ''; return 0; }
+  v="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)"
+  printf '%s' "$v"
+}
+
+version_lt() { # a b  —— a<b 时返回 0
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  [ "$1" = "$2" ] && return 1
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
+}
+
+# 升级前问一句「远端和我一样吗」。只拉 app/__init__.py，比整包轻得多；
+# 拉不到就当不一样，交给后面的完整下载流程处理。
+same_as_remote() {
+  [ -s "$MARK_FILE" ] || return 1
+  local local_v remote_v url tmp
+  local_v="$(sed -n 's/^version=//p' "$MARK_FILE" | head -1)"
+  local_v="${local_v:-$(remote_version "$INSTALL_DIR")}"
+  [ -n "$local_v" ] || return 1
+  need_cmd curl || return 1
+  tmp="$(mktemp 2>/dev/null || echo "/tmp/.su-v.$$")"
+  # 网页路由（/-/raw）在 CNB 上必定返回 200 的 HTML 外壳，拿它比版本只会永远「一样」，
+  # 所以有令牌才试 API，没有就只试 GitHub raw。
+  local urls=()
+  case "$GIT_HOST" in
+    *cnb.cool*)
+      [ -n "${CNB_TOKEN:-}" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/app/__init__.py") ;;
+    *)
+      urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/app/__init__.py") ;;
+  esac
+  urls+=("https://raw.githubusercontent.com/${REPO_SLUG}/$REPO_BRANCH/app/__init__.py")
+  for url in ${urls[@]+"${urls[@]}"}; do
+    if fetch "$url" "$tmp" >/dev/null 2>&1; then
+      remote_v="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp" | head -1)"
+      if [ -n "$remote_v" ]; then
+        rm -f "$tmp"
+        [ "$remote_v" = "$local_v" ] && return 0
+        printf '%s' "$local_v" >/dev/null
+        return 1
+      fi
+    fi
+  done
+  rm -f "$tmp"
+  return 1
+}
+
+# ---------------------------------------------------------------- 环境体检
+# 所有「装完才发现不对」的前置条件都放这里，一次说清楚，别让人猜。
+DOCTOR_FAIL=0
+DOCTOR_WARN=0
+d_ok()   { printf "  %s✓%s %s\n" "$GREEN" "$RST" "$*"; }
+d_warn() { printf "  %s!%s %s\n" "$YELLOW" "$RST" "$*"; DOCTOR_WARN=$((DOCTOR_WARN + 1)); }
+d_bad()  { printf "  %s✗%s %s\n" "$RED" "$RST" "$*"; DOCTOR_FAIL=$((DOCTOR_FAIL + 1)); }
+
+port_in_use() { # port
+  if need_cmd ss; then ss -lnt 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {found=1} END{exit !found}'
+  elif need_cmd lsof; then lsof -ti "tcp:$1" >/dev/null 2>&1
+  elif need_cmd netstat; then netstat -lnt 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {found=1} END{exit !found}'
+  else return 1; fi
+}
+
+doctor() {
+  step "环境体检"
+
+  # 系统
+  case "$(uname -s)" in
+    Linux)  d_ok "系统 $(uname -s) $(uname -m)" ;;
+    Darwin) d_ok "系统 macOS $(uname -m)" ;;
+    *)      d_warn "未测过的系统 $(uname -s)，脚本可能跑不通" ;;
+  esac
+  if [ "$(uname -s)" = "Linux" ] && grep -qi microsoft /proc/version 2>/dev/null; then
+    d_ok "运行在 WSL 里"
+  fi
+
+  # 运行方式
+  if [ -n "$RUNTIME_OVERRIDE" ]; then
+    case "$RUNTIME_OVERRIDE" in
+      docker) have_docker && d_ok "Docker 可用（按参数指定）" || d_bad "指定了 --runtime docker，但 docker 不可用" ;;
+      python) have_python && d_ok "Python 可用（按参数指定）" || d_bad "指定了 --runtime python，但找不到 python3" ;;
+      *) d_bad "--runtime 只认 docker / python" ;;
+    esac
+  elif have_docker; then
+    d_ok "Docker 可用 → 走容器部署"
+  elif have_python; then
+    d_warn "没有可用的 Docker → 走 Python 直装（更省资源，也够用）"
+  else
+    d_bad "既没有 Docker 也没有 Python 3.10+，需要先装一个"
+  fi
+
+  # Python 版本（即便走 Docker 也检查，换运行时不用重来）
+  if need_cmd python3; then
+    local pyv; pyv="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null || echo "")"
+    if [ -n "$pyv" ] && python3 -c 'import sys;sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null; then
+      d_ok "Python $pyv"
+    else
+      d_warn "Python ${pyv:-未知} 低于 3.10，Python 直装会失败"
+    fi
+    python3 -c 'import venv' 2>/dev/null || d_warn "Python 缺 venv 模块（apt install python3-venv）"
+  fi
+
+  # 端口
+  if port_in_use "$PORT"; then
+    d_warn "端口 $PORT 已被占用，装之前要么换端口，要么先停掉占用的进程"
+  else
+    d_ok "端口 $PORT 空闲"
+  fi
+
+  # 磁盘
+  local avail_mb
+  avail_mb="$(df -Pm "${HOME:-/tmp}" 2>/dev/null | awk 'NR==2{print $4}')"
+  if [ -n "$avail_mb" ]; then
+    if [ "$avail_mb" -ge 1024 ]; then d_ok "可用磁盘 ${avail_mb}MB"
+    else d_warn "可用磁盘只有 ${avail_mb}MB，装依赖 + 镜像可能不够"; fi
+  fi
+
+  # 依赖
+  need_cmd curl || need_cmd wget || d_bad "没有 curl / wget，下载源码会失败"
+  need_cmd tar || d_bad "没有 tar"
+  need_cmd git && d_ok "git 可用（升级更省流量）" || d_warn "没有 git，改用源码包升级（一样能升）"
+
+  # 权限
+  if [ "$(id -u)" = "0" ]; then
+    d_ok "以 root 运行"
+  elif need_cmd sudo && sudo -n true 2>/dev/null; then
+    d_ok "可用免密 sudo（能注册 systemd 服务）"
+  else
+    d_warn "没有免密 sudo：跳过 systemd，用后台进程 + 开机自启兜底"
+  fi
+
+  # 对外地址
+  local ip; ip="$(detect_ip)"
+  is_private_ip "$ip" && d_ok "本机地址 $ip" || d_ok "本机地址 $ip（公网）"
+
+  printf "\n"
+  if [ "$DOCTOR_FAIL" -gt 0 ]; then
+    printf "%s%d 项阻塞，%d 项提醒%s\n" "$RED" "$DOCTOR_FAIL" "$DOCTOR_WARN" "$RST"
+    return 1
+  fi
+  [ "$DOCTOR_WARN" -gt 0 ] && printf "%s%d 项提醒，不挡安装%s\n" "$YELLOW" "$DOCTOR_WARN" "$RST"
+  printf "%s可以装。%s\n" "$GREEN" "$RST"
+  return 0
 }
 
 # ---------------------------------------------------------------- 源码
@@ -230,11 +447,19 @@ backup_data() {
   mkdir -p "$dir"
   [ -f "$INSTALL_DIR/simpleurl.db" ] && cp -a "$INSTALL_DIR/simpleurl.db"* "$dir/" 2>/dev/null || true
   [ -f "$INSTALL_DIR/.env" ] && cp -a "$INSTALL_DIR/.env" "$dir/" 2>/dev/null || true
-  [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ] && ok "旧数据已备份：$dir"
+  [ -f "$MARK_FILE" ] && cp -a "$MARK_FILE" "$dir/" 2>/dev/null || true
+  if [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+    ok "旧数据已备份：$dir"
+    printf '%s' "$dir"
+  else
+    rmdir "$dir" 2>/dev/null || true
+    printf ''
+  fi
 }
 
 # 源码目录里认得的顶层条目：换代码时只管这些，其它（.venv/.env/数据/备份）一概不碰
-# 注意不含 install.sh：它自己就是入口，覆盖成远端的旧版会让人下次跑到旧脚本
+# 注意不含 install.sh 和 simpleurl：它们自己就是入口/命令行，
+# 覆盖成远端的旧版会让人下次跑到旧脚本
 SOURCE_ENTRIES="app requirements.txt requirements-dev.txt .env.example Dockerfile docker-compose.yml
 .dockerignore .gitignore pytest.ini run.sh scripts README.md .cnb.yml"
 
@@ -250,68 +475,115 @@ is_tarball() { # file：先认 gzip 魔数，比 `file` 稳，也不依赖它
   [ "$(head -c 2 "$1" 2>/dev/null)" = "$(printf '\037\213')" ]
 }
 
-install_source() {
-  mkdir -p "$INSTALL_DIR"
-  local src_dir; src_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+# 目标 URL 的 Content-Length，拿不到就打印空
+remote_size() { # url
+  need_cmd curl || return 0
+  curl -fsSI -m 15 "$1" 2>/dev/null | awk 'BEGIN{IGNORECASE=1}/^content-length:/{gsub("\r","");print $2}' | tail -1
+}
 
-  # 脚本就在源码目录里跑：直接复用，不联网
-  if [ -n "$src_dir" ] && [ -f "$src_dir/app/main.py" ] \
-     && [ "$src_dir" = "$(cd "$INSTALL_DIR" && pwd)" ]; then
-    ok "使用本地源码：$INSTALL_DIR"; return 0
+stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回非 0
+  local stage="$1" urls=() u tarball
+  tarball="$stage/.src.tar.gz"
+
+  # 目录里的脚本给自己跑（安装目录里的 install.sh），不用重复下载；
+  # 但 /workspace 拷出去的脚本没有 install.sh，得从远端取 —— 否则装出来是半截。
+  if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/app/main.py" ] \
+     && [ "$SELF_DIR" = "$(cd "$INSTALL_DIR" 2>/dev/null && pwd || echo "")" ] \
+     && [ -f "$SELF_DIR/install.sh" ]; then
+    return 2
   fi
 
-  if [ -d "$INSTALL_DIR/.git" ]; then
-    step "更新已有安装的代码（git）"
-    if git -C "$INSTALL_DIR" fetch --depth 1 origin "$REPO_BRANCH" >/dev/null 2>&1 \
-       && git -C "$INSTALL_DIR" reset --hard FETCH_HEAD >/dev/null 2>&1; then
-      ok "代码已更新"; return 0
-    fi
-    warn "git 拉取失败，改用源码包"
-  fi
-
-  [ -f "$INSTALL_DIR/app/main.py" ] && backup_data
-
-  step "下载源码"
-  local urls=() u tarball="$INSTALL_DIR/.src.tar.gz"
-  # 镜像地址与官方地址不同才两路都试，否则会白等一遍同样的失败
+  # 源码包优先：不依赖 git，也不受仓库体积影响
   [ "$(mirror_url "$REPO_TARBALL")" != "$REPO_TARBALL" ] && urls+=("$(mirror_url "$REPO_TARBALL")")
   urls+=("$REPO_TARBALL")
   for u in ${urls[@]+"${urls[@]}"}; do
     rm -f "$tarball"
+    # is_tarball 认 gzip 魔数，网页外壳（HTML）在这一步就被挡掉
     if fetch "$u" "$tarball" >/dev/null 2>&1 && is_tarball "$tarball"; then
-      # 解到临时目录再替换：解压半路失败时，现有代码还是完整的
-      local stage="$INSTALL_DIR/.stage"
-      rm -rf "$stage"; mkdir -p "$stage"
       if tar -xzf "$tarball" -C "$stage" --strip-components=1 2>/dev/null && [ -f "$stage/app/main.py" ]; then
-        clear_source
-        cp -a "$stage/." "$INSTALL_DIR/"
-        rm -rf "$stage" "$tarball"
-        ok "源码已就绪"; return 0
+        rm -f "$tarball"
+        return 0
       fi
-      rm -rf "$stage"
       warn "源码包解压失败，换下一个地址"
     fi
-    warn "源码包地址不可用：$u"
     rm -f "$tarball"
   done
 
   if need_cmd git; then
     local clone_url; clone_url="$(mirror_url "$REPO_URL")"
-    local tmp="$INSTALL_DIR/.clone"
-    rm -rf "$tmp"
-    if git clone --depth 1 --branch "$REPO_BRANCH" "$clone_url" "$tmp" >/dev/null 2>&1; then
-      clear_source
-      cp -a "$tmp/." "$INSTALL_DIR/"
-      rm -rf "$tmp"
-      ok "源码已通过 git 就绪"; return 0
+    if git clone --depth 1 --branch "$REPO_BRANCH" "$clone_url" "$stage/clone" >/dev/null 2>&1; then
+      cp -a "$stage/clone/." "$stage/"
+      rm -rf "$stage/clone" "$stage/.git"
+      [ -f "$stage/app/main.py" ] && return 0
     fi
-    rm -rf "$tmp"
+    rm -rf "$stage/clone"
   fi
-  die "源码下载失败。可手动下载后解压到 $INSTALL_DIR 再重跑本脚本"
+  return 1
+}
+
+# 把 $1 里的源码替换进安装目录（先清白名单条目，再整体拷过去）
+apply_source() { # stage
+  local stage="$1"
+  clear_source
+  # 解压出来的 `.git` 之类不要带进来
+  rm -rf "$stage/.git"
+  cp -a "$stage/." "$INSTALL_DIR/"
+}
+
+install_source() {
+  mkdir -p "$INSTALL_DIR"
+  local stage="$INSTALL_DIR/.stage"
+  rm -rf "$stage"; mkdir -p "$stage"
+
+  step "获取源码"
+  local rc=0
+  stage_source "$stage" || rc=$?
+  if [ "$rc" = "2" ]; then
+    rm -rf "$stage"
+    ok "本地版本与安装目录一致，跳过下载"
+    SOURCE_REUSED="y"
+    return 0
+  fi
+  if [ "$rc" != "0" ]; then
+    rm -rf "$stage"
+    # 已有安装 / 离线环境：「下载失败」不等于不能继续
+    if [ -f "$INSTALL_DIR/app/main.py" ]; then
+      warn "拿不到远端源码，沿用 $INSTALL_DIR 里已有的代码继续"
+      SOURCE_REUSED="y"
+      return 0
+    fi
+    die "源码下载失败。可手动下载后解压到 $INSTALL_DIR 再重跑本脚本"
+  fi
+
+  # 防降级：远端比本地旧时不再覆盖，否则「升级」会把人升回旧版
+  local new_v old_v
+  new_v="$(remote_version "$stage")"
+  old_v=""
+  if [ -f "$MARK_FILE" ]; then
+    old_v="$(sed -n 's/^version=//p' "$MARK_FILE" | head -1)"
+  fi
+  if version_lt "$new_v" "$old_v"; then
+    warn "远端版本 $new_v 比本地 $old_v 旧，保留本地代码（换 REPO_BRANCH=<分支> 可强行覆盖）"
+    rm -rf "$stage"
+    SOURCE_REUSED="y"
+    return 0
+  fi
+
+  if [ -f "$INSTALL_DIR/app/main.py" ]; then
+    backup_data >/dev/null || true
+  fi
+
+  # 解到临时目录再替换：解压半路失败时，现有代码还是完整的
+  apply_source "$stage"
+  rm -rf "$stage"
+  ok "源码已就绪${new_v:+（v$new_v）}"
 }
 
 # ---------------------------------------------------------------- Docker
 have_docker() { need_cmd docker && docker info >/dev/null 2>&1; }
+have_python() {
+  need_cmd python3 && python3 -c 'import sys;sys.exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null
+}
 
 configure_docker_mirror() {
   [ "$CN_MIRROR_ON" = "1" ] || return 0
@@ -335,6 +607,7 @@ configure_docker_mirror() {
       warn "$path 已存在且没有 jq，跳过自动合并"; return 0
     fi
   else
+    mkdir -p "$(dirname "$path")" 2>/dev/null || true
     printf '{\n  "registry-mirrors": [%s]\n}\n' "$json" | $SUDO tee "$path" >/dev/null
   fi
   need_cmd systemctl && $SUDO systemctl restart docker >/dev/null 2>&1 || true
@@ -356,17 +629,77 @@ docker_pull() { # image
   return 1
 }
 
+# 生成一份等价 compose 文件：以后不用记一长串 docker run，
+# `cd 安装目录 && docker compose up -d` 就能重建同一个服务。
+write_compose_file() {
+  local f="$INSTALL_DIR/$COMPOSE_FILE_NAME"
+  cat > "$f" <<EOF
+# 由 install.sh $VERSION 生成于 $(date '+%Y-%m-%d %H:%M:%S')
+# 改端口 / 环境变量后：docker compose up -d --force-recreate
+# 不想用 compose 也行，simpleurl start|stop|restart 直接管容器
+services:
+  $SERVICE_NAME:
+    image: simpleurl:latest
+    container_name: $SERVICE_NAME
+    restart: unless-stopped
+    ports:
+      - "$PORT:8000"
+    env_file:
+      - .env.docker
+    volumes:
+      - ${SERVICE_NAME}-data:/data
+    labels:
+      simpleurl.managed: "1"
+
+volumes:
+  ${SERVICE_NAME}-data:
+    external: true
+EOF
+  ok "compose 文件：$f"
+}
+
+# 容器里的配置以 /data/.env 为准，宿主机上的这是一份可编辑的镜像。
+# 注意不能用 `docker exec ... printf` 写：容器里没有 printf 内置、
+# 宿主 shell 又会把引号吃掉，最后写进去的是空文件。
+write_docker_env() {
+  local envfile="$INSTALL_DIR/.env.docker"
+  {
+    printf '# 容器内 /data/.env 的副本（由 install.sh %s 生成）\n' "$VERSION"
+    printf 'SITE_NAME=%s\n' "$SITE_NAME"
+    printf 'PORT=8000\n'
+    printf 'PUBLIC_URL=%s\n' "$PUBLIC_URL"
+    printf 'ACCESS_MODE=%s\n' "$ACCESS_MODE"
+    printf 'DATABASE_URL=%s\n' "sqlite:////data/simpleurl.db"
+    printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
+    printf 'ADMIN_TOKEN=%s:%s\n' "$ADMIN_USER" "$ADMIN_PASS"
+    printf 'TZ=%s\n' "${TZ:-Asia/Shanghai}"
+  } > "$envfile"
+  chmod 600 "$envfile" 2>/dev/null || true
+}
+
 install_docker_mode() {
   step "Docker 方式部署"
   configure_docker_mirror
+  write_docker_env
+
   local build_args=()
   if [ "$CN_MIRROR_ON" = "1" ] && [ -n "$PIP_INDEX_URL" ]; then
     build_args=(--build-arg "PIP_INDEX_URL=$PIP_INDEX_URL" --build-arg "PIP_TRUSTED_HOST=$PIP_TRUSTED_HOST")
   fi
   docker_pull "python:3.12-slim" || warn "基础镜像拉取受阻，继续尝试构建"
   step "构建镜像（首次会装依赖）"
-  docker build ${build_args[@]+"${build_args[@]}"} -t simpleurl:latest -f "$INSTALL_DIR/Dockerfile" "$INSTALL_DIR" >/dev/null \
-    || die "镜像构建失败。可试着 USE_CN_MIRROR=0 重跑，或检查网络"
+  if ! docker build ${build_args[@]+"${build_args[@]}"} -t simpleurl:latest \
+        -f "$INSTALL_DIR/Dockerfile" "$INSTALL_DIR" >"$INSTALL_DIR/.build.log" 2>&1; then
+    tail -n 15 "$INSTALL_DIR/.build.log" 2>/dev/null | sed 's/^/    /' >&2
+    rollback_or_die "镜像构建失败（日志：$INSTALL_DIR/.build.log）"
+  fi
+  ok "镜像构建完成"
+
+  # 已有容器先记下镜像 ID，起不来能用它回去
+  local prev_image=""
+  prev_image="$(docker inspect -f '{{.Image}}' "$SERVICE_NAME" 2>/dev/null || echo "")"
+  write_compose_file
+
   docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
   docker volume create "${SERVICE_NAME}-data" >/dev/null
   docker run -d --name "$SERVICE_NAME" --restart unless-stopped \
@@ -376,17 +709,19 @@ install_docker_mode() {
     -e "SECRET_KEY=$SECRET_KEY" \
     -e "ADMIN_TOKEN=$ADMIN_USER:$ADMIN_PASS" \
     -e "PUBLIC_URL=$PUBLIC_URL" -e "ACCESS_MODE=$ACCESS_MODE" \
-    -e "SIMPLEURL_ENV_FILE=/data/.env" \
+    -e "TZ=${TZ:-Asia/Shanghai}" \
     --label "simpleurl.managed=1" \
-    simpleurl:latest >/dev/null || die "容器启动失败"
+    simpleurl:latest >/dev/null || rollback_or_die "容器启动失败"
   RUNTIME="docker"
   ok "容器已启动：$SERVICE_NAME（数据卷 ${SERVICE_NAME}-data）"
-  # 让 simpleurl password / config 有可改的配置文件
-  docker exec "$SERVICE_NAME" sh -c "printf '%s\n' \
-"SITE_NAME=$SITE_NAME" "PORT=8000" "PUBLIC_URL=$PUBLIC_URL" \
-"SECRET_KEY=$SECRET_KEY" "ADMIN_TOKEN=$ADMIN_USER:$ADMIN_PASS" \
-> /data/.env && chmod 600 /data/.env" >/dev/null 2>&1 || true
+
+  # /data/.env 是「容器里的那份」，让 simpleurl config / password 改得动
+  if ! docker exec "$SERVICE_NAME" sh -c 'cat > /data/.env && chmod 600 /data/.env' \
+        < "$INSTALL_DIR/.env.docker" >/dev/null 2>&1; then
+    warn "写容器配置文件失败，改配置请用 docker exec 手动处理"
+  fi
   docker restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+  PREV_IMAGE="$prev_image"
 }
 
 # ---------------------------------------------------------------- Python
@@ -427,12 +762,12 @@ install_python_mode() {
   if ! python3 -m venv "$INSTALL_DIR/.venv" 2>/dev/null; then
     warn "创建 venv 失败，补装 python3-venv"
     pkg_install python3-venv python3-pip || true
-    python3 -m venv "$INSTALL_DIR/.venv" || die "创建虚拟环境失败，请手动安装 python3-venv"
+    python3 -m venv "$INSTALL_DIR/.venv" || rollback_or_die "创建虚拟环境失败，请手动安装 python3-venv"
   fi
   local pip="$INSTALL_DIR/.venv/bin/pip"
   step "安装依赖（通常 1~2 分钟）"
   pip_install "$pip" --upgrade pip >/dev/null 2>&1 || true
-  pip_install "$pip" -r "$INSTALL_DIR/requirements.txt" || die "依赖安装失败，检查网络后重试"
+  pip_install "$pip" -r "$INSTALL_DIR/requirements.txt" || rollback_or_die "依赖安装失败，检查网络后重试"
   # 装完自检：缺包在这里说清楚，比等 uvicorn 抛一屏 import 栈好读
   if ! "$pip" check >/dev/null 2>&1; then
     warn "依赖有冲突，仍继续启动（可用 simpleurl log 查详情）"
@@ -440,7 +775,7 @@ install_python_mode() {
   if ! "$INSTALL_DIR/.venv/bin/python" -c "import fastapi, uvicorn, httpx" 2>/dev/null; then
     warn "依赖没装全，正在用官方源补装一次"
     "$pip" install -q --disable-pip-version-check -r "$INSTALL_DIR/requirements.txt" \
-      || die "依赖装不上。可手改 $INSTALL_DIR/requirements.txt 后重跑，或指定 PIP_INDEX_URL=<你的源>"
+      || rollback_or_die "依赖装不上。可手改 $INSTALL_DIR/requirements.txt 后重跑"
   fi
   RUNTIME="python"
 }
@@ -450,7 +785,7 @@ write_env() {
   umask 077
   cat > "$file" <<EOF
 # SimpleURL 配置，由 install.sh $VERSION 生成于 $(date '+%Y-%m-%d %H:%M:%S')
-# 改完执行 simpleurl restart 生效
+# 改完执行 simpleurl restart 生效；也可以 simpleurl config 直接编辑
 SITE_NAME=$SITE_NAME
 HOST=0.0.0.0
 PORT=$PORT
@@ -458,12 +793,15 @@ PUBLIC_URL=$PUBLIC_URL
 ACCESS_MODE=$ACCESS_MODE
 DATABASE_URL=$DATABASE_URL
 SECRET_KEY=$SECRET_KEY
+TZ=${TZ:-Asia/Shanghai}
 # 后台凭据：admin:密码 表示账号密码分开设；只写口令则账号固定 admin
 ADMIN_TOKEN=$ADMIN_USER:$ADMIN_PASS
 EOF
   chmod 600 "$file" 2>/dev/null || true
 }
 
+# 启动包装。用 exec 收尾，pid 文件里记的就是真正的 uvicorn 进程，
+# 脚本退出后 kill 得掉，不会留孤儿。
 write_start_wrapper() {
   cat > "$INSTALL_DIR/start.sh" <<EOF
 #!/usr/bin/env sh
@@ -478,28 +816,36 @@ EOF
   chmod +x "$INSTALL_DIR/start.sh"
 }
 
+# 有 setsid 就脱离终端（关掉 SSH 也不死），没有就普通 nohup
+spawn_detached() { # logfile
+  local log="$1"
+  if need_cmd setsid; then
+    setsid nohup "$INSTALL_DIR/start.sh" >>"$log" 2>&1 </dev/null &
+  else
+    nohup "$INSTALL_DIR/start.sh" >>"$log" 2>&1 </dev/null &
+  fi
+  printf '%s' "$!"
+}
+
 start_background() {
   step "后台启动服务"
-  if need_cmd setsid; then
-    setsid nohup "$INSTALL_DIR/start.sh" >>"$LOG_FILE" 2>&1 </dev/null &
-  else
-    nohup "$INSTALL_DIR/start.sh" >>"$LOG_FILE" 2>&1 </dev/null &
-  fi
-  echo $! > "$INSTALL_DIR/simpleurl.pid"
+  local pid; pid="$(spawn_detached "$LOG_FILE")"
+  echo "$pid" > "$INSTALL_DIR/simpleurl.pid"
   sleep 2
-  local pid; pid="$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null || echo "")"
-  # start.sh 以 exec 收尾，所以这个 PID 就是真进程，脚本退出也找得到
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if kill -0 "$pid" 2>/dev/null; then
     ok "已启动，PID $pid"
-  else
-    warn "进程没起来，最近日志："; tail -n 10 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
-    return 1
+    return 0
   fi
+  warn "进程没起来，最近日志："; tail -n 12 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
+  return 1
 }
+
+has_systemd_unit() { [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; }
 
 setup_systemd() {
   [ "$RUNTIME" = "python" ] || return 1
   need_cmd systemctl || return 1
+  [ -d /run/systemd/system ] || return 1
   local SUDO=""
   [ "$(id -u)" != "0" ] && need_cmd sudo && SUDO="sudo"
   if [ "$(id -u)" != "0" ] && [ -z "$SUDO" ]; then
@@ -530,29 +876,30 @@ EOF
 stop_running() {
   if [ "$RUNTIME" = "docker" ]; then
     docker stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-  elif need_cmd systemctl && [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
+  elif has_systemd_unit && need_cmd systemctl; then
     local SUDO=""; [ "$(id -u)" != "0" ] && need_cmd sudo && SUDO="sudo"
     $SUDO systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
   elif [ -f "$INSTALL_DIR/simpleurl.pid" ]; then
-    kill "$(cat "$INSTALL_DIR/simpleurl.pid")" 2>/dev/null || true
+    local pid; pid="$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null || echo "")"
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$INSTALL_DIR/simpleurl.pid"
   fi
 }
 
+# 停掉「占了目标端口但不是本脚本管理的」进程前先问一声，不默默动手
 check_port_free() {
-  local pid=""
-  if need_cmd ss; then pid="$(ss -lntp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $NF}' | head -1)"
-  elif need_cmd lsof; then pid="$(lsof -ti "tcp:$PORT" 2>/dev/null | head -1)"; fi
-  [ -n "$pid" ] || return 0
-  warn "端口 $PORT 被占用：$pid"
-  ask "换个端口（留空沿用 $PORT）" ""
+  port_in_use "$PORT" || return 0
+  local who=""
+  if need_cmd ss; then who="$(ss -lntp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $NF; exit}')"; fi
+  warn "端口 $PORT 被占用${who:+：$who}"
+  ask "换个端口（留空沿用 $PORT，安装可能会冲突）" ""
   [ -n "$ANSWER" ] && PORT="$ANSWER"
 }
 
-wait_health() {
-  step "等待服务就绪"
+wait_health() { # [max]
   local i=0 max="${1:-60}" code="000"
-  need_cmd curl || { sleep 3; return 0; }
+  step "等待服务就绪"
+  if ! need_cmd curl; then sleep 3; return 0; fi
   while [ "$i" -lt "$max" ]; do
     code="$(curl -s -o /dev/null -w '%{http_code}' -m 2 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null || echo 000)"
     [ "$code" = "200" ] && { ok "健康检查通过"; return 0; }
@@ -565,7 +912,114 @@ wait_health() {
   return 1
 }
 
+# ---------------------------------------------------------------- 反向代理
+# HTTPS 不该让用户自己拼 nginx 配置：短链发出去就是 https，配错一次等于断链。
+# 这里按检测到的 Web 服务器生成一份能直接用的配置，并给出 certbot 的后续命令。
+proxy_available() { need_cmd nginx || have_caddy || need_cmd apache2 || need_cmd httpd; }
+have_caddy() { need_cmd caddy || [ -d /etc/caddy ]; }
+have_nginx() { need_cmd nginx || [ -d /etc/nginx ]; }
+
+write_proxy_config() { # domain
+  local domain="$1" dir="$INSTALL_DIR/.proxy"
+  mkdir -p "$dir"
+  local up="127.0.0.1:$PORT"
+
+  if have_caddy; then
+    cat > "$dir/Caddyfile" <<EOF
+# Caddy 自动申请并续期证书，这条就是全部配置
+$domain {
+	encode gzip zstd
+	reverse_proxy $up {
+		header_up X-Real-IP {remote_host}
+	}
+}
+EOF
+    PROXY_FILE="$dir/Caddyfile"; PROXY_KIND="caddy"
+    printf "  %s\n" "把这段并入 /etc/caddy/Caddyfile，然后：systemctl reload caddy"
+    return 0
+  fi
+
+  if have_nginx; then
+    cat > "$dir/$domain.conf" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+
+    # 短链要能被微信 / QQ 抓预览卡片，这几类跨站静态资源放开
+    location /static/ { proxy_pass http://$up; proxy_set_header Host \$host; }
+
+    location / {
+        proxy_pass http://$up;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 60s;
+    }
+}
+EOF
+    PROXY_FILE="$dir/$domain.conf"; PROXY_KIND="nginx"
+    printf "  %s\n" "配置文件：$PROXY_FILE"
+    printf "  %s\n" "sudo cp $dir/$domain.conf /etc/nginx/conf.d/ && sudo nginx -t && sudo systemctl reload nginx"
+    printf "  %s\n" "然后签证书：sudo certbot --nginx -d $domain"
+    return 0
+  fi
+
+  if need_cmd apache2 || need_cmd httpd; then
+    cat > "$dir/$domain.conf" <<EOF
+<VirtualHost *:80>
+    ServerName $domain
+    ProxyPreserveHost On
+    ProxyPass / http://$up/
+    ProxyPassReverse / http://$up/
+    RequestHeader set X-Forwarded-Proto "http"
+</VirtualHost>
+EOF
+    PROXY_FILE="$dir/$domain.conf"; PROXY_KIND="apache"
+    printf "  %s\n" "sudo cp $dir/$domain.conf /etc/apache2/sites-available/ && sudo a2ensite $domain && sudo systemctl reload apache2"
+    printf "  %s\n" "然后签证书：sudo certbot --apache -d $domain"
+    return 0
+  fi
+
+  PROXY_FILE=""; PROXY_KIND=""
+  return 1
+}
+
+# ---------------------------------------------------------------- 回滚
+PREV_IMAGE=""
+PREV_BACKUP=""
+ROLLED_BACK="n"
+
+rollback_or_die() { # message
+  local msg="$1"
+  if [ -n "$PREV_BACKUP" ] && [ -d "$PREV_BACKUP" ]; then
+    warn "正在回滚到升级前的状态：$PREV_BACKUP"
+    rm -rf "${INSTALL_DIR:?}/.rollback"; mkdir -p "$INSTALL_DIR/.rollback"
+    local f
+    for f in simpleurl.db simpleurl.db-wal simpleurl.db-shm .env; do
+      [ -f "$PREV_BACKUP/$f" ] && cp -a "$PREV_BACKUP/$f" "$INSTALL_DIR/.rollback/" 2>/dev/null || true
+    done
+    if [ -f "$INSTALL_DIR/.rollback/simpleurl.db" ]; then
+      rm -f "$INSTALL_DIR/simpleurl.db" "$INSTALL_DIR/simpleurl.db-wal" "$INSTALL_DIR/simpleurl.db-shm"
+      cp -a "$INSTALL_DIR/.rollback/simpleurl.db"* "$INSTALL_DIR/" 2>/dev/null || true
+    fi
+    rm -rf "$INSTALL_DIR/.rollback"
+    if [ "$RUNTIME" = "docker" ] && [ -n "$PREV_IMAGE" ]; then
+      docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
+      docker run -d --name "$SERVICE_NAME" --restart unless-stopped \
+        -p "${PORT}:8000" -v "${SERVICE_NAME}-data:/data" \
+        "$PREV_IMAGE" >/dev/null 2>&1 || true
+    fi
+    ROLLED_BACK="y"
+    die "$msg（已回滚数据与配置，旧代码在 .backup/ 里可手动恢复）"
+  fi
+  die "$msg"
+}
+
 # ---------------------------------------------------------------- simpleurl 命令
+# 生成管理命令。它自己读 MARK_FILE 决定运行方式，所以脚本挪走、升级过
+# 也不会跑到旧逻辑上。
 install_cli() {
   local bindir="/usr/local/bin" SUDO=""
   if [ "$(id -u)" != "0" ]; then
@@ -580,26 +1034,31 @@ install_cli() {
 set -uo pipefail
 DIR="$INSTALL_DIR"
 NAME="$SERVICE_NAME"
-PORT="$PORT"
-RUNTIME="$RUNTIME"
-URL_HINT="$PUBLIC_URL"
+MARK="\$DIR/.simpleurl-managed"
 G=\$'\033[32m'; R=\$'\033[31m'; D=\$'\033[2m'; N=\$'\033[0m'
 
-env_get() { grep -E "^\$1=" "\$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-; }
+# 运行方式以安装时写的标记为准，命令本身不再带上过期信息
+meta() { sed -n "s/^\$1=//p" "\$MARK" 2>/dev/null | head -1; }
+RUNTIME="\$(meta runtime)"
+PORT="\$(meta port)"
+URL_HINT="\$(grep -E '^PUBLIC_URL=' "\$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+[ -n "\$PORT" ] || PORT=8000
+
 say() { printf '%s\n' "\$*"; }
+warn() { printf "%s!%s %s\n" "\$R" "\$N" "\$*"; }
 
 running() {
   if [ "\$RUNTIME" = "docker" ]; then
     docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "\$NAME"
-  elif command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/\$NAME.service" ]; then
+  elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl is-active --quiet "\$NAME"
   else
-    [ -f "\$DIR/simpleurl.pid" ] && kill -0 "\$(cat "\$DIR/simpleurl.pid")" 2>/dev/null
+    [ -f "\$DIR/simpleurl.pid" ] && kill -0 "\$(cat "\$DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null
   fi
 }
 
 site_url() {
-  [ -n "\$URL_HINT" ] && { printf '%s' "\$URL_HINT"; return; }
+  if [ -n "\$URL_HINT" ]; then printf '%s' "\$URL_HINT"; return; fi
   local ip; ip="\$(hostname -I 2>/dev/null | awk '{print \$1}')"
   printf 'http://%s:%s' "\${ip:-127.0.0.1}" "\$PORT"
 }
@@ -607,35 +1066,44 @@ site_url() {
 do_start() {
   if running; then say "已在运行"; return 0; fi
   if [ "\$RUNTIME" = "docker" ]; then
-    docker start "\$NAME" >/dev/null && say "已启动容器 \$NAME"
-  elif command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/\$NAME.service" ]; then
-    sudo systemctl start "\$NAME" && say "已启动 systemd 服务 \$NAME"
-  else
-    setsid nohup "\$DIR/start.sh" >>"\$DIR/simpleurl.log" 2>&1 </dev/null &
-    echo \$! > "\$DIR/simpleurl.pid"
-    say "已后台启动，PID \$(cat "\$DIR/simpleurl.pid")"
+    docker start "\$NAME" >/dev/null && say "已启动容器 \$NAME"; return 0
+  elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl start "\$NAME" && say "已启动 systemd 服务 \$NAME"; return 0
   fi
+  setsid nohup "\$DIR/start.sh" >>"\$DIR/simpleurl.log" 2>&1 </dev/null &
+  echo \$! > "\$DIR/simpleurl.pid"
+  say "已后台启动，PID \$(cat "\$DIR/simpleurl.pid")"
 }
 
 do_stop() {
   if [ "\$RUNTIME" = "docker" ]; then
     docker stop "\$NAME" >/dev/null 2>&1 && say "已停止容器 \$NAME" || say "容器未运行"
-  elif command -v systemctl >/dev/null 2>&1 && [ -f "/etc/systemd/system/\$NAME.service" ]; then
+  elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
     sudo systemctl stop "\$NAME" >/dev/null 2>&1 && say "已停止 \$NAME"
   elif [ -f "\$DIR/simpleurl.pid" ]; then
-    kill "\$(cat "\$DIR/simpleurl.pid")" 2>/dev/null && say "已停止"
+    kill "\$(cat "\$DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null && say "已停止"
     rm -f "\$DIR/simpleurl.pid"
   else
     say "未在运行"
   fi
 }
 
+health() {
+  command -v curl >/dev/null 2>&1 || return 0
+  local code
+  code="\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:\$PORT/healthz" 2>/dev/null || echo 000)"
+  if [ "\$code" = "200" ]; then printf "  健康检查 %s200 OK%s\n" "\$G" "\$N"
+  else printf "  健康检查 %s%s%s\n" "\$R" "\$code" "\$N"; fi
+}
+
 set_password() {
-  local pass="\${1:-}"
-  [ -n "\$pass" ] || pass="\$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z2-9' | cut -c1-16)"
-  local cred="admin:\$pass"
+  local pass="\${1:-}" cred
+  if [ -z "\$pass" ]; then
+    pass="\$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z2-9' | cut -c1-16)"
+  fi
+  cred="admin:\$pass"
   if [ "\$RUNTIME" = "docker" ]; then
-    docker exec "\$NAME" python - <<'PY' "\$cred"
+    docker exec "\$NAME" python - "\$cred" <<'PY'
 import pathlib, re, sys
 p = pathlib.Path('/data/.env')
 text = p.read_text() if p.exists() else ''
@@ -644,52 +1112,83 @@ p.write_text(text + '\nADMIN_TOKEN=' + sys.argv[1] + '\n')
 PY
     docker restart "\$NAME" >/dev/null 2>&1 || true
   else
-    sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=\$cred|" "\$DIR/.env" 2>/dev/null \
-      || sed -i '' "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=\$cred|" "\$DIR/.env"
+    if sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=\$cred|" "\$DIR/.env" 2>/dev/null; then :
+    else sed -i '' "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=\$cred|" "\$DIR/.env"; fi
     rm -f "\$DIR/.env.bak"
-    do_stop; sleep 1; do_start
+    do_stop >/dev/null; sleep 1; do_start >/dev/null
   fi
   say "新密码：\$pass"
   say "账号：admin　后台：\$(site_url)/admin"
+  say "（改完记得同步改你自己的密码管理器）"
+}
+
+site_status() {
+  if running; then printf "%s● 运行中%s\n" "\$G" "\$N"
+  else printf "%s● 已停止%s\n" "\$R" "\$N"; fi
+  health
+  printf "  站点 %s\n  后台 %s/admin\n" "\$(site_url)" "\$(site_url)"
+  if [ "\$RUNTIME" = "docker" ]; then docker ps --filter "name=^\$NAME\$" --format '  容器 {{.Status}} · {{.Ports}}' 2>/dev/null || true; fi
+  return 0
+}
+
+do_backup() {
+  local out="\${1:-\$HOME/simpleurl-backup-\$(date +%Y%m%d-%H%M%S).tar.gz}"
+  mkdir -p "\$(dirname "\$out")"
+  if [ "\$RUNTIME" = "docker" ]; then
+    docker run --rm -v "\${NAME}-data:/data" -v "\$(dirname "\$out"):/backup" alpine \\
+      tar -czf "/backup/\$(basename "\$out")" -C /data . >/dev/null && say "已备份到 \$out"
+  else
+    tar -czf "\$out" -C "\$DIR" simpleurl.db .env 2>/dev/null && say "已备份到 \$out"
+  fi
+}
+
+# 从备份里恢复数据。只覆盖数据库和配置，代码不动。
+do_restore() {
+  local src="\${1:-}" tmp
+  [ -n "\$src" ] && [ -f "\$src" ] || { warn "用法：simpleurl restore <备份文件.tar.gz>"; return 2; }
+  if [ "\$RUNTIME" = "docker" ]; then
+    warn "容器模式请手动恢复：docker run --rm -v \${NAME}-data:/data -v \$(dirname "\$src"):/b alpine tar -xzf /b/\$(basename "\$src") -C /data"
+    return 2
+  fi
+  tmp="\$(mktemp -d)"
+  tar -xzf "\$src" -C "\$tmp" 2>/dev/null || { warn "不是有效的备份包"; rm -rf "\$tmp"; return 2; }
+  do_stop >/dev/null
+  [ -f "\$tmp/simpleurl.db" ] && cp -a "\$tmp/simpleurl.db" "\$DIR/" && rm -f "\$DIR/simpleurl.db-wal" "\$DIR/simpleurl.db-shm"
+  [ -f "\$tmp/.env" ] && cp -a "\$tmp/.env" "\$DIR/"
+  rm -rf "\$tmp"
+  do_start >/dev/null
+  say "已从 \$src 恢复，服务已重启"
 }
 
 case "\${1:-help}" in
   start)   do_start ;;
   stop)    do_stop ;;
-  restart) do_stop; sleep 1; do_start ;;
-  status)
-    if running; then printf "%s● 运行中%s\n" "\$G" "\$N"
-    else printf "%s● 已停止%s\n" "\$R" "\$N"; fi
-    if command -v curl >/dev/null 2>&1; then
-      code=\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:\$PORT/healthz" || echo 000)
-      [ "\$code" = "200" ] && printf "  健康检查 %s200 OK%s\n" "\$G" "\$N" \
-                           || printf "  健康检查 %s%s%s\n" "\$R" "\$code" "\$N"
-    fi
-    printf "  站点 %s\n  后台 %s/admin\n" "\$(site_url)" "\$(site_url)"
-    [ "\$RUNTIME" = "docker" ] && docker ps --filter "name=^\$NAME\$" --format '  容器 {{.Status}} · {{.Ports}}' ;;
-  url)      site_url; echo ;;
+  restart) do_stop >/dev/null; sleep 1; do_start ;;
+  status)  site_status ;;
+  url)     site_url; echo ;;
   log)
     if [ "\$RUNTIME" = "docker" ]; then docker logs --tail 100 -f "\$NAME"
     else tail -n 100 -f "\$DIR/simpleurl.log"; fi ;;
   password) set_password "\${2:-}" ;;
   config)
     if [ "\$RUNTIME" = "docker" ]; then
-      docker exec "\$NAME" cat /data/.env
+      docker exec "\$NAME" cat /data/.env 2>/dev/null || cat "\$DIR/.env.docker"
       say ""
       say "（Docker 模式改配置：docker exec -it \$NAME vi /data/.env 后 simpleurl restart）"
     else
       "\${EDITOR:-vi}" "\$DIR/.env"
     fi ;;
-  backup)
-    out="\${2:-\$HOME/simpleurl-backup-\$(date +%Y%m%d-%H%M%S).tar.gz}"
-    if [ "\$RUNTIME" = "docker" ]; then
-      docker run --rm -v "\${NAME}-data:/data" -v "\$(dirname "\$out"):/backup" alpine \\
-        tar -czf "/backup/\$(basename "\$out")" -C /data . >/dev/null && say "已备份到 \$out"
-    else
-      tar -czf "\$out" -C "\$DIR" simpleurl.db .env 2>/dev/null && say "已备份到 \$out"
-    fi ;;
-  update)  say "重新执行安装脚本以更新：\$DIR/install.sh" ;;
-  uninstall) exec "\$DIR/install.sh" --uninstall ;;
+  backup)  do_backup "\${2:-}" ;;
+  restore) do_restore "\${2:-}" ;;
+  upgrade)
+    if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" upgrade --yes
+    else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
+  doctor)
+    if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" doctor
+    else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
+  uninstall)
+    if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" --uninstall
+    else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   help|--help|-h|*)
     cat <<USAGE
 SimpleURL 管理命令
@@ -701,7 +1200,9 @@ SimpleURL 管理命令
   simpleurl password [新密码]    重置管理员密码（不给参数就随机生成）
   simpleurl config              查看 / 编辑配置
   simpleurl backup [路径]        备份数据库与配置
-  simpleurl update              重新执行安装脚本更新
+  simpleurl restore <备份>       从备份恢复数据
+  simpleurl upgrade             拉新代码升级（失败自动回滚数据）
+  simpleurl doctor              环境体检
   simpleurl uninstall           卸载
 USAGE
     ;;
@@ -730,12 +1231,16 @@ summary() {
   printf "  %s后续管理（%ssimpleurl --help%s%s 看全部）%s\n" "$BOLD" "$DIM" "$RST" "$BOLD" "$RST"
   printf "    simpleurl status      看状态\n"
   printf "    simpleurl log         看日志\n"
-  printf "    simpleurl restart     重启\n"
-  printf "    simpleurl password    重置管理员密码\n"
+  printf "    simpleurl upgrade     升级到最新代码\n"
   printf "    simpleurl backup      备份数据\n"
+  printf "    simpleurl password    重置管理员密码\n"
   hr
   printf "  %s密码请立刻抄走。之后可在后台「设置 → 管理员账号」改，改完重启不丢。%s\n" "$YELLOW" "$RST"
   [ -z "$PUBLIC_URL" ] && printf "  %s想让短链显示成自己的域名？在 %s/.env 里设 PUBLIC_URL=https://s.example.com 再 restart。%s\n" "$DIM" "$INSTALL_DIR" "$RST"
+  if [ -n "${PROXY_FILE:-}" ] && [ -f "$PROXY_FILE" ]; then
+    printf "  %s反向代理%s    %s（%s，照注释里的命令挂上去就生效）\n" "$DIM" "$RST" "$PROXY_FILE" "$PROXY_KIND"
+  fi
+  printf "  %s装完想自检：simpleurl doctor；出问题先看 simpleurl log。%s\n" "$DIM" "$RST"
   printf "  %sPowered by SimpleURL — https://cnb.cool/%s%s\n\n" "$DIM" "$REPO_SLUG" "$RST"
 }
 
@@ -759,19 +1264,48 @@ do_uninstall() {
     $SUDO rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
     $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
   fi
+  if [ -f "$INSTALL_DIR/simpleurl.pid" ]; then
+    kill "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null || true
+  fi
   rm -f /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" 2>/dev/null || true
   rm -rf "$INSTALL_DIR"
   ok "已卸载干净"
 }
 
 # ---------------------------------------------------------------- 主流程
-main() {
-  case "$ACTION" in
-    help) usage; exit 0 ;;
-    uninstall) banner; do_uninstall; exit 0 ;;
+# 读已有安装的配置：升级时原样沿用，不重新提问
+load_existing_env() { # envfile
+  local f="$1" raw_token
+  SITE_NAME="$(grep -E '^SITE_NAME=' "$f" | head -1 | cut -d= -f2- || echo "$SITE_NAME")"
+  PORT="$(grep -E '^PORT=' "$f" | head -1 | cut -d= -f2- || echo "$PORT")"
+  PUBLIC_URL="$(grep -E '^PUBLIC_URL=' "$f" | head -1 | cut -d= -f2- || echo "")"
+  ACCESS_MODE="$(grep -E '^ACCESS_MODE=' "$f" | head -1 | cut -d= -f2- || echo "public")"
+  SECRET_KEY="$(grep -E '^SECRET_KEY=' "$f" | head -1 | cut -d= -f2- || echo "")"
+  raw_token="$(grep -E '^ADMIN_TOKEN=' "$f" | head -1 | cut -d= -f2- || echo "")"
+  case "$raw_token" in
+    *:*) ADMIN_USER="${raw_token%%:*}"; ADMIN_PASS="${raw_token#*:}" ;;
+    "")  ADMIN_USER="admin"; ADMIN_PASS="" ;;
+    *)   ADMIN_USER="admin"; ADMIN_PASS="$raw_token" ;;
   esac
+}
 
-  banner
+do_install() {
+  # banner 只打一次：main 里已经打过，别再重复刷屏
+  [ "$BANNER_SHOWN" = "y" ] || { banner; BANNER_SHOWN="y"; }
+
+  # 已有安装：沿用配置，别把人已经配好的东西再问一遍
+  local existing_env="$INSTALL_DIR/.env"
+  local reuse="n"
+  local prev_runtime=""
+  [ -f "$MARK_FILE" ] && prev_runtime="$(sed -n 's/^runtime=//p' "$MARK_FILE" | head -1)"
+
+  if [ -f "$existing_env" ]; then
+    reuse="y"
+    step "检测到已有安装：$INSTALL_DIR（沿用现有配置，只更新代码）"
+    load_existing_env "$existing_env"
+    [ -n "$RUNTIME_OVERRIDE" ] && prev_runtime="$RUNTIME_OVERRIDE"
+  fi
+
   probe_network
   if [ "$CN_MIRROR_ON" = "1" ]; then
     ok "网络探测：国内线路，启用加速（pip${PIP_INDEX_URL:+ · $PIP_INDEX_URL}）"
@@ -779,24 +1313,19 @@ main() {
     ok "网络探测：直连官方源"
   fi
 
-  # 已有安装的话，沿用原来的配置，只提醒
-  local existing_env="$INSTALL_DIR/.env"
-  local reuse="n"
-  if [ -f "$existing_env" ]; then
-    reuse="y"
-    step "检测到已有安装：$INSTALL_DIR（沿用现有配置，只更新代码）"
-    SITE_NAME="$(grep -E '^SITE_NAME=' "$existing_env" | head -1 | cut -d= -f2- || echo "$SITE_NAME")"
-    PORT="$(grep -E '^PORT=' "$existing_env" | head -1 | cut -d= -f2- || echo "$PORT")"
-    PUBLIC_URL="$(grep -E '^PUBLIC_URL=' "$existing_env" | head -1 | cut -d= -f2- || echo "")"
-    ACCESS_MODE="$(grep -E '^ACCESS_MODE=' "$existing_env" | head -1 | cut -d= -f2- || echo "public")"
-    SECRET_KEY="$(grep -E '^SECRET_KEY=' "$existing_env" | head -1 | cut -d= -f2- || echo "")"
-    local raw_token; raw_token="$(grep -E '^ADMIN_TOKEN=' "$existing_env" | head -1 | cut -d= -f2- || echo "")"
-    case "$raw_token" in
-      *:*) ADMIN_USER="${raw_token%%:*}"; ADMIN_PASS="${raw_token#*:}" ;;
-      "")  ADMIN_USER="admin"; ADMIN_PASS="" ;;
-      *)   ADMIN_USER="admin"; ADMIN_PASS="$raw_token" ;;
-    esac
-  else
+  doctor || die "环境体检没过，按上面的提示处理后再跑一次"
+
+  # 升级前先看一眼远端版本：已经最新就不折腾了，别每次都重装依赖、重启服务。
+  # 注意命令顺序：函数调用放最后，「函数返回 1」就不会把整个 if 判成失败。
+  if same_as_remote && [ "$ACTION_UPGRADE" = "y" ] && [ "$reuse" = "y" ]; then
+    ok "已经是最新代码，服务不动"
+    local url="http://$(detect_ip):$PORT"
+    [ -n "$PUBLIC_URL" ] && url="$PUBLIC_URL"
+    printf "  站点 %s\n  后台 %s/admin\n\n" "$url" "$url"
+    exit 0
+  fi
+
+  if [ "$reuse" = "n" ]; then
     echo
     hr; printf "%s装之前先确认几件事（回车用默认值）%s\n" "$BOLD" "$RST"; hr
     ask "站点名称" "$SITE_NAME"; SITE_NAME="$ANSWER"
@@ -815,6 +1344,14 @@ main() {
         *) PUBLIC_URL="$PUBLIC_URL:$PORT" ;;
       esac
       ok "对外地址：$PUBLIC_URL"
+      # 有域名就该配 HTTPS：顺手生成一份能用的反代配置，别让人自己拼
+      local domain_only="${PUBLIC_URL#*://}"; domain_only="${domain_only%%/*}"; domain_only="${domain_only%%:*}"
+      if proxy_available; then
+        step "生成反向代理配置（$domain_only）"
+        write_proxy_config "$domain_only" || warn "没生成反代配置，可手动按 README 的 Nginx 段落配"
+      else
+        warn "没检测到 nginx / caddy / apache；装了以后重跑本脚本会补上反代配置"
+      fi
     else
       warn "未填域名，装完用 http://<服务器IP>:$PORT 访问"
     fi
@@ -826,29 +1363,74 @@ main() {
     ask "访问模式 public 谁都能建 / admin 仅管理员 / invite 邀请码" "public"; ACCESS_MODE="$ANSWER"
     case "$ACCESS_MODE" in public|admin|invite) : ;; *) ACCESS_MODE="public" ;; esac
     SECRET_KEY="$(gen_key 32)"
+  else
+    [ -n "${ADMIN_PASS:-}" ] || ADMIN_PASS="$(gen_password)"
+    [ -n "${SECRET_KEY:-}" ] || SECRET_KEY="$(gen_key 32)"
+    [ -n "${ACCESS_MODE:-}" ] || ACCESS_MODE="public"
   fi
 
   echo
   install_source
 
-  if have_docker; then
+  # 运行方式：显式参数 > 上次安装的方式 > 有 Docker 用 Docker > Python
+  local want="$RUNTIME_OVERRIDE"
+  [ -n "$want" ] || want="$prev_runtime"
+  if [ -z "$want" ]; then
+    if have_docker; then want="docker"; elif have_python; then want="python"; else want=""; fi
+  fi
+  [ -n "$want" ] || die "既没有 Docker 也没有 Python 3.10+，先装一个再来"
+  case "$want" in
+    docker) have_docker || { warn "指定了 Docker 方式，但 Docker 不可用，改用 Python"; want="python"; } ;;
+    python) : ;;
+  esac
+
+  if [ "$want" = "docker" ]; then
     [ "$reuse" = "y" ] && stop_running
     install_docker_mode
   else
-    warn "没有可用的 Docker，改用 Python 直装（更省资源）"
+    if [ "$reuse" = "y" ] && [ "$prev_runtime" = "docker" ]; then
+      warn "上次是 Docker 装的，这次改用 Python：数据留在数据卷里，需手动搬迁"
+      stop_running
+      docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+    warn "使用 Python 直装（更省资源）"
     stop_running
     install_python_mode
     DATABASE_URL="sqlite:///$INSTALL_DIR/simpleurl.db"
     write_env "$existing_env"
     write_start_wrapper
-    setup_systemd || start_background
+    if ! setup_systemd; then
+      if ! start_background; then
+        # systemd 环境里注册失败了但进程可能还在，先清干净再回滚
+        stop_running
+        rollback_or_die "服务没能启动"
+      fi
+    fi
   fi
 
   printf 'version=%s\nruntime=%s\nport=%s\ninstalled_at=%s\n' \
     "$VERSION" "$RUNTIME" "$PORT" "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARK_FILE"
   install_cli
-  wait_health 60 || warn "服务已启动但健康检查未过，用 simpleurl log 看原因"
+  if [ "$SKIP_HEALTH" = "y" ]; then
+    warn "按参数跳过健康检查"
+  else
+    wait_health 60 || die "服务起来了但健康检查没过，看 simpleurl log 定位（数据已备份，可 simpleurl restore 回滚）"
+  fi
   summary
+}
+
+main() {
+  case "$ACTION" in
+    help) usage; exit 0 ;;
+    doctor) banner; doctor; exit $? ;;
+    uninstall) banner; do_uninstall; exit 0 ;;
+    upgrade)
+      ACTION="install"; ACTION_UPGRADE="y"
+      [ -f "$INSTALL_DIR/.env" ] || die "$INSTALL_DIR 里没有安装记录，用 install 而不是 upgrade"
+      banner; do_install; exit 0 ;;
+    install)
+      do_install ;;
+  esac
 }
 
 main "$@"

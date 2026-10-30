@@ -255,18 +255,34 @@ ACCESS_MODE=admin ADMIN_TOKEN=$(openssl rand -hex 24) ./run.sh
 
 ## 一键安装
 
-不想手动配环境，直接跑安装脚本：
+仓库是私有的，所以先拿令牌再装（令牌在「仓库 → 设置 → 访问令牌」里建，只要 `repo-code:r`）：
 
 ```bash
-curl -fsSL https://cnb.cool/broccoli_xi/TechSauce/SimpleURL/-/raw/main/install.sh | bash
+export CNB_TOKEN=<你的令牌>
+curl -fsSL -H "Authorization: Basic $(printf 'cnb:%s' "$CNB_TOKEN" | base64)" \
+  https://cnb.cool/broccoli_xi/TechSauce/SimpleURL/-/raw/main/install.sh | bash -s -- --yes
 ```
 
-它会依次问你站点名称、端口、域名、管理员账号与密码（回车用默认值），然后：
+令牌只用来拉源码。脚本会依次问站点名称、端口、域名、管理员账号与密码（回车用默认值），然后：
 
 - 有 Docker 就用容器，没有就用 Python venv 起一个隔离环境
 - 国内网络自动探测可用的 pip 源，**真拉一个包试过**才用，试不通就回落官方源
+- 填了域名就顺手生成一份能直接用的反向代理配置（nginx / caddy / apache，按检测到的来），
+  并给出 certbot 签证书的命令
 - 装完打印一张卡片：站点地址、后台地址、账号、密码、运行方式
-- 留一个 `simpleurl` 命令管后续：
+
+### 先体检，再动手
+
+```bash
+./install.sh doctor
+```
+
+只看不写：系统、Docker/Python 版本、端口占用、磁盘余量、权限、网络线路，
+一次把「装到一半才报错」的前置条件说清楚。
+
+### 装完的日常
+
+安装目录里自带 `install.sh`，`/usr/local/bin/simpleurl` 只是它的门脸：
 
 ```bash
 simpleurl status      # 状态 + 健康检查
@@ -274,15 +290,40 @@ simpleurl log         # 跟踪日志
 simpleurl restart     # 重启
 simpleurl password    # 重置管理员密码（不给参数就随机生成）
 simpleurl backup      # 备份数据库与配置
+simpleurl restore     # 从备份恢复
+simpleurl upgrade     # 升级到最新代码
+simpleurl doctor      # 环境体检
 simpleurl url         # 打印站点与后台地址
 simpleurl config      # 查看 / 编辑配置
 ```
 
-常用环境变量：`SIMPLEURL_HOME`（安装目录，默认 `~/simpleurl`）、`PORT`、`SITE_NAME`、
-`USE_CN_MIRROR=0` 强制走官方源。`./install.sh --yes` 全默认、`--uninstall` 卸载。
+也可以在安装目录直接 `./install.sh upgrade` —— 脚本自己认得自己住哪儿。
 
-重跑同一个脚本就是升级：**会先备份数据库和 `.env` 到 `.backup/<时间戳>/`**，
-再替换代码，`ADMIN_TOKEN`、`PUBLIC_URL` 等配置原样保留。
+### 升级是怎么做的
+
+1. 只拉 `app/__init__.py` 比版本号。**一样就直接说「已经是最新，服务不动」**，不重装依赖、不重启
+2. 不一样才动：先把数据库和 `.env` 备份到 `.backup/<时间戳>/`
+3. 替换代码 → 重装依赖 → 重建镜像或重启进程
+4. 任何一步失败，按备份回滚数据与配置，`die` 时给出备份路径
+
+远端版本比本地旧时**不会**覆盖（防降级），要强行覆盖换 `--branch <分支>`。
+
+### Docker 部署
+
+`docker-compose.yml` 是能直接 `docker compose up -d` 的基础模板；用安装脚本装的话，
+它还会在安装目录生成一份等价的 compose 文件和可编辑的 `.env.docker`，
+以后重建容器不用再拼那一长串 `docker run`。
+
+### 常用环境变量
+
+`SIMPLEURL_HOME`（安装目录，默认 `~/simpleurl`）、`PORT`、`SITE_NAME`、
+`USE_CN_MIRROR=0`（强制官方源）、`CNB_TOKEN`（私有仓库令牌）、
+`REPO_URL` / `REPO_TARBALL` / `REPO_SLUG`（换安装来源）。
+
+参数：`--yes` 全默认、`--port`、`--dir`、`--runtime docker|python`、`--branch`、`--uninstall`。
+
+> 注意：CNB 的 `/-/raw/...`、`/-/archive/...` 是前端路由，`curl` 直接取会拿到 HTML 外壳。
+> 脚本对下载内容一律验 gzip 魔数，所以就算令牌没带对，也只会退回去用 `git clone`，不会把网页当源码解压。
 
 ## 社交平台防洪（微信 / QQ 等）
 

@@ -1,15 +1,41 @@
+# SimpleURL —— 手动部署用的基础模板。
+#
+#   docker compose up -d            起服务（数据在 simpleurl-data 卷里）
+#   docker compose logs -f          看日志
+#   docker compose down             停掉（数据保留）
+#
+# 一键安装脚本（install.sh）会按你的端口 / 域名生成一份等价的 compose 文件和
+# 可编辑的 .env，不会用这个文件；这里的默认值只求「拷下来就能跑」。
+#
+# 想让短链显示自己的域名：把 PUBLIC_URL 设成 https://s.example.com，
+# 并在反向代理里把该域名的请求转到本容器的 8000 端口。
 services:
   simpleurl:
     build: .
+    image: simpleurl:latest
+    container_name: simpleurl
     ports:
       - "8000:8000"
     environment:
       - SITE_NAME=SimpleURL
+      - PUBLIC_URL=
       - DATABASE_URL=sqlite:////data/simpleurl.db
-      - CREATE_DAILY_LIMIT=200
+      - ACCESS_MODE=public
+      # 后台口令。跑 docker compose up 前先 export ADMIN_TOKEN=admin:你的密码
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
+      - SECRET_KEY=${SECRET_KEY:-}
+      - TZ=${TZ:-Asia/Shanghai}
+      # 反向代理所在的地址，决定 X-Forwarded-For 采不采信
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1}
     volumes:
       - simpleurl-data:/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   simpleurl-data:

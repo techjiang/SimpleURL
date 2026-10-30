@@ -131,3 +131,158 @@ class TestInstallScript:
         start = text.index("SOURCE_ENTRIES=")
         block = text[start : text.index('"', text.index("\n", start) + 1)]
         assert "install.sh" not in block
+
+
+class TestInstallScriptV2:
+    """v2 安装脚本的硬规矩。
+
+    这几条对应真实踩过的坑：
+    - 管道里 `curl | bash` 也能跑，脚本不能依赖自身文件名是 install.sh
+    - status 跑完必须 exit 0，否则 `simpleurl status && ...` 会莫名其妙断掉
+    - 升级必须能回滚，且不许把「远端比本地旧」的代码覆盖回来
+    - 反代配置要真的能挂上，不是一段装饰
+    """
+
+    script = ROOT / "install.sh"
+
+    def text(self) -> str:
+        return self.script.read_text(encoding="utf-8")
+
+    def test_syntax_ok(self):
+        r = subprocess.run(["bash", "-n", str(self.script)], capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+    def test_has_subcommands(self):
+        body = self.text()
+        for sub in ("install", "upgrade", "uninstall", "doctor", "help"):
+            assert sub in body, f"缺子命令 {sub}"
+        # 分支里得有真的动作，不是光列在帮助里
+        assert "do_install" in body and "do_uninstall" in body
+
+    def test_status_exits_zero(self):
+        """status 是给人链式调用用的，最后一句不能是条件判断。"""
+        body = self.text()
+        assert "site_status" in body
+        # 生成的管理命令里，status 的收尾必须显式 return 0
+        assert "  return 0\n}" in body
+
+    def test_upgrade_can_rollback(self):
+        body = self.text()
+        assert "rollback_or_die" in body or "do_rollback" in body
+        assert ".backup" in body, "升级前必须备份数据"
+
+    def test_refuses_downgrade(self):
+        body = self.text()
+        assert "version_lt" in body
+        assert "比本地" in body
+
+    def test_no_html_masquerading_as_tarball(self):
+        """CNB 的 /-/raw 会返回 200 的 HTML 外壳，必须靠魔数挡掉。"""
+        body = self.text()
+        assert "is_tarball" in body
+        assert "037\\213" in body or "\\037\\213" in body
+
+    def test_private_repo_token_support(self):
+        body = self.text()
+        assert "CNB_TOKEN" in body
+
+    def test_writes_compose_file(self):
+        body = self.text()
+        assert "write_compose_file" in body
+        assert "env_file" in body
+
+    def test_generates_proxy_config(self):
+        body = self.text()
+        for server in ("nginx", "caddy", "apache"):
+            assert server in body, f"没考虑 {server}"
+        assert "X-Forwarded-Proto" in body
+        assert "certbot" in body
+
+    def test_doctor_does_not_write(self):
+        """doctor 只读：不该出现 mkdir/写入安装目录的调用在同一段里。"""
+        body = self.text()
+        start = body.index("doctor() {")
+        end = body.index("# ---------------------------------------------------------------- 源码")
+        segment = body[start:end]
+        for forbidden in ("rm -rf", "mkdir -p \"$INSTALL_DIR\"", "install_python_mode"):
+            assert forbidden not in segment, f"doctor 里不该出现 {forbidden}"
+
+    def test_env_file_permissions(self):
+        body = self.text()
+        assert 'chmod 600 "$file"' in body or "chmod 600" in body
+
+
+class TestInstallScriptContract:
+    """脚本对外承诺的行为，用子进程真的跑一遍（不依赖网络）。
+
+    这些都是「改一行就悄悄坏掉」的地方，纯文本断言挡不住：
+    - `--help` 必须 0 退出，且列出全部子命令
+    - `doctor` 必须只读：跑完安装目录里不该多出任何文件
+    - 未知参数必须非 0，不能默默当默认安装跑
+    """
+
+    script = ROOT / "install.sh"
+
+    def run(self, *args, env=None):
+        import os
+
+        e = dict(os.environ)
+        e.pop("CNB_TOKEN", None)          # 别把工作区的令牌带进测试
+        e.update(env or {})
+        return subprocess.run(
+            ["bash", str(self.script), *args],
+            capture_output=True, text=True, env=e, timeout=120,
+        )
+
+    def test_help_exits_zero_and_lists_commands(self):
+        r = self.run("--help")
+        assert r.returncode == 0, r.stderr
+        for word in ("doctor", "upgrade", "uninstall", "--yes"):
+            assert word in r.stdout, f"帮助里没提 {word}"
+
+    def test_unknown_flag_fails(self):
+        r = self.run("--nope-nope")
+        assert r.returncode != 0
+        assert "未知参数" in (r.stdout + r.stderr)
+
+    def test_doctor_writes_nothing(self, tmp_path):
+        home = tmp_path / "install"
+        r = self.run("doctor", env={"SIMPLEURL_HOME": str(home), "PORT": "59999"})
+        # 体检结果允许失败（缺依赖等），但目录必须原样不动
+        assert not home.exists(), "doctor 不该创建安装目录"
+        assert "环境体检" in r.stdout
+
+    def test_upgrade_without_install_refuses(self, tmp_path):
+        home = tmp_path / "nope"
+        home.mkdir()
+        r = self.run("upgrade", env={"SIMPLEURL_HOME": str(home)})
+        assert r.returncode != 0
+        assert "没有安装记录" in (r.stdout + r.stderr)
+
+    def test_uninstall_refuses_foreign_dir(self, tmp_path):
+        home = tmp_path / "someone-elses"
+        home.mkdir()
+        (home / "keep.txt").write_text("别删我")
+        r = self.run("--uninstall", "--force", env={"SIMPLEURL_HOME": str(home)})
+        assert r.returncode != 0
+        assert (home / "keep.txt").exists(), "不该删别人的目录"
+
+    def test_tarball_magic_check(self, tmp_path):
+        """HTML 外壳不能被当成 tar.gz 解开。"""
+        fake = tmp_path / "fake.tar.gz"
+        fake.write_text("<!DOCTYPE html><html>Not Found</html>")
+        code = (
+            'source <(sed -n "/^is_tarball()/,/^}/p" "$0"); '
+            f'is_tarball "{fake}" && echo yes || echo no'
+        )
+        r = subprocess.run(["bash", "-c", code, str(self.script)], capture_output=True, text=True)
+        assert r.stdout.strip() == "no"
+
+    def test_version_compare(self):
+        code = (
+            'source <(sed -n "/^version_lt()/,/^}/p" "$0"); '
+            'version_lt 1.5.0 2.0.0 && echo lt; '
+            'version_lt 2.0.0 2.0.0 && echo eq || echo ne'
+        )
+        r = subprocess.run(["bash", "-c", code, str(self.script)], capture_output=True, text=True)
+        assert "lt" in r.stdout and "ne" in r.stdout
