@@ -24,6 +24,7 @@ EDITABLE: dict[str, tuple[object, str]] = {
     "announcement": ("", "站点公告，显示在首页顶部；留空不显示"),
     "code_length": (4, "自动生成短码的长度（3~16）"),
     "site_tagline": ("数据可自托管，隐私尽在掌握", "页脚自述"),
+    "public_url": ("", "站点对外地址，如 https://s.example.com；留空用访问者请求的地址"),
     # ---------- 社交平台防洪 ----------
     "social_guard": (True, "社交平台防洪总开关（微信 / QQ 等）"),
     "social_block_hint": (

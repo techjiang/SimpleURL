@@ -19,6 +19,7 @@ from app.core.security import client_ip
 from app.models import Link
 from app.schemas import LinkCreate
 from app.services import ServiceError, apply_title, create_link, fetch_title_for, get_link_by_code, get_stats
+from app.web import site_base
 
 logger = logging.getLogger("simpleurl")
 router = APIRouter(prefix="/yourls-api", tags=["yourls"])
@@ -32,7 +33,7 @@ SUPPORTED_ACTIONS = {"shorturl", "expand", "url-stats", "stats", "db-stats"}
 
 
 def _base(request: Request) -> str:
-    return str(request.base_url).rstrip("/")
+    return site_base(request)
 
 
 def _params(request: Request) -> dict:

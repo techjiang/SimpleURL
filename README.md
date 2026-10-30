@@ -157,7 +157,8 @@ curl -X POST http://localhost:8000/api/links \
 | `ACCESS_MODE` | `open` | `open` 开放外部可使用；`admin` 仅管理员可使用 |
 | `EXPORT_MAX_ROWS` | `50000` | 单次导出 CSV 的最大条数 |
 | `DEBUG` | `false` | 开启后开放 `/api/docs` |
-| `ADMIN_TOKEN` | 空 | 后台口令，`admin:password` 可分别设置，也支持哈希值 |
+| `ADMIN_TOKEN` | 空 | 后台凭据：`admin:password` 分别设账号密码，只写口令则账号固定 `admin`；也支持哈希值 |
+| `PUBLIC_URL` | 空 | 站点对外地址（如 `https://s.example.com`）。配了它短链与二维码都用这个域名，反代后必填；后台「站点设置」也能改 |
 | `SECRET_KEY` | 复用 `ADMIN_TOKEN` | 会话签名密钥，建议单独配置 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 信任哪些代理的转发头，支持网段；`*` 表示全信 |
 | `LOGIN_RATE_LIMIT` | `10` | 单 IP 5 分钟内后台登录尝试上限，`0` 不限制 |
@@ -251,6 +252,37 @@ curl -X POST http://localhost:8000/api/links \
 # 仅管理员可使用
 ACCESS_MODE=admin ADMIN_TOKEN=$(openssl rand -hex 24) ./run.sh
 ```
+
+## 一键安装
+
+不想手动配环境，直接跑安装脚本：
+
+```bash
+curl -fsSL https://cnb.cool/broccoli_xi/TechSauce/SimpleURL/-/raw/main/install.sh | bash
+```
+
+它会依次问你站点名称、端口、域名、管理员账号与密码（回车用默认值），然后：
+
+- 有 Docker 就用容器，没有就用 Python venv 起一个隔离环境
+- 国内网络自动探测可用的 pip 源，**真拉一个包试过**才用，试不通就回落官方源
+- 装完打印一张卡片：站点地址、后台地址、账号、密码、运行方式
+- 留一个 `simpleurl` 命令管后续：
+
+```bash
+simpleurl status      # 状态 + 健康检查
+simpleurl log         # 跟踪日志
+simpleurl restart     # 重启
+simpleurl password    # 重置管理员密码（不给参数就随机生成）
+simpleurl backup      # 备份数据库与配置
+simpleurl url         # 打印站点与后台地址
+simpleurl config      # 查看 / 编辑配置
+```
+
+常用环境变量：`SIMPLEURL_HOME`（安装目录，默认 `~/simpleurl`）、`PORT`、`SITE_NAME`、
+`USE_CN_MIRROR=0` 强制走官方源。`./install.sh --yes` 全默认、`--uninstall` 卸载。
+
+重跑同一个脚本就是升级：**会先备份数据库和 `.env` 到 `.backup/<时间戳>/`**，
+再替换代码，`ADMIN_TOKEN`、`PUBLIC_URL` 等配置原样保留。
 
 ## 社交平台防洪（微信 / QQ 等）
 

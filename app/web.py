@@ -53,8 +53,30 @@ def render(template: str, request: Request, db=None, **context) -> str:
     return templates.get_template(template).render(request=request, **ctx)
 
 
+def configured_base(db=None) -> str:
+    """后台「站点设置 → 对外地址」优先，其次环境变量 PUBLIC_URL。"""
+    from app.core.settings_store import effective
+
+    value = ""
+    if db is not None:
+        try:
+            value = str(effective(db, "public_url") or "").strip()
+        except Exception:  # noqa: BLE001 - 没库 / 没表时不该让页面挂掉
+            value = ""
+    return (value or settings.public_url or "").rstrip("/")
+
+
+def site_base(request: Request, db=None) -> str:
+    """站点对外地址：配了就用它，否则用请求里的 Host。
+
+    反代后面请求里的 Host 常常是 127.0.0.1:8000，直接拼给访客就是一个打不开的
+    地址，所以「站点对外的样子」交给部署者说了算。
+    """
+    return configured_base(db) or str(request.base_url).rstrip("/")
+
+
 def render_stats(request: Request, link, data: dict, db=None) -> str:
-    base = str(request.base_url).rstrip("/")
+    base = site_base(request, db)
     # 二维码也要带同一张通行证，否则统计页上那张图会 401。
     # query 里没有就看 cookie——访问过一次之后地址栏会被收拾干净，
     # 二维码和「换一张回执」都还得认得这位创建者。

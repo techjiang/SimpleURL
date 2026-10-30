@@ -21,7 +21,7 @@ from app.core.settings_store import effective
 from app.core.apikey import extract_key, touch, verify as verify_api_key
 from app.models import ClickEvent, Link
 from app.qr import make_qr_png, make_qr_svg
-from app.web import branding
+from app.web import branding, site_base
 from app.schemas import LinkCreate, LinkListOut, LinkOut, LinkRenew, LinkSelfUpdate, LinkUpdate, StatsOut
 from app.services import (
     ServiceError,
@@ -51,7 +51,7 @@ logger = logging.getLogger("simpleurl")
 router = APIRouter(prefix="/api", tags=["api"])
 
 
-def _serialize(link: Link, request: Request, claim_token: str | None = None) -> LinkOut:
+def _serialize(link: Link, request: Request, claim_token: str | None = None, db=None) -> LinkOut:
     out = LinkOut.model_validate(link.to_dict())
     # 点击数有两本账：库里已落库的，和还在内存缓冲里没结算的。
     # Link.to_dict() 只给前者，于是「刚点完去看列表还是 0」——
@@ -65,7 +65,7 @@ def _serialize(link: Link, request: Request, claim_token: str | None = None) -> 
         buffered = click_buffer.pending_daily(link.id)
         out.daily_used = min(out.daily_limit, out.daily_used + buffered)
         out.daily_exhausted = out.daily_used >= out.daily_limit
-    base = str(request.base_url).rstrip("/")
+    base = site_base(request, db)
     out.short_url = base + "/" + link.code
     out.stats_url = f"{base}/s/{link.code}"
     if claim_token:
@@ -136,7 +136,7 @@ def api_self_get(code: str, request: Request, db: Session = Depends(get_db)):
     """凭回执读自己那条的详情（含是否过期、还剩几天）。"""
     check_api_key(request, db)
     link, _ = _self_manage(request, db, code, need_alive=False)
-    out = _serialize(link, request)
+    out = _serialize(link, request, db=db)
     out.expired = link.is_expired
     return out
 
@@ -163,7 +163,7 @@ def api_self_update(code: str, payload: LinkSelfUpdate, request: Request, db: Se
     )
     db.commit()
     db.refresh(link)
-    out = _serialize(link, request)
+    out = _serialize(link, request, db=db)
     out.expired = link.is_expired
     return out
 
@@ -190,7 +190,7 @@ def api_self_renew(code: str, payload: LinkRenew | None = None, request: Request
     )
     db.commit()
     db.refresh(link)
-    out = _serialize(link, request)
+    out = _serialize(link, request, db=db)
     out.expired = link.is_expired
     return out
 
@@ -210,7 +210,7 @@ def api_self_toggle(code: str, request: Request, enabled: bool = True, db: Sessi
     )
     db.commit()
     db.refresh(link)
-    out = _serialize(link, request)
+    out = _serialize(link, request, db=db)
     out.expired = link.is_expired
     return out
 
@@ -247,7 +247,7 @@ def api_list_links(
     require_manage(request, db)
     total, items = list_links(db, q=q, tag=tag, status=status, sort=sort, page=page, page_size=page_size)
     return LinkListOut(
-        total=total, page=page, page_size=page_size, items=[_serialize(item, request) for item in items]
+        total=total, page=page, page_size=page_size, items=[_serialize(item, request, db=db) for item in items]
     )
 
 
@@ -324,7 +324,7 @@ def api_export(
     require_manage(request, db)
     links = all_links_for_export(db, q=q, tag=tag, status=status, sort=sort)
     # 加 BOM，Excel 打开中文不乱码
-    body = "﻿" + links_to_csv(links, base_url=str(request.base_url).rstrip("/"))
+    body = "﻿" + links_to_csv(links, base_url=site_base(request, db))
     return Response(
         content=body,
         media_type="text/csv; charset=utf-8",
@@ -386,7 +386,7 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
             db.commit()
             db.refresh(link)
 
-    out = _serialize(link, request, token)
+    out = _serialize(link, request, token, db=db)
     out.reused = existed
     out.swapped_from = getattr(link, "swapped_from", None)
     return out
@@ -396,7 +396,7 @@ def api_create_link(payload: LinkCreate, request: Request, db: Session = Depends
 def api_get_link(code: str, request: Request, db: Session = Depends(get_db)):
     check_api_key(request, db)
     require_manage(request, db)
-    return _serialize(get_link_by_code(db, code), request)
+    return _serialize(get_link_by_code(db, code), request, db=db)
 
 
 @router.patch("/links/{code}", response_model=LinkOut, summary="更新短链接")
@@ -408,7 +408,7 @@ def api_update_link(code: str, payload: LinkUpdate, request: Request, db: Sessio
     report.record(db, "update", actor=access_actor(request), code=link.code, detail=changed, request=request)
     db.commit()
     db.refresh(link)
-    return _serialize(link, request)
+    return _serialize(link, request, db=db)
 
 
 @router.delete("/links/{code}", summary="删除短链接")
@@ -456,7 +456,7 @@ def api_trash_restore(code: str, request: Request, db: Session = Depends(get_db)
     report.record(db, "restore", actor=access_actor(request), code=link.code, detail="从回收站恢复", request=request)
     db.commit()
     db.refresh(link)
-    return {"ok": True, "message": f"已恢复 /{link.code}", "item": _serialize(link, request).model_dump()}
+    return {"ok": True, "message": f"已恢复 /{link.code}", "item": _serialize(link, request, db=db).model_dump()}
 
 
 @router.delete("/trash/{code}", summary="彻底删除（不可撤销）")
@@ -530,7 +530,7 @@ def api_reissue_receipt(code: str, request: Request, db: Session = Depends(get_d
     request.state.claim_token = token
     report.record(db, "claim", actor="访客", code=link.code, detail="回执换新", request=request)
     db.commit()
-    base = str(request.base_url).rstrip("/")
+    base = site_base(request, db)
     return {"ok": True, "claim_token": token, "stats_url": f"{base}/s/{link.code}?t={token}"}
 
 
@@ -565,7 +565,7 @@ def api_qr(
     link = get_link_by_code(db, code)
     if not access.may_see(link, request, db):
         require_manage(request, db)
-    url = str(request.base_url).rstrip("/") + "/" + link.code
+    url = site_base(request, db) + "/" + link.code
     from app.qr import nearest_size
 
     target_size = nearest_size(size)
@@ -678,7 +678,7 @@ def api_claim_recover(payload: dict, request: Request, db: Session = Depends(get
     request.state.claim_token = token
     report.record(db, "claim", actor="访客", code=link.code, detail="凭线索找回回执", request=request)
     db.commit()
-    base = str(request.base_url).rstrip("/")
+    base = site_base(request, db)
     return {
         "ok": True,
         "code": link.code,

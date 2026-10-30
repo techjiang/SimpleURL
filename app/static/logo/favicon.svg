@@ -1,1 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 25 81 87" width="112" height="120" role="img" aria-label="SimpleURL"><defs><linearGradient id="g" x1="0.04" y1="1" x2="0.96" y2="0"><stop offset="0" stop-color="#4f8cff"/><stop offset=".5" stop-color="#7b5cff"/><stop offset="1" stop-color="#e04ff0"/></linearGradient></defs><path d="M32 37 H67 A21.5 21.5 0 0 1 67 80" fill="none" stroke="url(#g)" stroke-width="13.5" stroke-linecap="round"/><path d="M64 62 L45 81 L64 100" fill="none" stroke="url(#g)" stroke-width="13.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="4.5 10.5 82 82" width="100" height="100" role="img" aria-label="SimpleURL">
+  <defs><linearGradient id="gMain" x1="0" y1="0" x2="1" y2=".42"><stop offset="0" stop-color="#30c6ff"/><stop offset=".5" stop-color="#966cff"/><stop offset="1" stop-color="#f876c4"/></linearGradient></defs>
+  <path d="M22 19L46 19L62 24L72 34L76 48L74 62L67 74L57 82L50 86" fill="none" stroke="url(#gMain)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M50 86L44 76L34 64L22 52L12 44" fill="none" stroke="url(#gMain)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

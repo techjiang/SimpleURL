@@ -11,7 +11,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
-os.environ["ADMIN_TOKEN"] = "test-token-please-rotate"
+# 后台凭据用 admin:password 那种写法，和安装脚本生成出来的形状一致——
+# 只写口令的老写法也还认，但新装的站都是这个形状，测试该跟着真实形态走
+os.environ["ADMIN_TOKEN"] = "admin:test-token-please-rotate"
 # 测试不联外网：域名一律按「解析到公网」处理，否则断网环境或被墙的域名
 # 会让一堆和 DNS 无关的用例随机失败。SSRF 那个用例自己打桩。
 os.environ.setdefault("SSRF_RESOLVE_CHECK", "false")

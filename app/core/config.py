@@ -60,6 +60,9 @@ class Settings:
         self.database_url: str = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{base_dir / 'simpleurl.db'}"
 
         # 管理后台（留空表示关闭后台登录）
+        # ADMIN_TOKEN 是唯一的凭据来源，两种写法：
+        #   纯口令            → 账号固定 admin
+        #   admin:password    → 账号密码分开写
         self.admin_token: str = os.getenv("ADMIN_TOKEN", "").strip()
         # 会话签名密钥，默认复用管理令牌
         self.session_secret: str = os.getenv("SECRET_KEY", "").strip() or self.admin_token
@@ -68,6 +71,12 @@ class Settings:
 
         # 访问短链是否需要携带访问令牌（留空表示公开）
         self.access_token: str = os.getenv("ACCESS_TOKEN", "").strip()
+
+        # 站点对外地址，例如 https://s.example.com。
+        # 配了它，短链、二维码、复制出来的地址都用这个域名；挂在 Nginx / Caddy /
+        # Cloudflare 后面时，请求里的 Host 往往还是内网地址，拼出来就是
+        # http://127.0.0.1:8000/abc——别人打不开。
+        self.public_url: str = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
 
         # 模板目录
         self.templates_dir = base_dir / 'app' / 'templates'
