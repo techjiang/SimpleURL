@@ -610,6 +610,10 @@ select optgroup { background-color: #0c1322; color: #e8edf7; }
 
 /* ============ 响应式 ============ */
 @media (max-width: 720px) {
+  /* 署名那一行独占一行：390px 下「Built with ⚡ by SimpleURL · 标语」挤成两行时，
+     那个圆点会孤零零挂到行尾，看着像没渲染出来的字符 */
+  .footer > span:first-child { flex: 1 0 100%; }
+  .footer-dot { display: none; }
   .row { grid-template-columns: 1fr; }
   .search { width: 100%; }
   .search input { width: 100%; }

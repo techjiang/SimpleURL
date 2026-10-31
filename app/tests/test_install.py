@@ -125,12 +125,29 @@ class TestInstallScript:
         assert "MARK_FILE" in text
         assert "不是本脚本装的目录" in text
 
-    def test_never_overwrites_itself(self):
-        """更新代码时不能把 install.sh 也覆盖掉，否则下次跑到旧脚本。"""
+    def test_never_overwrites_itself_mid_run(self):
+        """运行中不能把脚下的 install.sh 覆盖掉，否则后半截脚本就不是自己了。
+
+        这条早先读作「源码清单里根本不许有 install.sh」。反了：脚本不更新，
+        装得越早的机器越修不到 bug（新修法全在新脚本里）。正确的做法是
+        「清单里有、但换的时机放在跑完之后」—— 由 apply_source 摘出来，
+        到 self_update_script 才落盘。
+        """
         text = self.script.read_text(encoding="utf-8")
+        # 1) 源码清单里可以有它
         start = text.index("SOURCE_ENTRIES=")
         block = text[start : text.index('"', text.index("\n", start) + 1)]
-        assert "install.sh" not in block
+        assert "install.sh" in block
+        # 2) 但 apply_source 必须把它从待覆盖的文件里摘走
+        apply = text[text.index("apply_source() {") :]
+        apply = apply[: apply.index("\n}")]
+        assert ".install.sh.pending" in apply, "apply_source 没有把 install.sh 摘出来"
+        # 3) 落盘只发生在 self_update_script 里，而且判过语法 / shebang / 版本
+        fn = text[text.index("self_update_script() {") :]
+        fn = fn[: fn.index("\n}")]
+        assert "bash -n" in fn and "is_shell_script" in fn and "version_lt" in fn
+        # 4) 主流程最后才调它
+        assert text.rindex("self_update_script") > text.index("install_cli")
 
 
 class TestInstallScriptV2:

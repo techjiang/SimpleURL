@@ -21,7 +21,22 @@ def _csp_nonce(request) -> str:
     return getattr(getattr(request, "state", None), "csp_nonce", "") or ""
 
 
-templates.env.globals.update(csrf_token=_csrf_token, csp_nonce=_csp_nonce)
+def _has_user_asset(name: str) -> bool:
+    """装完之后用户自己补的静态文件（site.css / site.js）在不在。
+
+    模板据此决定要不要引这两个文件。以前无条件引、再挂 onerror 兜底：
+    默认安装里这两个文件本来就不存在，于是每开一页都是两个 404，控制台一屏红。
+    onerror 也救不回来 —— CSP 的 script-src 只放行 nonce，内联处理器会被拦掉。
+    """
+    try:
+        return (settings.static_dir / name).is_file()
+    except OSError:
+        return False
+
+
+templates.env.globals.update(
+    csrf_token=_csrf_token, csp_nonce=_csp_nonce, has_user_asset=_has_user_asset
+)
 
 
 def _fmt(value, fmt: str = "%Y-%m-%d %H:%M") -> str:

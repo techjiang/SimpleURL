@@ -19,8 +19,11 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/static/logo/icon-180.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/static/app.css" />
-  {# 自定义样式/脚本放在这里，install.sh 升级时会保留（app/ 其它文件都会被覆盖）。 #}
-  <link rel="stylesheet" href="/static/site.css" onerror="this.remove()" />
+  {# 自定义样式/脚本放在这里，install.sh 升级时会保留（app/ 其它文件都会被覆盖）。
+     注意别写 onerror 这类内联处理器：CSP 里 script-src 只放行 nonce，
+     内联处理器会被拦掉，控制台留一行红——而它想省的恰恰是一个 404。
+     装好之后这两个文件默认不存在，本来就不该去请求。 #}
+  {% if has_user_asset("site.css") %}<link rel="stylesheet" href="/static/site.css" />{% endif %}
   <meta name="csrf-token" content="{{ csrf_token(request) }}" />
 </head>
 <body>
@@ -47,10 +50,11 @@
   <main class="container" id="main" tabindex="-1">{% block content %}{% endblock %}</main>
   <footer class="footer">
     <span>Built with ⚡ by <b>{{ site_name }}</b></span>
-    <span class="dot">·</span>
+    {# 窄屏上标题自带内边距，这个点会孤零零挂在行尾，反而像个没渲染出来的字符 #}
+    <span class="dot footer-dot">·</span>
     <span>{{ site_tagline }}</span>
   </footer>
   {% block scripts %}<script src="/static/app.js" defer nonce="{{ csp_nonce(request) }}"></script>
-  <script src="/static/site.js" defer nonce="{{ csp_nonce(request) }}" onerror="this.remove()"></script>{% endblock %}
+  {% if has_user_asset("site.js") %}<script src="/static/site.js" defer nonce="{{ csp_nonce(request) }}"></script>{% endif %}{% endblock %}
 </body>
 </html>

@@ -107,6 +107,8 @@ ACTION="install"
 SUB_ARGS=()          # 转发给 simpleurl 的额外参数
 ASSUME_YES="n"
 SKIP_HEALTH="n"
+STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
+STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -123,6 +125,8 @@ while [ $# -gt 0 ]; do
     --dir)       shift; SIMPLEURL_HOME="${1:-$SIMPLEURL_HOME}"; INSTALL_DIR="$SIMPLEURL_HOME"
                  LOG_FILE="$INSTALL_DIR/simpleurl.log"; MARK_FILE="$INSTALL_DIR/.simpleurl-managed" ;;
     --no-health) SKIP_HEALTH="y" ;;
+    --strict)    STRICT="y" ;;
+    --strict)    STRICT="y" ;;
     --force)     ASSUME_YES="y" ;;
     --help|-h)   ACTION="help" ;;
     # 帮助里列出的管理子命令：脚本自己不重复实现一遍，转给安装时生成的
@@ -170,6 +174,8 @@ SimpleURL 安装脚本 v$VERSION
   ./install.sh --help         这段说明
 
   可选参数：--port 8000  --dir ~/simpleurl  --runtime docker|python  --no-health
+  doctor 加 --strict：连「提醒」也算不通过（CI 用）
+  doctor 加 --strict：连「提醒」也算不通过（CI 用）
 
 环境变量（都可选）：
   SIMPLEURL_HOME   安装目录，默认 ~/simpleurl
@@ -348,6 +354,11 @@ remote_version() { # dir
   printf '%s' "$v"
 }
 
+script_version() { # 脚本文件读它自己声明的 VERSION
+  [ -s "$1" ] || { printf ''; return 0; }
+  sed -n 's/^VERSION="\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1
+}
+
 version_lt() { # a b  —— a<b 时返回 0
   [ -n "$1" ] && [ -n "$2" ] || return 1
   [ "$1" = "$2" ] && return 1
@@ -421,11 +432,43 @@ d_ok()   { printf "  %s✓%s %s\n" "$GREEN" "$RST" "$*"; }
 d_warn() { printf "  %s!%s %s\n" "$YELLOW" "$RST" "$*"; DOCTOR_WARN=$((DOCTOR_WARN + 1)); }
 d_bad()  { printf "  %s✗%s %s\n" "$RED" "$RST" "$*"; DOCTOR_FAIL=$((DOCTOR_FAIL + 1)); }
 
+# 端口在不在监听。
+#
+# 早先只有 ss / lsof / netstat 三条路，三个都没有就 return 1（当成空闲）——
+# minbase、slim 这类精简系统与多数 Docker 镜像就是这种状态，后果不是"探测不准"，
+# 而是后面每一条"等端口放开"的循环都立刻放行：simpleurl restart 会在旧进程
+# 还占着端口时就去启新的，新的 bind 失败，屏幕上却是一句启动成功。
+# 现在多两条不需要任何外部命令的路：bash 的 /dev/tcp（能连上就是有人在听）
+# 和内核的 /proc/net/tcp{,6}（十六进制地址:端口，任何 Linux 都有）。
 port_in_use() { # port
-  if need_cmd ss; then ss -lnt 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {found=1} END{exit !found}'
-  elif need_cmd lsof; then lsof -ti "tcp:$1" >/dev/null 2>&1
-  elif need_cmd netstat; then netstat -lnt 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {found=1} END{exit !found}'
-  else return 1; fi
+  local p="$1" hex
+  if need_cmd ss; then
+    ss -lnt 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {found=1} END{exit !found}'
+    return $?
+  elif need_cmd lsof; then
+    lsof -ti "tcp:$p" >/dev/null 2>&1
+    return $?
+  elif need_cmd netstat; then
+    netstat -lnt 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {found=1} END{exit !found}'
+    return $?
+  elif [ -r /proc/net/tcp ]; then
+    # /proc/net/tcp 的端口是四位十六进制；:1F90 这种写法在 tcp4/tcp6 里都长一样
+    hex="$(printf '%04X' "$p" 2>/dev/null || echo "")"
+    [ -n "$hex" ] || return 1
+    # 逐个文件读：/proc/net/tcp6 在没有 IPv6 的内核上不存在，合并重定向会把
+    # 整条管道判成失败，反过来说成"端口空闲"——空目录一律当空闲，别当已占用。
+    for _f in /proc/net/tcp /proc/net/tcp6; do
+      [ -r "$_f" ] || continue
+      awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h {found=1} END{exit !found}' "$_f" 2>/dev/null && return 0
+    done
+    return 1
+  else
+    # 最后一条：bash 自带的 /dev/tcp。连得上说明有人在听（只对 127.0.0.1 有意义，
+    # 但本脚本起的服务本来就监听 0.0.0.0，够用）。用 subshell 收尾，别让
+    # 连接错误把 set -e 的脚本带崩。
+    (exec 3<>"/dev/tcp/127.0.0.1/$p") >/dev/null 2>&1 && return 0
+    return 1
+  fi
 }
 
 # 端口被谁占着、占着它的是不是「自己人」。命中返回 0 并把 pid 写进 PORT_HOLDER_PID。
@@ -563,6 +606,12 @@ doctor() {
     printf "%s%d 项阻塞，%d 项提醒%s\n" "$RED" "$DOCTOR_FAIL" "$DOCTOR_WARN" "$RST"
     return 1
   fi
+  # --strict：把「提醒」也当阻塞。给 CI / 部署流水线用——它们需要「全绿才继续」，
+  # 而默认的宽松口径（有提醒也能装）在流水线里等于什么都没拦。
+  if [ "$STRICT" = "y" ] && [ "$DOCTOR_WARN" -gt 0 ]; then
+    printf "%s%d 项提醒，按 --strict 判为不通过%s\n" "$RED" "$DOCTOR_WARN" "$RST"
+    return 1
+  fi
   [ "$DOCTOR_WARN" -gt 0 ] && printf "%s%d 项提醒，不挡安装%s\n" "$YELLOW" "$DOCTOR_WARN" "$RST"
   printf "%s可以装。%s\n" "$GREEN" "$RST"
   return 0
@@ -598,7 +647,12 @@ backup_data() {
 # 注意不含 install.sh 和 simpleurl：它们自己就是入口/命令行，
 # 覆盖成远端的旧版会让人下次跑到旧脚本
 SOURCE_ENTRIES="app requirements.txt requirements-dev.txt .env.example Dockerfile docker-compose.yml
-.dockerignore .gitignore pytest.ini run.sh scripts README.md .cnb.yml"
+.dockerignore .gitignore pytest.ini run.sh scripts README.md .cnb.yml install.sh"
+# 清单里的 install.sh 不能直接覆盖安装目录里那份：它此刻可能正在被执行
+# （upgrade 就是从它跑起来的），覆盖到一半整份脚本就变样了，后面的函数全成
+# 别人家的行号。所以先登记成「待更新」，等跑完再由 self_update_script 落盘。
+SELF_UPDATE_PENDING="n"
+SELF_SNAPSHOT=""
 # `app/` 整体覆盖，但下面两类文件必须活下来：
 #  · site.css / site.js —— 装完想改个配色、加段统计，最自然的做法就是写在这里。
 #    升级把 app/ 整个换掉，等于每次升级都把用户的改动删一遍。
@@ -715,6 +769,24 @@ stash_user_files() { # 返回暂存目录（没有要留的就返回空）
 apply_source() { # stage
   local stage="$1" stash="" f
   stash="$(stash_user_files "$stage/.userfiles")"
+  # 这一步必须排在 clear_source 之前 —— 那个函数会先把 SOURCE_ENTRIES 里的
+  # install.sh 删掉，删完再来判断「有没有旧脚本」，永远判成没有，自更新就
+  # 静默失效：安装目录里永远是装那天的脚本，新脚本里的修法一个都用不上。
+  if [ -f "$stage/install.sh" ]; then
+    if [ -f "$INSTALL_DIR/install.sh" ]; then
+      # 先留一份自己的备份：目录里那份马上会被删掉。内容是「新脚本」还是
+      # 「旧脚本自己的影子」都能接受 —— 反正下面要么用它做比较，要么拿它兜底。
+      cp -f "$INSTALL_DIR/install.sh" "$stage/.install.sh.before" 2>/dev/null || true
+      SELF_SNAPSHOT="$stage/.install.sh.before"
+      if cmp -s "$stage/install.sh" "$INSTALL_DIR/install.sh"; then
+        # 一模一样，不用更新（也就不用留 pending）
+        rm -f "$stage/install.sh"
+      else
+        cp -f "$stage/install.sh" "$INSTALL_DIR/.install.sh.pending"
+        SELF_UPDATE_PENDING="y"
+      fi
+    fi
+  fi
   clear_source
   # 解压出来的 `.git` 之类不要带进来
   rm -rf "$stage/.git"
@@ -730,6 +802,14 @@ apply_source() { # stage
     [ -n "${kept// /}" ] && ok "你自己放的静态文件已保留：$kept"
   fi
   rm -rf "$stage/.userfiles"
+  # 安装目录里没有 install.sh 就补回去：源码没带、更新没成、或上一轮被杀在半路。
+  # 少了它，simpleurl upgrade / doctor / uninstall 全部报「缺少 install.sh」。
+  if [ ! -f "$INSTALL_DIR/install.sh" ] && [ -s "${SELF_SNAPSHOT:-}" ]; then
+    cp -f "$SELF_SNAPSHOT" "$INSTALL_DIR/install.sh" 2>/dev/null \
+      && chmod +x "$INSTALL_DIR/install.sh" 2>/dev/null || true
+  fi
+  rm -f "${SELF_SNAPSHOT:-}" "$stage/.install.sh.before"
+  SELF_SNAPSHOT=""
 }
 
 install_source() {
@@ -1126,10 +1206,14 @@ stop_running() {
       kill "$pid" 2>/dev/null || true
     fi
     rm -f "$INSTALL_DIR/simpleurl.pid"
-  elif port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
-    # 没有 pid 文件（被删过、或是手动起的进程），但端口上确实是自己那个服务：
-    # 照样停，否则接下来的启动会撞端口，报一个和真正原因无关的错
-    kill "$PORT_HOLDER_PID" 2>/dev/null || true
+  else
+    # 没 pid 文件（被删过、或是手动起的），或者 pid 文件对不上号，但端口上确实
+    # 是自己那个服务：也得停。否则接下来启动撞端口，报一个跟真正原因无关的错。
+    # 这段以前挂在 elif port_holder_pid 那一支上 —— 上面那个分支无论如何都会
+    # 走到 rm -f，pid 文件存在时 elif 永远轮不到，端口上那个孤儿就一直留着。
+    if port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
+      kill "$PORT_HOLDER_PID" 2>/dev/null || true
+    fi
   fi
   # 等它真的放开端口：紧接着就要覆盖源码了，进程还在读旧文件就是在给自己挖坑
   local i=0
@@ -1446,6 +1530,41 @@ is_shell_script() { # file：认得 shebang 才行，CNB 网页路由会把 HTML
   head -1 "$1" | grep -qE '^#!.*(bash|sh)'
 }
 
+# 用远端那份脚本替换安装目录里的自己。
+#
+# 以前安装目录里的 install.sh 从来没人更新：装的那天是哪一版，以后就一直是
+# 哪一版。于是早装的机器永远拿旧脚本去升代码，新脚本里的修法（端口探测、
+# 停服校验、strict 体检）它一个都用不上 —— 恰恰是「装得越早越修不到 bug」。
+#
+# 判据三条，全过才落盘：语法能被 bash 解析、认得 shebang、版本不更旧。
+# 版本更旧就不换，不然一次误操作就能把脚本回退成旧的。
+self_update_script() {
+  local pending="$INSTALL_DIR/.install.sh.pending" target="$INSTALL_DIR/install.sh"
+  [ "$SELF_UPDATE_PENDING" = "y" ] || return 0
+  if [ ! -s "$pending" ]; then
+    SELF_UPDATE_PENDING="n"; return 0
+  fi
+  if ! bash -n "$pending" 2>/dev/null; then
+    warn "新脚本语法检查没过，安装目录里继续用旧脚本"
+    rm -f "$pending"; SELF_UPDATE_PENDING="n"; return 0
+  fi
+  if ! is_shell_script "$pending"; then
+    warn "新脚本不像 shell 脚本，不落盘"
+    rm -f "$pending"; SELF_UPDATE_PENDING="n"; return 0
+  fi
+  if [ -f "$target" ] && version_lt "$(script_version "$pending")" "$(script_version "$target")"; then
+    warn "新脚本版本更低，保留安装目录里那份"
+    rm -f "$pending"; SELF_UPDATE_PENDING="n"; return 0
+  fi
+  if ! mv -f "$pending" "$target" 2>/dev/null; then
+    warn "脚本没能替换（权限？），下次 upgrade 会自动重试"
+    SELF_UPDATE_PENDING="n"; return 0
+  fi
+  chmod +x "$target" 2>/dev/null || true
+  ok "安装目录里的脚本已更新（v$(script_version "$target")，以后 simpleurl upgrade 都用它）"
+  SELF_UPDATE_PENDING="n"
+}
+
 # ---------------------------------------------------------------- simpleurl 命令
 # 生成管理命令。它自己读 MARK_FILE 决定运行方式，所以脚本挪走、升级过
 # 也不会跑到旧逻辑上。
@@ -1513,29 +1632,68 @@ do_stop() {
   elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
     sudo systemctl stop "\$NAME" >/dev/null 2>&1 && say "已停止 \$NAME"
   elif [ -f "\$DIR/simpleurl.pid" ]; then
-    kill "\$(cat "\$DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null && say "已停止"
+    local pid; pid="\$(cat "\$DIR/simpleurl.pid" 2>/dev/null)"
+    if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
+      kill "\$pid" 2>/dev/null || true
+      # 只发 TERM 就在屏幕上说「已停止」是不作数的：uvicorn 收尾要一点时间，
+      # 卡住的进程还会一直占着端口。等不到就上 KILL，还不行就明说。
+      local n=0
+      while [ "\$n" -lt 10 ] && kill -0 "\$pid" 2>/dev/null; do n=\$((n + 1)); sleep 1; done
+      if kill -0 "\$pid" 2>/dev/null; then
+        kill -9 "\$pid" 2>/dev/null || true
+        sleep 1
+      fi
+      if kill -0 "\$pid" 2>/dev/null; then warn "进程 \$pid 没能停掉（权限？）"
+      else say "已停止（PID \$pid）"; fi
+    else
+      say "记录里的进程已不在（pid 文件过期，已清理）"
+    fi
     rm -f "\$DIR/simpleurl.pid"
   else
     say "未在运行"
   fi
+  # 停完等端口真的放开。do_stop 返回的那一刻如果端口还占着，紧接着的
+  # do_start 会 bind 失败，而屏幕上只留下一句「已启动」。
+  wait_port_free || warn "端口 \$PORT 仍被占用，启动可能失败（simpleurl log 看详情）"
 }
 
 # 生成的命令行是 set -uo pipefail 跑的。下面每个 \$ 都必须带反斜杠：
 # 这整段在安装时被套进外层 heredoc 展开一次，少了反斜杠就当场展开，
 # 到了运行时只剩一个空变量名，报 unbound variable。
+# 端口探测：ss / lsof / netstat 都没有时，退回内核的 proc/net/tcp。
+# 以前三样都没有就 return 0（当成已放开），于是 restart 在旧进程还占着
+# 端口时就去启新的 —— 新进程 bind 失败，屏幕上却是「已启动」。
+port_listening() {
+  local hex
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt 2>/dev/null | awk -v p=":\$PORT" '\$4 ~ p"\$" {found=1} END{exit !found}'
+    return \$?
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -ti "tcp:\$PORT" >/dev/null 2>&1
+    return \$?
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -lnt 2>/dev/null | awk -v p=":\$PORT" '\$4 ~ p"\$" {found=1} END{exit !found}'
+    return \$?
+  elif [ -r /proc/net/tcp ]; then
+    hex="\$(printf '%04X' "\$PORT" 2>/dev/null)"
+    local f
+    for f in /proc/net/tcp /proc/net/tcp6; do
+      [ -r "\$f" ] || continue
+      awk -v h=":\$hex" '\$4 == "0A" && substr(\$2, length(\$2) - 4) == h {found=1} END{exit !found}' "\$f" 2>/dev/null && return 0
+    done
+    return 1
+  fi
+  (exec 3<>"/dev/tcp/127.0.0.1/\$PORT") >/dev/null 2>&1 && return 0
+  return 1
+}
+
 wait_port_free() {
   local i=0
   while [ "\$i" -lt 10 ]; do
-    if command -v ss >/dev/null 2>&1; then
-      ss -lnt 2>/dev/null | awk -v p=":\$PORT" '\$4 ~ p"\$" {found=1} END{exit !found}' || return 0
-    elif command -v lsof >/dev/null 2>&1; then
-      lsof -ti "tcp:\$PORT" >/dev/null 2>&1 || return 0
-    else
-      sleep 1; return 0
-    fi
+    port_listening || return 0
     i=\$((i + 1)); sleep 1
   done
-  return 0
+  return 1
 }
 
 health() {
@@ -1630,7 +1788,8 @@ case "\${1:-status}" in
   stop)    do_stop ;;
   # 停完不能立刻起：uvicorn 放端口要一点时间，抢跑会 bind 失败，
   # 留下一个「restart 之后反而没了」的现场
-  restart) do_stop >/dev/null; wait_port_free; do_start ;;
+  # do_stop 自己会等到端口放开（见上），这里不再重复等：重复一遍只是多花十秒
+  restart) do_stop >/dev/null; do_start ;;
   status)  site_status ;;
   url)     site_url; echo ;;
   log)
@@ -1970,6 +2129,9 @@ do_install() {
     "$VERSION" "$(remote_version "$INSTALL_DIR")" "$RUNTIME" "$PORT" \
     "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARK_FILE"
   install_cli
+  # 走到这里代码已换完、服务已起来、验收也过了 —— 只有这时才换脚本自己。
+  # 换早了没意义：中途任何一步失败，留下的该是「还能跑旧那一版」的现场。
+  self_update_script
   if [ "$SKIP_HEALTH" = "y" ]; then
     warn "按参数跳过健康检查"
   else
