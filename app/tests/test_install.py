@@ -108,11 +108,17 @@ class TestInstallScript:
         r = subprocess.run(["bash", "-n", str(self.script)], capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
 
-    def test_writes_admin_token_pair(self):
-        """装完生成的是 ADMIN_TOKEN=账号:密码，不是老的两行分开写。"""
+    def test_writes_admin_credentials(self):
+        """装完生成的是账号密码两行，后台登录页直接用。
+
+        以前只写 ADMIN_TOKEN=账号:密码，靠 `admin:pwd` 这个约定凑出账号密码；
+        现在服务端认 ADMIN_USERNAME / ADMIN_PASSWORD，脚本就别再绕那一道。
+        """
         text = self.script.read_text(encoding="utf-8")
-        assert "ADMIN_TOKEN=$ADMIN_USER:$ADMIN_PASS" in text
-        assert "ADMIN_PASSWORD=" not in text
+        assert "ADMIN_USERNAME=$ADMIN_USER" in text
+        assert "ADMIN_PASSWORD=$ADMIN_PASS" in text
+        # 老部署读回来的兼容分支得留着，否则升个版本后台就进不去
+        assert "ADMIN_TOKEN=" in text
 
     def test_has_management_commands(self):
         text = self.script.read_text(encoding="utf-8")

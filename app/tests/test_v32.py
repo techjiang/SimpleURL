@@ -145,7 +145,11 @@ class TestReinstallKeepsItsOwnCli:
         assert '"$INSTALL_DIR/simpleurl"' in BODY, "安装时要在安装目录里留一份 simpleurl 影子"
 
     def test_uninstall_removes_shadow(self):
-        assert '"$INSTALL_DIR/simpleurl"' in func("do_uninstall")
+        """影子命令在安装目录里，目录被整个删掉，它跟着走。"""
+        body = func("do_uninstall")
+        assert 'rm -rf "${INSTALL_DIR:?}"' in body
+        # 但「只删自己那份」的判据必须留着，别退回无条件删两个路径
+        assert 'if [ "$cdir" = "$INSTALL_DIR" ]' in body
 
     def test_foreign_cli_is_reported(self):
         """只装了别的目录那一份时，要明说而不是静悄悄转过去。"""

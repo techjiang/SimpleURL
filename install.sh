@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.5.0"
+VERSION="2.6.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -138,7 +138,7 @@ while [ $# -gt 0 ]; do
     # 帮助里列出的管理子命令：脚本自己不重复实现一遍，转给安装时生成的
     # simpleurl 命令。以前这些词会直接落到「未知参数」上 —— 帮助里写得
     # 明明白白，照着敲却全报错，是最伤信任的那种不一致。
-    status|start|stop|restart|log|url|password|config|backup|restore|version)
+    status|start|stop|restart|log|url|password|config|backup|restore|version|upgrade|doctor)
                  ACTION="$1"
                  shift
                  SUB_ARGS=("$@")   # 解析循环会把 $@ 消耗光，这里先留一份
@@ -1163,7 +1163,8 @@ write_docker_env() {
     printf 'ACCESS_MODE=%s\n' "$ACCESS_MODE"
     printf 'DATABASE_URL=%s\n' "sqlite:////data/simpleurl.db"
     printf 'SECRET_KEY=%s\n' "$SECRET_KEY"
-    printf 'ADMIN_TOKEN=%s:%s\n' "$ADMIN_USER" "$ADMIN_PASS"
+    printf 'ADMIN_USERNAME=%s\n' "$ADMIN_USER"
+    printf 'ADMIN_PASSWORD=%s\n' "$ADMIN_PASS"
     printf 'TZ=%s\n' "${TZ:-Asia/Shanghai}"
   } > "$envfile"
   chmod 600 "$envfile" 2>/dev/null || true
@@ -1199,9 +1200,10 @@ install_docker_mode() {
     -e "SITE_NAME=$SITE_NAME" -e "PORT=8000" \
     -e "DATABASE_URL=sqlite:////data/simpleurl.db" \
     -e "SECRET_KEY=$SECRET_KEY" \
-    -e "ADMIN_TOKEN=$ADMIN_USER:$ADMIN_PASS" \
+    -e "ADMIN_USERNAME=$ADMIN_USER" -e "ADMIN_PASSWORD=$ADMIN_PASS" \
     -e "PUBLIC_URL=$PUBLIC_URL" -e "ACCESS_MODE=$ACCESS_MODE" \
     -e "TZ=${TZ:-Asia/Shanghai}" \
+    -e "SIMPLEURL_ENV_FILE=/data/.env" \
     --label "simpleurl.managed=1" \
     simpleurl:latest >/dev/null || rollback_or_die "容器启动失败"
   RUNTIME="docker"
@@ -1307,8 +1309,9 @@ ACCESS_MODE=$ACCESS_MODE
 DATABASE_URL=$DATABASE_URL
 SECRET_KEY=$SECRET_KEY
 TZ=${TZ:-Asia/Shanghai}
-# 后台凭据：admin:密码 表示账号密码分开设；只写口令则账号固定 admin
-ADMIN_TOKEN=$ADMIN_USER:$ADMIN_PASS
+# 后台凭据：登录页用账号密码；ADMIN_TOKEN 是脚本 / CI 的兼容入口（X-Admin-Token 头）
+ADMIN_USERNAME=$ADMIN_USER
+ADMIN_PASSWORD=$ADMIN_PASS
 EOF
   chmod 600 "$file" 2>/dev/null || true
 }
@@ -1451,7 +1454,14 @@ check_port_free() {
   fi
   warn "端口 $PORT 被占用${who:+：$who}"
   local alt; alt="$(next_free_port "$PORT")"
-  # 非交互（CI / 面板 / curl | bash --yes）时问不了人，也别硬撞：自己换个空的
+  # 非交互（CI / 面板 / curl | bash --yes）时问不了人，也别硬撞：自己换个空的。
+  # 但显式给了端口（--port / PORT=）就得照办：那是在说「我就要这个口」，
+  # 而屏上的摘要、防火墙规则、反代上游都是照它来的。悄悄换掉最糟——
+  # 装完一切看着正常，站点却在另一个端口上。
+  if [ "$PORT_EXPLICIT" = "y" ]; then
+    warn "仍按你指定的 $PORT 继续；启动会失败就停下来报错，不会偷偷换口"
+    return 0
+  fi
   if [ "$INTERACTIVE" = "0" ] || [ -z "$TTY" ]; then
     if [ -n "$alt" ]; then PORT="$alt"; ok "自动改用空闲端口 $PORT"
     else warn "附近端口都占着，仍按 $PORT 继续（大概率起不来）"; fi
@@ -1939,38 +1949,68 @@ health() {
 # 原来不给参数就随机重置，而它是最常敲的一条：敲一下等于把现成的密码作废，
 # 还得回头去翻刚滚过去的那行输出。所以默认改成只读。
 show_password() {
-  local raw
-  raw="$(grep -E '^ADMIN_TOKEN=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-  [ -n "$raw" ] || { warn "找不到 ADMIN_TOKEN，看看 simpleurl config"; return 1; }
-  say "账号：${raw%%:*}"
-  say "密码：${raw#*:}"
+  local user pass raw
+  user="$(grep -E '^ADMIN_USERNAME=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  pass="$(grep -E '^ADMIN_PASSWORD=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ -z "$pass" ]; then
+    # 老安装只有 ADMIN_TOKEN：admin:password 分开写，纯口令则账号固定 admin
+    raw="$(grep -E '^ADMIN_TOKEN=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+    case "$raw" in
+      *:*) user="${user:-${raw%%:*}}"; pass="${raw#*:}" ;;
+      "")  warn "找不到管理员凭据，看看 simpleurl config"; return 1 ;;
+      *)   pass="$raw" ;;
+    esac
+  fi
+  say "账号：${user:-admin}"
+  say "密码：$pass"
   say "后台：$(site_url)/admin"
   say "（要换密码：simpleurl password --reset）"
 }
 
+# 改 .env 里的一行：有就替换、没有就追加，其余内容一字不动。
+# 用 awk 而不是 sed 的原地编辑：BSD 与 GNU 的 -i 参数长得不一样，之前为此写过两套分支。
+env_put() { # file key value
+  local file="$1" key="$2" val="$3" tmp="$1.su-new"
+  KEY="$key" VAL="$val" awk '
+    BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VAL"]; done = 0 }
+    index($0, k "=") == 1 { if (!done) { print k "=" v; done = 1 }; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' "$file" > "$tmp" 2>/dev/null && mv "$tmp" "$file" && chmod 600 "$file" 2>/dev/null
+}
+
 set_password() {
-  local pass="${1:-}" cred
+  local pass="${1:-}" user
   if [ -z "$pass" ]; then
     pass="$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z2-9' | cut -c1-16)"
   fi
-  cred="admin:$pass"
+  user="$(grep -E '^ADMIN_USERNAME=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  user="${user:-admin}"
+  env_put "$DIR/.env" ADMIN_USERNAME "$user"
+  env_put "$DIR/.env" ADMIN_PASSWORD "$pass"
+  # 改成账号密码以后，旧的独立令牌就没有存在意义了：留着等于多一把没人记得的钥匙
+  env_put "$DIR/.env" ADMIN_TOKEN ""
   if [ "$RUNTIME" = "docker" ]; then
-    docker exec "$NAME" python - "$cred" <<'PY'
-import pathlib, re, sys
-p = pathlib.Path('/data/.env')
-text = p.read_text() if p.exists() else ''
-text = re.sub(r'^ADMIN_TOKEN=.*$', '', text, flags=re.M).rstrip('\n')
-p.write_text(text + '\nADMIN_TOKEN=' + sys.argv[1] + '\n')
-PY
-    docker restart "$NAME" >/dev/null 2>&1 || true
+    # 容器启动参数里也带着凭据，只改 /data/.env 不够——重建一遍才真的生效
+    docker exec "$NAME" sh -c 'cat > /data/.env && chmod 600 /data/.env' < "$DIR/.env" >/dev/null 2>&1 || true
+    if ! docker run -d --name "$NAME" --restart unless-stopped \
+          -p "${PORT}:8000" -v "${NAME}-data:/data" \
+          -e "SITE_NAME=$(grep -E '^SITE_NAME=' "$DIR/.env" | head -1 | cut -d= -f2-)" \
+          -e "PUBLIC_URL=$(grep -E '^PUBLIC_URL=' "$DIR/.env" | head -1 | cut -d= -f2-)" \
+          -e "ACCESS_MODE=$(grep -E '^ACCESS_MODE=' "$DIR/.env" | head -1 | cut -d= -f2-)" \
+          -e "SECRET_KEY=$(grep -E '^SECRET_KEY=' "$DIR/.env" | head -1 | cut -d= -f2-)" \
+          -e "ADMIN_USERNAME=$user" -e "ADMIN_PASSWORD=$pass" \
+          -e "DATABASE_URL=sqlite:////data/simpleurl.db" -e "PORT=8000" \
+          -e "SIMPLEURL_ENV_FILE=/data/.env" \
+          --label "simpleurl.managed=1" simpleurl:latest >/dev/null 2>&1; then
+      warn "容器重建失败，新密码可能没生效：docker rm -f $NAME 后重跑 install.sh"
+    fi
   else
-    if sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$cred|" "$DIR/.env" 2>/dev/null; then :
-    else sed -i '' "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$cred|" "$DIR/.env"; fi
-    rm -f "$DIR/.env.bak"
     do_stop >/dev/null; sleep 1; do_start >/dev/null
   fi
+  say "账号：$user"
   say "新密码：$pass"
-  say "账号：admin　后台：$(site_url)/admin"
+  say "后台：$(site_url)/admin"
   say "（改完记得同步改你自己的密码管理器）"
 }
 
@@ -2051,9 +2091,10 @@ case "${1:-status}" in
   upgrade)
     # 升级要连脚本一起换。否则装了 v2.2 的机器永远用 2.2 的脚本去升代码，
     # 新脚本里的修法自己用不上——上一轮的安装目录里躺着的就是旧脚本。
-    local script="$DIR/install.sh"
+    # 这里同样是 case 分支而不是函数体，不用 local（用了当场 local: not in a function）
+    script="$DIR/install.sh"
     if [ -f "$DIR/install.sh" ]; then
-      local newest="$DIR/install.sh.new"
+      newest="$DIR/install.sh.new"
       if [ -n "${SU_REMOTE_SCRIPT:-}" ] && [ -s "$SU_REMOTE_SCRIPT" ]; then
         if bash -n "$SU_REMOTE_SCRIPT" 2>/dev/null; then cp "$SU_REMOTE_SCRIPT" "$newest" 2>/dev/null || true; fi
       fi
@@ -2068,9 +2109,12 @@ case "${1:-status}" in
     # 卸载会把 $DIR 整个删掉，跑在里面的 install.sh 也会一起消失；
     # 先拷一份到临时目录再跑，否则中途读不到脚本后半截
     if [ -f "$DIR/install.sh" ]; then
-      local tmp; tmp="$(mktemp -d 2>/dev/null || echo "/tmp/.su-uninstall.$$")"
+      # 这条命令是顶部 case 的一段，不是函数体：写 local 会当场报错
+      tmp="$(mktemp -d 2>/dev/null || echo "/tmp/.su-uninstall.$$")"
       cp "$DIR/install.sh" "$tmp/install.sh" && chmod +x "$tmp/install.sh"
-      SIMPLEURL_HOME="$DIR" exec bash "$tmp/install.sh" --uninstall
+      # 带上 --force：外层已经确认过一次，拷出来这份不该再问第二遍
+      # （原来这里不带，非交互调用永远卡在第二个反问上，还被报成「未知参数」）
+      SIMPLEURL_HOME="$DIR" exec bash "$tmp/install.sh" uninstall --force
     else warn "缺少 $DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   "")      site_status ;;
   help|--help|-h|*)
@@ -2176,8 +2220,9 @@ do_uninstall() {
     docker rmi simpleurl:latest >/dev/null 2>&1 || true
     ok "容器与数据卷已删除"
   fi
+  SUDO=""
+  [ "$(id -u)" != "0" ] && need_cmd sudo && SUDO="sudo"
   if need_cmd systemctl; then
-    local SUDO=""; [ "$(id -u)" != "0" ] && need_cmd sudo && SUDO="sudo"
     $SUDO systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
     $SUDO systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
     $SUDO rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
@@ -2186,13 +2231,38 @@ do_uninstall() {
   if [ -f "$INSTALL_DIR/simpleurl.pid" ]; then
     kill "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null || true
   fi
-  rm -f /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" 2>/dev/null || true
-  rm -f "$INSTALL_DIR/simpleurl" 2>/dev/null || true
+  # 两件事一起做：只删指向本目录的那份全局命令（两份安装共用一个名字，
+  # 删错就把隔壁断了）；同时记下隔壁那份（still_there），本目录删完要用它把
+  # 全局命令接回去。以前这里只做第一件，本目录一删「隔壁在哪」就再也没线索了。
+  #
+  # 两个细节都是踩过的坑：
+  #  · `[ -f ] || continue` 不能用 —— bash 会把整段 for 当函数体跳过，第二个
+  #    路径压根没被检查过，于是永远只删 /usr/local/bin 那一份；
+  #  · `rm && x=y` 不能当分支尾巴 —— 它是「最后一条命令」，false 会让 set -e
+  #    直接退出，卸载话说到一半人就没了。
+  f=""; cdir=""; still_there=""
+  for f in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
+    if [ -f "$f" ]; then
+      cdir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$f" 2>/dev/null | head -1)"
+      if [ "$cdir" = "$INSTALL_DIR" ]; then
+        { $SUDO rm -f "$f" || true; }
+      elif [ -n "$cdir" ] && [ "$cdir" != "$INSTALL_DIR" ] && [ -f "$cdir/simpleurl" ]; then
+        still_there="$cdir"
+      fi
+    fi
+  done
+
   # 卸载是唯一「删整个目录」的地方：路径异常（空 / / / $HOME）时宁可不删
   case "$INSTALL_DIR" in
     ""|"/"|"$HOME"|"$HOME/"|"/root"|"/usr"|"/usr/local") die "安装目录 ${INSTALL_DIR} 不像本脚本装的，拒绝删除" ;;
   esac
   rm -rf "${INSTALL_DIR:?}"
+  # 本目录的全局命令删掉了，隔壁那份还在：把命令接回去，别让人以为装的东西没了。
+  if [ -n "$still_there" ] && [ "$still_there" != "$INSTALL_DIR" ] && [ -f "$still_there/simpleurl" ]; then
+    if $SUDO cp -f "$still_there/simpleurl" /usr/local/bin/simpleurl 2>/dev/null; then
+      ok "全局命令改指向仍在用的那份：$still_there"
+    fi
+  fi
   ok "已卸载干净"
 }
 
@@ -2221,6 +2291,12 @@ forward_subcommand() {
     fi
     [ -n "$foreign" ] || foreign="$cdir"
   done
+  # 目录里的影子命令不在（老安装 / 手动删过）：用安装目录里的脚本自己顶上。
+  # `simpleurl uninstall` 的第 303 行就是 exec 到 install.sh，找不到它等于
+  # 命令里最需要能用的那条永远用不了。
+  if [ -z "$cli" ] && [ -x "$INSTALL_DIR/install.sh" ]; then
+    exec bash "$INSTALL_DIR/install.sh" "$sub" ${1+"$@"}
+  fi
   # 机器上只装了别的目录那一份：不要静悄悄地转过去，也不要装作没装。
   # 说清楚谁负责这个目录，把下一步给人。
   if [ -z "$cli" ] && [ -n "$foreign" ]; then
@@ -2247,12 +2323,18 @@ load_existing_env() { # envfile
   PUBLIC_URL="$(grep -E '^PUBLIC_URL=' "$f" | head -1 | cut -d= -f2- || echo "")"
   ACCESS_MODE="$(grep -E '^ACCESS_MODE=' "$f" | head -1 | cut -d= -f2- || echo "open")"
   SECRET_KEY="$(grep -E '^SECRET_KEY=' "$f" | head -1 | cut -d= -f2- || echo "")"
+  # 凭据先看账号密码两行；老安装只写了 ADMIN_TOKEN，按同样的约定读回来
+  ADMIN_USER="$(grep -E '^ADMIN_USERNAME=' "$f" | head -1 | cut -d= -f2- || echo "")"
+  ADMIN_PASS="$(grep -E '^ADMIN_PASSWORD=' "$f" | head -1 | cut -d= -f2- || echo "")"
   raw_token="$(grep -E '^ADMIN_TOKEN=' "$f" | head -1 | cut -d= -f2- || echo "")"
-  case "$raw_token" in
-    *:*) ADMIN_USER="${raw_token%%:*}"; ADMIN_PASS="${raw_token#*:}" ;;
-    "")  ADMIN_USER="admin"; ADMIN_PASS="" ;;
-    *)   ADMIN_USER="admin"; ADMIN_PASS="$raw_token" ;;
-  esac
+  if [ -z "$ADMIN_PASS" ]; then
+    case "$raw_token" in
+      *:*) ADMIN_USER="${ADMIN_USER:-${raw_token%%:*}}"; ADMIN_PASS="${raw_token#*:}" ;;
+      "")  : ;;
+      *)   ADMIN_PASS="$raw_token" ;;
+    esac
+  fi
+  ADMIN_USER="${ADMIN_USER:-admin}"
 }
 
 do_install() {

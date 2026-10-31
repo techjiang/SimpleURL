@@ -157,9 +157,10 @@ curl -X POST http://localhost:8000/api/links \
 | `ACCESS_MODE` | `open` | `open` 开放外部可使用；`admin` 仅管理员可使用 |
 | `EXPORT_MAX_ROWS` | `50000` | 单次导出 CSV 的最大条数 |
 | `DEBUG` | `false` | 开启后开放 `/api/docs` |
-| `ADMIN_TOKEN` | 空 | 后台凭据：`admin:password` 分别设账号密码，只写口令则账号固定 `admin`；也支持哈希值 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / 空 | 后台账号密码，安装脚本自动生成，登录页用它登录；密码也支持哈希值 |
+| `ADMIN_TOKEN` | 空 | 兼容入口：脚本 / CI 用 `X-Admin-Token` 头登录，格式 `admin:password` 可分开设账号；与上面的账号密码任一命中即可 |
 | `PUBLIC_URL` | 空 | 站点对外地址（如 `https://s.example.com`）。配了它短链与二维码都用这个域名，反代后必填；后台「站点设置」也能改 |
-| `SECRET_KEY` | 复用 `ADMIN_TOKEN` | 会话签名密钥，建议单独配置 |
+| `SECRET_KEY` | 复用管理凭据 | 会话签名密钥，建议单独配置 |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1` | 信任哪些代理的转发头，支持网段；`*` 表示全信 |
 | `LOGIN_RATE_LIMIT` | `10` | 单 IP 5 分钟内后台登录尝试上限，`0` 不限制 |
 | `SOCIAL_GUARD` | `true` | 社交平台防洪总开关（后台可覆盖） |
@@ -211,7 +212,7 @@ curl -X POST http://localhost:8000/api/links \
 - **链接库与统计永远只给管理员。** 开放模式开的是「建」，不是「看别人的」——
   一份完整的链接清单摊在公网上，等于把所有人建的短链都曝出来。
 
-未配置 `ADMIN_TOKEN` 时自动按 `open` 运行，避免配错把站点锁死在门外；
+未配置管理员凭据（`ADMIN_PASSWORD` / `ADMIN_TOKEN`）时自动按 `open` 运行，避免配错把站点锁死在门外；
 配了但短于 12 位则按「仅管理员」收权（见下方「口令强度」）。
 
 ### 回执链接：访客也能管自己那条
@@ -269,7 +270,9 @@ curl -fsSL -H "Authorization: Basic $(printf 'cnb:%s' "$CNB_TOKEN" | base64)" \
 - 国内网络自动探测可用的 pip 源，**真拉一个包试过**才用，试不通就回落官方源
 - 填了域名就顺手生成一份能直接用的反向代理配置（nginx / caddy / apache，按检测到的来），
   并给出 certbot 签证书的命令
-- 装完打印一张卡片：站点地址、后台地址、账号、密码、运行方式
+- 装完打印一张卡片：站点地址、后台地址、账号、密码、运行方式。
+  这串账号密码就是后台登录用的那对 —— 服务端认 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，
+  不用再靠 `ADMIN_TOKEN=admin:密码` 这种字符串约定去拆
 - **装完真用一遍**：不只是看 `/healthz` 返回 200。脚本会拿刚设好的管理员凭据登录、
   建一条暗号短链、再访问它确认拿到 307 跳转，最后把这条清掉；开放模式下还会用
   **访客身份**再建一条，确认「任何人都能建」这句承诺没被权限改造悄悄改坏。
@@ -296,7 +299,7 @@ curl -fsSL -H "Authorization: Basic $(printf 'cnb:%s' "$CNB_TOKEN" | base64)" \
 simpleurl status      # 状态 + 健康检查（等价 ./install.sh status）
 simpleurl log         # 跟踪日志
 simpleurl restart     # 重启
-simpleurl password    # 看当前管理员密码（只读；--reset 才换新的）
+simpleurl password    # 看当前管理员密码（只读；--reset 才换新的，`password 新密码` 直接设）
 simpleurl backup      # 备份数据库与配置
 simpleurl restore     # 从备份恢复
 simpleurl upgrade     # 升级到最新代码
@@ -327,6 +330,11 @@ simpleurl config      # 查看 / 编辑配置
   会一起变成「缺少 install.sh」。
 - **取不到远端源码必须说清楚**。屏幕上写的是「代码没有更新」，并给出 `REPO_TARBALL` / `REPO_URL` 怎么指。
   以前只留一句「沿用已有代码继续」，人以为升完了。
+- **卸载只动自己那份**。机器上装着两份 SimpleURL 时共用一个 `simpleurl` 名字：
+  卸载时会核对命令里的 `DIR`，只删指向本目录的；隔壁那份还在，就把全局命令接回去，
+  不会出现「卸载 A，B 的命令也没了」。
+- **显式端口不会被悄悄换掉**。`PORT=` / `--port` 是在说「我就要这个口」，
+  端口被占时脚本会照办并停下报错——偷偷换一个口，摘要、防火墙、反代上游就全对不上了。
 
 远端版本比本地旧时**不会**覆盖（防降级），要强行覆盖换 `--branch <分支>`。
 
@@ -449,7 +457,11 @@ UA 常常是干净的 Safari / Chrome，只看 UA 会漏掉一大半真实来源
 
 ### 口令哈希
 
-`ADMIN_TOKEN` 支持直接填哈希值而不必存明文，算法优先 Argon2id（m=19MiB / t=2 / p=1），缺依赖时自动退到 PBKDF2-HMAC-SHA256 60 万次迭代。哈希编码带算法名前缀，参数低于当前标准时会提示升级。
+`ADMIN_PASSWORD` / `ADMIN_TOKEN` 都支持直接填哈希值而不必存明文，算法优先 Argon2id（m=19MiB / t=2 / p=1），缺依赖时自动退到 PBKDF2-HMAC-SHA256 60 万次迭代。哈希编码带算法名前缀，参数低于当前标准时会提示升级。
+
+后台有两种改法：`simpleurl password --reset`（改 .env 并重启），或登录后「设置 → 管理员账号」
+（立即生效，并尽力写回 `.env`；写不进去——容器只读挂载之类——会明说「重启后需重新配置」，不装作成功）。
+两者都会把旧的 `ADMIN_TOKEN` 一并清掉：改成账号密码以后还留着它，等于多一把没人记得的钥匙。
 
 ```bash
 python -c "from app.core.crypto import hash_secret; print(hash_secret('your-password'))"

@@ -5,7 +5,8 @@
 - admin ：访客只能跳转，创建与所有浏览操作都要求管理员会话
 
 模式本身是运行参数（见 settings_store.EDITABLE），后台可随时改；
-未配置 ADMIN_TOKEN 时自动退回 open，避免把站点锁死在门外。
+未配置管理员凭据（ADMIN_TOKEN 或 ADMIN_USERNAME/ADMIN_PASSWORD）时
+自动退回 open，避免把站点锁死在门外。
 """
 
 from __future__ import annotations
@@ -49,12 +50,19 @@ def current_mode(db=None) -> str:
 
 
 def token_is_weak() -> bool:
-    token = settings.admin_token
-    if not token:
-        return False
-    # `admin:password` 形式只看口令部分，别被用户名凑了长度
-    secret = token.partition(":")[2] if ":" in token else token
-    return len(secret) < WEAK_TOKEN_LENGTH
+    """口令是否短到不该上生产。
+
+    两个来源都要看：安装脚本写的是 ADMIN_PASSWORD，老部署写的是 ADMIN_TOKEN。
+    只看其中一个，另一条路就等于没有这道闸——弱口令照样能当管理员用。
+    """
+    values = []
+    if settings.admin_token:
+        # `admin:password` 形式只看口令部分，别被用户名凑了长度
+        token = settings.admin_token
+        values.append(token.partition(":")[2] if ":" in token else token)
+    if settings.admin_password:
+        values.append(settings.admin_password)
+    return any(len(v) < WEAK_TOKEN_LENGTH for v in values)
 
 
 def is_admin_mode(db=None) -> bool:
@@ -147,7 +155,8 @@ def warnings() -> list[dict]:
         out.append(
             {
                 "level": "info",
-                "text": "未配置 ADMIN_TOKEN，管理后台处于关闭状态，站点对所有访客开放创建。",
+                "text": "未配置管理员凭据（ADMIN_PASSWORD / ADMIN_TOKEN），管理后台处于关闭状态，"
+                "站点对所有访客开放创建。",
             }
         )
         return out
@@ -155,8 +164,9 @@ def warnings() -> list[dict]:
         out.append(
             {
                 "level": "warn",
-                "text": f"ADMIN_TOKEN 短于 {WEAK_TOKEN_LENGTH} 位：访客创建已关闭，访问模式按「仅管理员」执行。"
-                "建议用 openssl rand -hex 24 重新生成后再上生产。",
+                "text": f"管理口令（ADMIN_TOKEN / ADMIN_PASSWORD）短于 {WEAK_TOKEN_LENGTH} 位："
+                "访客创建已关闭，访问模式按「仅管理员」执行。"
+                "建议用 openssl rand -hex 24 重新生成（或 simpleurl password --reset）后再上生产。",
             }
         )
     if settings.access_token and len(settings.access_token) < 8:

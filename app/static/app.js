@@ -117,7 +117,7 @@
       banner.hidden = false;
       banner.classList.toggle('locked', locked);
       $('#mode-text').textContent = access.locked
-        ? '站点口令过弱，创建已锁定：请管理员更换 ADMIN_TOKEN（≥12 位随机串）后重试。'
+        ? '站点口令过弱，创建已锁定：请管理员更换管理密码（≥12 位随机串）后重试。'
         : (locked
             ? '仅管理员可使用：外部访客只能打开已生成的短链接，创建与管理需登录后台。'
             : (access.admin_mode

@@ -14,6 +14,8 @@ from app.core import access, guard, policy, report, social
 from app.core.admin import (
     COOKIE_NAME,
     check_credentials,
+    env_file_path as admin_env_file_path,
+    write_env_vars,
     clear_cookie_value,
     current_admin,
     is_admin_enabled,
@@ -342,6 +344,58 @@ def api_reset_settings(request: Request, db: Session = Depends(get_db)):
     report.record(db, "settings", actor=require_settings_admin(request), detail="恢复默认设置", request=request)
     db.commit()
     return {"ok": True, "message": "已恢复环境变量默认值"}
+
+
+@router.get("/credentials", summary="当前管理员账号（不含密码）")
+def api_get_credentials(request: Request):
+    require_settings_admin(request)
+    return {
+        "ok": True,
+        "username": settings.admin_username,
+        "from_token": not bool(settings.admin_password),
+        "env_file": str(admin_env_file_path()),
+    }
+
+
+@router.post("/credentials", summary="修改管理员账号密码")
+def api_save_credentials(payload: dict, request: Request, db: Session = Depends(get_db)):
+    """改完立刻生效，并尽力写回 .env，重启后不会退回旧密码。
+
+    要改密码先证明自己是当前管理员：会话也可能是别人在公用电脑上留下的。
+    密码换掉以后旧的 ADMIN_TOKEN 一并作废——留着等于多一把没人记得的钥匙。
+    """
+    actor = require_settings_admin(request)
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    current = str(payload.get("current_password") or "")
+
+    if not check_credentials(actor, current):
+        raise ServiceError("当前密码不正确", 403)
+    if username and not (3 <= len(username) <= 32):
+        raise ServiceError("账号需 3~32 位", 400)
+    if username and any(c.isspace() for c in username):
+        raise ServiceError("账号不能包含空格", 400)
+    if len(password) < 8:
+        raise ServiceError("新密码至少 8 位", 400)
+    if len(password) > 128:
+        raise ServiceError("新密码最多 128 位", 400)
+
+    new_user = username or settings.admin_username
+    settings.admin_username = new_user
+    settings.admin_password = password
+    settings.admin_token = ""
+
+    persisted = write_env_vars(
+        {"ADMIN_USERNAME": new_user, "ADMIN_PASSWORD": password, "ADMIN_TOKEN": ""}
+    )
+    report.record(db, "credentials", actor=actor, detail="修改管理员账号密码", request=request)
+    db.commit()
+    return {
+        "ok": True,
+        "username": new_user,
+        "persisted": persisted,
+        "message": "已保存并生效" if persisted else "已生效，但 .env 不可写，重启后需重新配置",
+    }
 
 
 @router.get("/ua-rules", response_model=UaRuleOut, summary="UA 屏蔽规则")

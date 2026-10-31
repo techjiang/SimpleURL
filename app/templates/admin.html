@@ -445,6 +445,30 @@
       </form>
       <p class="hint">延迟计数周期 <b id="flush-interval">5</b> 秒；当前缓冲 <b id="pending-count">0</b> 条。</p>
     </div>
+      <div class="chart-card">
+        <div class="chart-head"><h2>管理员账号</h2><span class="hint">改完立即生效，并写回 .env</span></div>
+        <form class="composer-form" id="cred-form" autocomplete="off">
+          <div class="row">
+            <div class="field">
+              <label for="cred-username">账号</label>
+              <input id="cred-username" type="text" maxlength="32" placeholder="admin" autocomplete="username" />
+            </div>
+            <div class="field">
+              <label for="cred-password">新密码 <span class="hint">至少 8 位</span></label>
+              <input id="cred-password" type="password" maxlength="128" autocomplete="new-password" />
+            </div>
+            <div class="field">
+              <label for="cred-current">当前密码 <span class="hint">验证身份用</span></label>
+              <input id="cred-current" type="password" maxlength="128" autocomplete="current-password" />
+            </div>
+          </div>
+          <div class="composer-actions">
+            <button type="submit" class="btn primary">更新账号密码</button>
+            <span class="status" id="cred-status" role="status"></span>
+          </div>
+        </form>
+        <p class="hint">改完旧的 <code>ADMIN_TOKEN</code> 一并作废；脚本请改用新密码走 <code>X-Admin-Token</code> 头。</p>
+      </div>
   </div>
 </section>
 
@@ -453,7 +477,7 @@
   <form class="gate-card" id="admin-login-form" autocomplete="off">
     <img src="/static/logo/icon.svg" alt="" width="40" height="40" />
     <h3>管理后台登录</h3>
-    <p class="hint">使用部署时配置的 ADMIN_TOKEN</p>
+    <p class="hint">用安装时设的管理员账号密码登录</p>
     <input id="login-user" type="text" placeholder="账号" autocomplete="username" />
     <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password" />
     <button class="btn primary" type="submit">登录</button>

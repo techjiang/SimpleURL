@@ -59,13 +59,18 @@ class Settings:
         # 存储：默认 SQLite，可切换到 Postgres
         self.database_url: str = os.getenv("DATABASE_URL", "").strip() or f"sqlite:///{base_dir / 'simpleurl.db'}"
 
-        # 管理后台（留空表示关闭后台登录）
-        # ADMIN_TOKEN 是唯一的凭据来源，两种写法：
-        #   纯口令            → 账号固定 admin
-        #   admin:password    → 账号密码分开写
+        # 管理后台（三者都留空表示关闭后台登录）
+        # 凭据有两个来源，任一命中即可：
+        #   ADMIN_USERNAME + ADMIN_PASSWORD → 安装脚本生成，登录页用账号密码
+        #   ADMIN_TOKEN                     → 脚本 / CI 用 X-Admin-Token 头
+        # 老配置只写了 ADMIN_TOKEN=admin:password 的，账号密码照样认。
         self.admin_token: str = os.getenv("ADMIN_TOKEN", "").strip()
+        self.admin_username: str = os.getenv("ADMIN_USERNAME", "").strip() or "admin"
+        self.admin_password: str = os.getenv("ADMIN_PASSWORD", "").strip()
         # 会话签名密钥，默认复用管理令牌
-        self.session_secret: str = os.getenv("SECRET_KEY", "").strip() or self.admin_token
+        self.session_secret: str = (
+            os.getenv("SECRET_KEY", "").strip() or self.admin_token or self.admin_password
+        )
         # 后台登录态有效期（秒）
         self.session_ttl: int = max(300, _as_int("ADMIN_SESSION_TTL", 43200))
 

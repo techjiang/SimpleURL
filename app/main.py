@@ -34,10 +34,12 @@ logger = logging.getLogger("simpleurl")
 def _startup_audit() -> None:
     """启动自检：把一眼可见的安全隐患喊出来，别等出事才发现。"""
     token = settings.admin_token
-    if token and len(token) < settings.min_admin_token_length:
+    secret = token.partition(":")[2] if ":" in token else token
+    secret = secret or settings.admin_password
+    if secret and len(secret) < settings.min_admin_token_length:
         logger.warning(
-            "ADMIN_TOKEN 只有 %d 位，低于建议的 %d 位，建议用 openssl rand -hex 24 生成",
-            len(token),
+            "管理口令只有 %d 位，低于建议的 %d 位，建议用 openssl rand -hex 24 生成",
+            len(secret),
             settings.min_admin_token_length,
         )
     if not settings.session_secret or settings.session_secret == settings.admin_token:

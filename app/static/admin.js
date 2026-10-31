@@ -1034,6 +1034,39 @@
     });
   }
 
+  /* ---------- 管理员账号 ---------- */
+  async function loadCredentials() {
+    try {
+      const c = await api('/api/admin/credentials');
+      const user = $('#cred-username');
+      if (user && !user.value) user.value = c.username || '';
+    } catch (_) { /* 面板打开失败不该挡住别的事 */ }
+  }
+
+  function bindCredentials() {
+    const form = $('#cred-form');
+    if (!form) return;
+    loadCredentials();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = $('#cred-password').value;
+      const current = $('#cred-current').value;
+      if (!current) { setStatus('#cred-status', '先填当前密码', 'err'); return; }
+      if (password.length < 8) { setStatus('#cred-status', '新密码至少 8 位', 'err'); return; }
+      setStatus('#cred-status', '保存中…');
+      try {
+        const r = await post('/api/admin/credentials', {
+          username: ($('#cred-username').value || '').trim(),
+          password,
+          current_password: current,
+        });
+        setStatus('#cred-status', r.message || '已更新', 'ok');
+        $('#cred-password').value = '';
+        $('#cred-current').value = '';
+      } catch (err) { setStatus('#cred-status', err.message, 'err'); }
+    });
+  }
+
   /* ---------- 运行状态 ---------- */
   function humanSize(bytes) {
     if (!bytes && bytes !== 0) return '—';
@@ -1298,7 +1331,7 @@
   async function boot() {
     bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
     bindBlockedFilter();
-    bindMigrate(); bindSettings(); bindStatus(); bindQr(); bindNotify();
+    bindMigrate(); bindSettings(); bindCredentials(); bindStatus(); bindQr(); bindNotify();
     bindTrash(); bindExpiringNotify();
     await loadDashboard();
   }
@@ -1316,12 +1349,12 @@
         showLoginHint();
       }
       else {
-        // 没配 ADMIN_TOKEN：后台不可用，给个提示
+        // 没配管理员凭据：后台不可用，给个提示
         const g = $('#admin-login');
         if (g) {
           g.hidden = false;
           $('#admin-login-form').innerHTML =
-            '<img src="/static/logo/icon.svg" alt="" width="40" height="40" /><h3>后台未启用</h3><p class="hint">请设置 ADMIN_TOKEN 环境变量后重启</p>';
+            '<img src="/static/logo/icon.svg" alt="" width="40" height="40" /><h3>后台未启用</h3><p class="hint">请设置 ADMIN_PASSWORD（或 ADMIN_TOKEN）后重启</p>';
         }
       }
     } catch (_) { showLogin(); }

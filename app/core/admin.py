@@ -65,15 +65,45 @@ def verify_token(token: str | None) -> str | None:
     return username or None
 
 
-def check_credentials(username: str, password: str) -> bool:
-    """默认账号密码取 ADMIN_TOKEN，格式 admin:password 可分别设置。"""
+def token_credentials() -> tuple[str, str] | None:
+    """ADMIN_TOKEN 也能当账号密码：`admin:password` 分开写，纯口令则账号固定 admin。
+
+    安装脚本前几版只写 ADMIN_TOKEN，这条兼容分支扔不掉——升个版本，
+    老部署的后台就进不去了。
+    """
     token = settings.admin_token
     if not token:
-        return False
+        return None
     if ":" in token:
         user, _, pwd = token.partition(":")
-        return hmac.compare_digest(username, user) and hmac.compare_digest(password, pwd)
-    return hmac.compare_digest(username, "admin") and hmac.compare_digest(password, token)
+        return user, pwd
+    return "admin", token
+
+
+def _same_text(a: str, b: str) -> bool:
+    return hmac.compare_digest((a or "").strip().encode(), (b or "").strip().encode())
+
+
+def check_credentials(username: str, password: str) -> bool:
+    """校验后台账号密码。
+
+    两个来源都算（ADMIN_USERNAME/ADMIN_PASSWORD 与 ADMIN_TOKEN），
+    四条比对全都走一遍再合结论：不因为「先撞上哪一条」而改变耗时，
+    也不给外面一个「账号对不对」的额外信号。
+    账号名大小写不敏感——安装时抄成 Admin，不该把用户自己关在门外。
+    """
+    if not is_admin_enabled():
+        return False
+    name = (username or "").strip().lower()
+    pwd = password or ""
+    pair = token_credentials()
+
+    user_ok = pair is not None and _same_text(name, pair[0].lower())
+    pass_ok = pair is not None and _same_text(pwd, pair[1])
+    if settings.admin_password:
+        user_ok = _same_text(name, settings.admin_username.lower()) or user_ok
+        pass_ok = _same_text(pwd, settings.admin_password) or pass_ok
+    return user_ok and pass_ok
 
 
 def current_admin(request: Request) -> str | None:
@@ -81,7 +111,7 @@ def current_admin(request: Request) -> str | None:
 
 
 def is_admin_enabled() -> bool:
-    return bool(settings.admin_token)
+    return bool(settings.admin_token or settings.admin_password)
 
 
 def login_response_value(token: str) -> dict:
@@ -90,3 +120,51 @@ def login_response_value(token: str) -> dict:
 
 def clear_cookie_value() -> dict:
     return {COOKIE_NAME: ""}
+
+
+# ---------------------------------------------------------------- 凭据改写
+def env_file_path():
+    """要写回的 .env 路径。
+
+    显式配了 SIMPLEURL_ENV_FILE 就用它（Docker 里指 /data/.env）；
+    否则取项目根：app/core/admin.py 往上两层。别拿 static_dir 之类去数层级，
+    数错一级就会把密码写进无关目录。
+    """
+    import os
+    from pathlib import Path
+
+    override = os.getenv("SIMPLEURL_ENV_FILE", "").strip()
+    if override:
+        return Path(override)
+    from app.core import config as config_module
+
+    return Path(config_module.__file__).resolve().parents[2] / ".env"
+
+
+def write_env_vars(pairs: dict[str, str]) -> bool:
+    """就地改写 .env 里的几行：有则替换、无则追加，其余行一字不动。
+
+    返回是否写成功。写不进去不是错误——容器只读挂载、目录没权限都会这样，
+    当前进程照样能用新密码，只是重启后会退回去。这一点得让调用方说清楚，
+    比装作成功要好。
+    """
+    path = env_file_path()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        for key, value in pairs.items():
+            prefix = f"{key}="
+            for i, line in enumerate(lines):
+                if line.strip().startswith(prefix):
+                    lines[i] = f"{key}={value}"
+                    break
+            else:
+                lines.append(f"{key}={value}")
+        path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)  # 里面是密码，别让它跟着 umask 漂
+        except OSError:
+            pass
+        return True
+    except OSError as exc:  # pragma: no cover - 权限问题只在个别部署出现
+        logger.warning("写回 .env 失败：%s", exc)
+        return False
