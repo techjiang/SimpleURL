@@ -58,16 +58,19 @@ def test_canvas_edge_is_absolutely_clean(size):
 
 @pytest.mark.parametrize("size", PNG_SIZES)
 def test_all_sizes_are_the_same_drawing(size):
-    """同一造型 = 图形占画布的比例一致。
+    """同一造型 = 图形宽高比一致，且都在画布里留着边。
 
     上一版给每个尺寸段各定一档线宽，比例能差出 20% 以上——缩略图和原图
-    是两枚图标。这里容差 8%，够容纳取整误差，不够容纳「另画一版」。
+    是两枚图标。小尺寸靠抗锯齿糊出来的 1px 必然让比例抖一点，所以比例
+    用宽容差，真正要钉死的是「不贴边」：贴边就是深色页面上的方块。
     """
     img = Image.open(LOGO / f"icon-{size}.png").convert("RGBA")
     box = _bbox(img)
     assert box, f"icon-{size}.png 是空图"
-    fill = max(box[2] - box[0], box[3] - box[1]) / size
-    assert 0.55 <= fill <= 0.70, f"icon-{size}.png 图形占画布 {fill:.0%}，与其它尺寸不一致"
+    w, h = box[2] - box[0], box[3] - box[1]
+    assert 0.55 <= w / h <= 0.95, f"icon-{size}.png 宽高比 {w / h:.2f}，与其它尺寸不是同一枚图"
+    fill = max(w, h) / size
+    assert 0.55 <= fill <= 0.80, f"icon-{size}.png 图形占画布 {fill:.0%}，与其它尺寸不一致"
 
 
 def test_16px_is_not_a_blob():
@@ -226,3 +229,149 @@ def test_install_cleans_legacy_flat_sources():
     src = INSTALL.read_text(encoding="utf-8")
     assert "LEGACY_ENTRIES" in src
     assert "main.py web.py pages.py" in src
+
+
+# ---------------------------------------------------------------- v29：安装脚本再加固
+# 这一轮全是「真装一遍才现形」的坑，光读代码看不出来，所以能写成契约的都写进来。
+
+CLI_HEREDOC = re.compile(r'tee "\$cli" >/dev/null <<EOF\n(.*?)\nEOF\n', re.S)
+
+
+class TestInstallV29:
+    script = INSTALL
+
+    def text(self) -> str:
+        return self.script.read_text(encoding="utf-8")
+
+    # ---- 生成的 simpleurl 命令
+
+    def test_generated_cli_has_no_bare_backticks(self):
+        """外层 heredoc 是 <<EOF（要展开 $INSTALL_DIR），正文里的反引号会先被
+        安装进程执行掉：一句注释能变成 command not found，屏幕上一片红。"""
+        body = CLI_HEREDOC.search(self.text())
+        assert body, "找不到生成管理命令的 heredoc"
+        assert "`" not in body.group(1), "生成的命令里有反引号，安装时会被当成命令替换执行"
+
+    def test_generated_cli_survives_set_u(self, tmp_path):
+        """生成的命令是 set -uo pipefail 跑的。
+
+        上一版 wait_port_free 里的 $i / $PORT 少写了反斜杠，在安装时就被展开成
+        空字符串，运行到 restart 才炸 unbound variable。这里直接把命令抠出来跑。
+        """
+        body = CLI_HEREDOC.search(self.text()).group(1)
+        script = body.replace("\\$", "$").replace("\\`", "`")
+        script = script.replace('DIR="$INSTALL_DIR"', f'DIR="{tmp_path}"')
+        script = script.replace('NAME="$SERVICE_NAME"', 'NAME="simpleurl"')
+        (tmp_path / ".simpleurl-managed").write_text(
+            "version=2.2.0\ncode_version=1.5.0\nruntime=python\nport=1\n"
+        )
+        (tmp_path / ".env").write_text("PUBLIC_URL=\nSITE_NAME=SimpleURL\n")
+        cli = tmp_path / "simpleurl"
+        cli.write_text(script, encoding="utf-8")
+        # restart 会走到 wait_port_free；服务不存在时它应安静地放行，而不是崩
+        r = subprocess.run(
+            ["bash", str(cli), "restart"], capture_output=True, text=True, timeout=60
+        )
+        assert "unbound variable" not in r.stderr, r.stderr
+        assert "syntax error" not in r.stderr, r.stderr
+        # url 是最简单的纯函数分支，必须给出一行可用的地址
+        r = subprocess.run(["bash", str(cli), "url"], capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0 and "http://" in r.stdout, r.stdout + r.stderr
+
+    # ---- --dir
+
+    def test_dir_flag_also_moves_derived_paths(self):
+        """LOG_FILE / MARK_FILE 从安装目录派生。只改 INSTALL_DIR 的话，
+        日志会往 $HOME/simpleurl/simpleurl.log 写，目录不存在，nohup 当场失败。"""
+        src = self.text()
+        assert 'LOG_FILE="$INSTALL_DIR/simpleurl.log"' in src
+        assert 'MARK_FILE="$INSTALL_DIR/.simpleurl-managed"' in src
+        # --dir 解析处必须重算这两个
+        block = src[src.index("--dir)") : src.index("--no-health)")]
+        assert "LOG_FILE" in block and "MARK_FILE" in block
+        assert "SIMPLEURL_HOME" in block, "--dir 没同步给 SIMPLEURL_HOME，后续步骤会回落到 $HOME/simpleurl"
+
+    # ---- 升级
+
+    def test_upgrade_never_reuses_local_source(self):
+        """upgrade 的意义就是「拿远端那份」。复用安装目录里的现成代码 =
+        原地转圈，还会打一句「源码已就绪」骗人。"""
+        src = self.text()
+        body = src[src.index("stage_source() {"): src.index("apply_source() {")]
+        assert 'ACTION_UPGRADE" != "y"' in body or 'ACTION_UPGRADE" = "n"' in body
+
+    def test_unknown_remote_does_not_mean_up_to_date(self):
+        """探不到远端版本时不能当成「已最新」：那会让升级永远空转。
+        same_as_remote 用三态（0 一致 / 1 不一致 / 2 看不出来）。"""
+        src = self.text()
+        assert "return 2" in src
+        assert "探不到远端版本" in src
+
+    def test_version_peek_rejects_html_shell(self):
+        """CNB 的网页 raw 路由返回 200 的 HTML，从里面正则找版本永远找不到。"""
+        src = self.text()
+        assert "is_python_file" in src
+        assert "^__version__" in src
+
+    # ---- 回滚与备份
+
+    def test_backup_path_is_kept_for_rollback(self):
+        """备份只把路径打到屏幕上，等于出事时没人知道该拿哪一份回去。"""
+        src = self.text()
+        assert 'PREV_BACKUP="$(backup_data)"' in src
+        assert "PREV_BACKUP" in src[src.index("rollback_or_die() {"):]
+
+    def test_backup_returns_success_with_path(self):
+        """backup_data 的输出会被 $(...) 接走：只允许输出路径本身。
+        混进一行 ✓ 提示，PREV_BACKUP 就变成了「✓ 旧数据已备份：/path」。"""
+        src = self.text()
+        body = src[src.index("backup_data() {"): src.index("clear_source() {")]
+        assert "printf '%s' \"$dir\"" in body
+        assert "ok \"旧数据已备份" not in body
+
+    def test_backup_rotation(self):
+        src = self.text()
+        assert "head -n -5" in src
+
+    # ---- 清理顺序
+
+    def test_legacy_cleanup_runs_before_whitelist_wipe(self):
+        """先删 app/ 再判断「根目录有 main.py」就晚了：那时一级目录只剩平铺那份，
+        判断条件仍然成立，却已经清不掉。"""
+        src = self.text()
+        body = src[src.index("clear_source() {"): src.index("is_tarball() {")]
+        legacy_at = body.index("LEGACY_ENTRIES")
+        whitelist_at = body.index("SOURCE_ENTRIES")
+        assert legacy_at < whitelist_at
+
+    # ---- 体检 / 验收
+
+    def test_doctor_counts_reset(self):
+        """装一次的流程里 doctor 会被调两次，计数不清零就会报出凭空的「4 项提醒」。"""
+        src = self.text()
+        body = src[src.index("doctor() {"): src.index("# ---------------------------------------------------------------- 源码")]
+        assert "DOCTOR_FAIL=0" in body and "DOCTOR_WARN=0" in body
+
+    def test_doctor_uses_recorded_port(self):
+        """单独跑 `bash install.sh doctor` 时没有 --port，报默认端口的体检等于没做。"""
+        src = self.text()
+        body = src[src.index("doctor() {"): src.index("# ---------------------------------------------------------------- 源码")]
+        assert "port_override" in body
+
+    def test_doctor_treats_own_service_as_ok(self):
+        src = self.text()
+        body = src[src.index("doctor() {"): src.index("# ---------------------------------------------------------------- 源码")]
+        assert "is_our_service" in body
+
+    def test_verify_checks_anonymous_create_in_open_mode(self):
+        """管理员一路畅通、访客被 401 挡住，是权限改造后最典型的「装好了但没人能用」。"""
+        src = self.text()
+        body = src[src.index("verify_end_to_end() {"): src.index("# ---------------------------------------------------------------- 反向代理")]
+        assert 'ACCESS_MODE" = "open"' in body
+        assert "访客建链通过" in body
+
+    def test_verify_delete_checks_status_code(self):
+        """curl 拿到 4xx 也返回 0，用 curl 的成功与否当「删掉了」会骗自己。"""
+        src = self.text()
+        body = src[src.index("verify_end_to_end() {"): src.index("# ---------------------------------------------------------------- 反向代理")]
+        assert "%{http_code}" in body.split("清理")[0]

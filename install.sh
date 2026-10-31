@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -49,8 +49,21 @@ REPO_TARBALL="${REPO_TARBALL:-$(default_tarball)}"
 # 再套一层加速反而多一跳（实测还会 403），所以按域名自动判断要不要用。
 GIT_MIRROR="${GIT_MIRROR:-https://ghfast.top/}"
 
-# 安装目录：显式 SIMPLEURL_HOME 优先；其次是「脚本自己就躺在安装目录里」
+# 安装目录：显式 SIMPLEURL_HOME / --dir 优先；其次是「脚本自己就躺在安装目录里」
 # （./install.sh upgrade 这种最自然的用法，不该还要人再设一次变量）
+dir_from_args() { # args...
+  local prev="" a
+  for a in ${1+"$@"}; do
+    if [ "$prev" = "--dir" ] && [ -n "$a" ]; then printf '%s' "$a"; return 0; fi
+    prev="$a"
+  done
+}
+
+# LOG_FILE / MARK_FILE 都是从 INSTALL_DIR 派生的常量，而 --dir 在参数解析时才读到。
+# 早先只改 INSTALL_DIR、没重算这两个，结果拿到 --dir 的安装把日志往
+# $HOME/simpleurl 写 —— 目录不存在，nohup 当场失败，报一句跟真正原因无关的错。
+CLI_DIR="$(dir_from_args "$@")"
+SIMPLEURL_HOME="${SIMPLEURL_HOME:-$CLI_DIR}"
 if [ -n "${SIMPLEURL_HOME:-}" ]; then
   INSTALL_DIR="$SIMPLEURL_HOME"
 elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/.simpleurl-managed" ]; then
@@ -76,6 +89,10 @@ BANNER_SHOWN="n"
 PROXY_FILE=""       # 生成的反向代理配置文件路径
 PROXY_KIND=""       # nginx | caddy | apache
 RUNTIME_OVERRIDE="" # --runtime docker|python
+# 回滚点。install_source 在换代码前填 PREV_BACKUP，install_docker_mode 在换镜像前填
+# PREV_IMAGE；必须在这里先声明——放到文件后半段，`set -u` 下先用后赋值就是 unbound variable。
+PREV_IMAGE=""
+PREV_BACKUP=""
 INTERACTIVE=1
 ACTION="install"
 ASSUME_YES="n"
@@ -91,7 +108,10 @@ while [ $# -gt 0 ]; do
     --runtime)   shift; RUNTIME_OVERRIDE="${1:-}" ;;
     --branch)    shift; REPO_BRANCH="${1:-main}"; REPO_TARBALL="$(default_tarball)" ;;
     --port)      shift; PORT="${1:-$PORT}" ;;
-    --dir)       shift; INSTALL_DIR="${1:-$INSTALL_DIR}" ;;
+    # --dir 要同时改写 SIMPLEURL_HOME：install_cli / 卸载 / 升级都从它算安装目录，
+    # 只改 INSTALL_DIR 会让后面几步偷偷回到 $HOME/simpleurl
+    --dir)       shift; SIMPLEURL_HOME="${1:-$SIMPLEURL_HOME}"; INSTALL_DIR="$SIMPLEURL_HOME"
+                 LOG_FILE="$INSTALL_DIR/simpleurl.log"; MARK_FILE="$INSTALL_DIR/.simpleurl-managed" ;;
     --no-health) SKIP_HEALTH="y" ;;
     --force)     ASSUME_YES="y" ;;
     --help|-h)   ACTION="help" ;;
@@ -308,19 +328,14 @@ version_lt() { # a b  —— a<b 时返回 0
   [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]
 }
 
-# 升级前问一句「远端和我一样吗」。只拉 app/__init__.py，比整包轻得多；
-# 拉不到就当不一样，交给后面的完整下载流程处理。
-same_as_remote() {
-  [ -s "$MARK_FILE" ] || return 1
-  local local_v remote_v url tmp
-  # 本地代码版本：优先读标记里的 code_version，旧标记退回直接看代码
-  local_v="$(sed -n 's/^code_version=//p' "$MARK_FILE" | head -1)"
-  local_v="${local_v:-$(remote_version "$INSTALL_DIR")}"
-  [ -n "$local_v" ] || return 1
-  need_cmd curl || return 1
+# 远端版本号。拉不到就输出空串（调用方自己决定当「看不出来」处理）。
+# 只拉 app/__init__.py，比整包轻得多。
+remote_peek_version() {
+  need_cmd curl || need_cmd wget || return 0
+  local url tmp v=""
   tmp="$(mktemp 2>/dev/null || echo "/tmp/.su-v.$$")"
-  # 网页路由（/-/raw）在 CNB 上必定返回 200 的 HTML 外壳，拿它比版本只会永远「一样」，
-  # 所以有令牌才试 API，没有就只试 GitHub raw。
+  # 网页路由（/-/raw）在 CNB 上返回 200 的 HTML 外壳，从里面正则找版本永远找不到，
+  # 于是「升级」看着跑了、实际什么都没换。有令牌才走 OpenAPI 的 git/raw。
   local urls=()
   case "$GIT_HOST" in
     *cnb.cool*)
@@ -330,17 +345,42 @@ same_as_remote() {
   esac
   urls+=("https://raw.githubusercontent.com/${REPO_SLUG}/$REPO_BRANCH/app/__init__.py")
   for url in ${urls[@]+"${urls[@]}"}; do
-    if fetch "$url" "$tmp" >/dev/null 2>&1; then
-      remote_v="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp" | head -1)"
-      if [ -n "$remote_v" ]; then
-        rm -f "$tmp"
-        [ "$remote_v" = "$local_v" ] && return 0
-        printf '%s' "$local_v" >/dev/null
-        return 1
-      fi
+    if fetch "$url" "$tmp" >/dev/null 2>&1 && is_python_file "$tmp"; then
+      v="$(sed -n 's/^__version__[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp" | head -1)"
+      [ -n "$v" ] && break
     fi
   done
   rm -f "$tmp"
+  printf '%s' "$v"
+}
+
+# 升级前问一句「远端和我一样吗」。看不出来（离线 / 没令牌 / 网络不通）时
+# 返回 0 表示「不知道」，由调用方决定要不要继续——这里绝不能拿「不知道」冒充「一样」，
+# 也不能拿它冒充「不一样」：前者让升级永远空转，后者让离线环境每次都白下载一遍。
+REMOTE_PEEK=""      # 上一次探到的远端版本（空 = 没探到）
+REMOTE_PEEKED="n"   # 是否探过（避免一次安装里重复拉取）
+peek_remote() {
+  [ "$REMOTE_PEEKED" = "y" ] && return 0
+  REMOTE_PEEKED="y"
+  REMOTE_PEEK="$(remote_peek_version)"
+}
+
+# 本地代码版本：优先读标记里的 code_version，旧标记退回直接看代码
+local_code_version() {
+  local v=""
+  [ -s "$MARK_FILE" ] && v="$(sed -n 's/^code_version=//p' "$MARK_FILE" | head -1)"
+  [ -n "$v" ] || v="$(remote_version "$INSTALL_DIR")"
+  printf '%s' "$v"
+}
+
+# 0 = 远端与本地一致；1 = 不一致（或无本地版本）；2 = 看不出来
+same_as_remote() {
+  [ -s "$MARK_FILE" ] || return 1
+  local local_v; local_v="$(local_code_version)"
+  [ -n "$local_v" ] || return 1
+  peek_remote
+  [ -n "$REMOTE_PEEK" ] || return 2
+  [ "$REMOTE_PEEK" = "$local_v" ] && return 0
   return 1
 }
 
@@ -390,6 +430,15 @@ is_our_service() { # pid
 
 doctor() {
   step "环境体检"
+  # 有安装记录的目录：以标记里记的端口为准（doctor 常被单独调用，没有 --port）
+  local port_override=""
+  if [ -s "$MARK_FILE" ]; then
+    port_override="$(sed -n 's/^port=//p' "$MARK_FILE" | head -1)"
+  fi
+  # 计数归零：装一次的流程里 doctor 可能被调两次（体检 + 失败后复查），
+  # 不清零就会报出「4 项提醒」这种凭空的数字。
+  DOCTOR_FAIL=0
+  DOCTOR_WARN=0
 
   # 系统
   case "$(uname -s)" in
@@ -427,11 +476,27 @@ doctor() {
     python3 -c 'import venv' 2>/dev/null || d_warn "Python 缺 venv 模块（apt install python3-venv）"
   fi
 
-  # 端口
-  if port_in_use "$PORT"; then
-    d_warn "端口 $PORT 已被占用，装之前要么换端口，要么先停掉占用的进程"
-  else
+  # 用真实端口：只 `bash install.sh doctor`（不带 --port）时 PORT 还是默认值，
+  # 报「8940 空闲」而实际服务跑在 18940，等于体检没做
+  [ -n "${port_override:-}" ] && PORT="$port_override"
+  # 端口。重装 / 升级时被上次的自己占着是常态，报冲突只会吓人一跳
+  if ! port_in_use "$PORT"; then
     d_ok "端口 $PORT 空闲"
+  elif port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
+    d_ok "端口 $PORT 由上次安装的 SimpleURL 自己占着（重装会先停掉）"
+  else
+    local alt; alt="$(next_free_port "$PORT")"
+    d_warn "端口 $PORT 被别的程序占用${alt:+，装的时候会自动改用 $alt}"
+  fi
+
+  # 时区：TZ 写错不会报错，只会让「今日点击」和过期时间整体偏掉几小时
+  local tzfile="${TZ:-}"
+  if [ -z "$tzfile" ]; then
+    d_ok "时区 $(date +%Z)（时区正确的机器上，今日数据才和你的日历对得上）"
+  elif [ -e "/usr/share/zoneinfo/$tzfile" ]; then
+    d_ok "时区 $tzfile"
+  else
+    d_warn "TZ=$tzfile 在系统里找不到，容器里会退回 UTC，今日点击会偏"
   fi
 
   # 磁盘
@@ -472,6 +537,8 @@ doctor() {
 
 # ---------------------------------------------------------------- 源码
 # 换代码前先把数据搬出来：数据是这个站唯一带不走的东西，代码随时能重下。
+# 注意落点必须在本脚本自己算得出来的位置（.backup/<时间戳>/）：
+# 回滚要按 PREV_BACKUP 去取，写到 $HOME 或用户指定路径就等于没备份。
 backup_data() {
   local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
   local dir="$INSTALL_DIR/.backup/$stamp"
@@ -479,13 +546,19 @@ backup_data() {
   [ -f "$INSTALL_DIR/simpleurl.db" ] && cp -a "$INSTALL_DIR/simpleurl.db"* "$dir/" 2>/dev/null || true
   [ -f "$INSTALL_DIR/.env" ] && cp -a "$INSTALL_DIR/.env" "$dir/" 2>/dev/null || true
   [ -f "$MARK_FILE" ] && cp -a "$MARK_FILE" "$dir/" 2>/dev/null || true
+  # 只留最近 5 份：每次安装都备份一次，两年下来就是几十兆没用的小文件
+  ls -1d "$INSTALL_DIR"/.backup/*/ 2>/dev/null | sort | head -n -5 | while read -r old; do
+    [ -n "$old" ] && rm -rf "$old"
+  done
   if [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
-    ok "旧数据已备份：$dir"
+    # 只输出路径：这个函数的结果会被 $(...) 接走，中间夹一行「✓ …」就成了变量的一部分，
+    # 屏幕上还会打出一句被截半的「上一版数据已备份到 ✓ …」
     printf '%s' "$dir"
-  else
-    rmdir "$dir" 2>/dev/null || true
-    printf ''
+    return 0
   fi
+  rmdir "$dir" 2>/dev/null || true
+  printf ''
+  return 0
 }
 
 # 源码目录里认得的顶层条目：换代码时只管这些，其它（.venv/.env/数据/备份）一概不碰
@@ -500,19 +573,31 @@ SOURCE_ENTRIES="app requirements.txt requirements-dev.txt .env.example Dockerfil
 LEGACY_ENTRIES="main.py web.py pages.py admin.py api.py services.py schemas.py models.py
 qr.py core templates static tests admin_api.py yourls_api.py gen_logo.py __init__.py"
 
+# 判断顺序很重要：先看「有没有平铺副本」，再清白名单。
+# 反过来就永远清不掉——app/ 先被删掉之后，「根目录有 main.py」这个条件
+# 仍然成立，可那时已经晚了，一级目录照样只剩 flat 那份。
 clear_source() {
   local entry
-  for entry in $SOURCE_ENTRIES; do
-    rm -rf "${INSTALL_DIR:?}/$entry"
-  done
   # 平铺副本只在「安装根目录里还躺着模块文件」时才清：正常安装根目录只有
   # app/ 一个包，出现 main.py / core/ 就说明是旧脚本留下的。判据从宽——
   # 这些名字在项目里本该只存在于 app/ 之下。
   if [ -f "$INSTALL_DIR/main.py" ] || [ -d "$INSTALL_DIR/core" ] || [ -d "$INSTALL_DIR/templates" ]; then
+    warn "清理旧版残留的平铺源码（main.py / core/ 等会在 import 时和 app/ 抢位置）"
     for entry in $LEGACY_ENTRIES; do
       rm -rf "${INSTALL_DIR:?}/$entry"
     done
   fi
+  for entry in $SOURCE_ENTRIES; do
+    rm -rf "${INSTALL_DIR:?}/$entry"
+  done
+}
+
+# 下回来的「源码文件」是不是真的源码。CNB 的网页路由会返回 HTML 外壳，
+# 只认「里面真有 __version__ 赋值」的才算拿到东西，别的都当没拿到。
+is_python_file() { # file
+  [ -s "$1" ] || return 1
+  head -c 2 "$1" | grep -q '<' && return 1
+  grep -q '^__version__' "$1" 2>/dev/null
 }
 
 is_tarball() { # file：先认 gzip 魔数，比 `file` 稳，也不依赖它
@@ -532,7 +617,9 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
 
   # 目录里的脚本给自己跑（安装目录里的 install.sh），不用重复下载；
   # 但 /workspace 拷出去的脚本没有 install.sh，得从远端取 —— 否则装出来是半截。
-  if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/app/main.py" ] \
+  # `upgrade` 例外：升级的全部意义就是「拿远端那份」，拿本地现成的等于原地转圈，
+  # 还会报一句「源码已就绪」骗人。
+  if [ "$ACTION_UPGRADE" != "y" ] && [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/app/main.py" ] \
      && [ "$SELF_DIR" = "$(cd "$INSTALL_DIR" 2>/dev/null && pwd || echo "")" ] \
      && [ -f "$SELF_DIR/install.sh" ]; then
     return 2
@@ -554,6 +641,8 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
     rm -f "$tarball"
   done
 
+  # 走到这里说明源码包没拿到。CNB 的网页归档地址在无令牌时必定给出 HTML 外壳，
+  # 所以「升级」会悄悄退化成 git clone；两者都不通最后才报错。
   if need_cmd git; then
     local clone_url; clone_url="$(mirror_url "$REPO_URL")"
     if git clone --depth 1 --branch "$REPO_BRANCH" "$clone_url" "$stage/clone" >/dev/null 2>&1; then
@@ -626,7 +715,11 @@ install_source() {
   fi
 
   if [ -f "$INSTALL_DIR/app/main.py" ]; then
-    backup_data >/dev/null || true
+    # 备份路径要留下来给 rollback_or_die —— 先备份后回滚，
+    # 只把路径打到屏幕上，等于出事时没人知道该拿哪一份回去
+    PREV_BACKUP="$(backup_data)"
+    if [ -n "$PREV_BACKUP" ]; then ok "旧数据已备份：$PREV_BACKUP"
+    else warn "这一轮没备份出东西（首次安装时正常）"; fi
   fi
 
   # 解到临时目录再替换：解压半路失败时，现有代码还是完整的
@@ -1034,6 +1127,7 @@ wait_health() { # [max]
 #    里访问会直接 unbound variable。
 VERIFY_SESSION_DIR=""
 VERIFY_CODE=""
+VERIFY_TARGET="${VERIFY_TARGET:-}"   # 仅用于自测：换一个验收要创建的短链目标
 
 verify_cleanup() {
   local rc=$?
@@ -1044,14 +1138,23 @@ verify_cleanup() {
   return $rc
 }
 
+# 验收用的目标地址。默认打 example.com；离线机器 / DNS 被劫持的内网机器上
+# 换成 127.0.0.1 也行，但 SSRF 防护会拦内网地址 —— 那种情况用
+# `--verify-target <任意外网地址>` 或跳过验收（--no-health）更省事。
+verify_target() {
+  printf '%s' "${VERIFY_TARGET:-https://example.com/simpleurl-install-check}"
+}
+
 verify_end_to_end() {
   if [ "$SKIP_HEALTH" = "y" ] || ! need_cmd curl; then return 0; fi
-  step "验收：用管理员凭据真建一条短链、点开它、再删掉"
+  local how="管理员凭据"
+  [ "$ACCESS_MODE" = "open" ] && how="管理员凭据（兼测访客能不能建）"
+  step "验收：用$how真建一条短链、点开它、再删掉"
 
   local base="http://127.0.0.1:${PORT}"
   local jar csrf login resp code hop target
   VERIFY_CODE=""
-  target="https://example.com/simpleurl-install-check"
+  target="$(verify_target)"
   # 整个流程共用一份 cookie 罐，收尾在 verify_cleanup 里统一删
   VERIFY_SESSION_DIR="$(mktemp -d 2>/dev/null || { mkdir -p "/tmp/.simpleurl-verify.$$" && printf '%s' "/tmp/.simpleurl-verify.$$"; })"
   jar="$VERIFY_SESSION_DIR/cookies"
@@ -1095,12 +1198,36 @@ verify_end_to_end() {
   esac
 
   # 清场：验收造出来的这条不能留在用户的库里
-  if curl -s -m 8 -o /dev/null -b "$jar" -X DELETE -H "Origin: $base" \
-        -H "X-CSRF-Token: $csrf" "$base/api/links/$code" 2>/dev/null; then
-    ok "验收数据已清理（/$code）"
-    VERIFY_CODE=""
-  else
-    warn "验收用的短链 /$code 没能删掉，可到后台手动删"
+  local del
+  del="$(curl -s -m 8 -o /dev/null -w '%{http_code}' -b "$jar" -X DELETE -H "Origin: $base" \
+        -H "X-CSRF-Token: $csrf" "$base/api/links/$code" 2>/dev/null || echo 000)"
+  case "$del" in
+    2*) ok "验收数据已清理（/$code）"; VERIFY_CODE="" ;;
+    *)  warn "验收用的短链 /$code 没能删掉（HTTP $del），可到后台手动删" ;;
+  esac
+
+  # 开放模式下再验一条：访客能不能建。这条最容易在权限改造后悄悄坏掉——
+  # 管理员一路畅通，访客却被 401 挡住，装的人要等真有人用才发现
+  if [ "$ACCESS_MODE" = "open" ]; then
+    local anon_jar anon_csrf resp2 code2
+    anon_jar="$VERIFY_SESSION_DIR/anon"; : > "$anon_jar"
+    curl -s -m 8 -o /dev/null -c "$anon_jar" "$base/" 2>/dev/null || true
+    anon_csrf="$(awk '/su_csrf/{print $7}' "$anon_jar" 2>/dev/null | head -1)"
+    if [ -n "$anon_csrf" ]; then
+      resp2="$(curl -s -m 10 -b "$anon_jar" -c "$anon_jar" \
+          -H 'Content-Type: application/json' -H "Origin: $base" -H "X-CSRF-Token: $anon_csrf" \
+          -d "{\"target\":\"$target\",\"fetch_title\":false}" \
+          "$base/api/links" 2>/dev/null || echo '')"
+      code2="$(printf '%s' "$resp2" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p' | head -1)"
+      if [ -n "$code2" ]; then
+        ok "访客建链通过（/$code2）"
+        curl -s -m 8 -o /dev/null -b "$anon_jar" -X DELETE -H "Origin: $base" \
+          -H "X-CSRF-Token: $anon_csrf" "$base/api/links/$code2" 2>/dev/null || true
+      else
+        warn "开放模式下访客建链失败，接口返回：$(printf '%s' "$resp2" | head -c 160)"
+        return 1
+      fi
+    fi
   fi
   return 0
 }
@@ -1180,8 +1307,6 @@ EOF
 }
 
 # ---------------------------------------------------------------- 回滚
-PREV_IMAGE=""
-PREV_BACKUP=""
 ROLLED_BACK="n"
 
 rollback_or_die() { # message
@@ -1205,7 +1330,11 @@ rollback_or_die() { # message
         "$PREV_IMAGE" >/dev/null 2>&1 || true
     fi
     ROLLED_BACK="y"
-    die "$msg（已回滚数据与配置，旧代码在 .backup/ 里可手动恢复）"
+    die "$msg（已回滚数据与配置）"
+  fi
+  if [ -d "$INSTALL_DIR/.backup" ]; then
+    local last; last="$(ls -1d "$INSTALL_DIR"/.backup/*/ 2>/dev/null | sort | tail -1)"
+    [ -n "$last" ] && die "$msg（数据在 ${last%/}，可 simpleurl restore 手动恢复）"
   fi
   die "$msg"
 }
@@ -1221,6 +1350,9 @@ install_cli() {
   fi
   [ -n "$SUDO" ] && $SUDO mkdir -p "$bindir" || mkdir -p "$bindir"
   local cli="$bindir/simpleurl"
+  # heredoc 用 <<EOF（要展开 $INSTALL_DIR 等），代价是正文里的反引号也会被安装时执行：
+  # 正文里一句 `simpleurl status` 这样的注释，会在安装时被当成命令替换执行掉，
+  # 屏幕上多出几行 "command not found"，注释本身也变形。所以正文里一律不写反引号。
   ${SUDO} tee "$cli" >/dev/null <<EOF
 #!/usr/bin/env bash
 # SimpleURL 管理命令（install.sh $VERSION 生成）
@@ -1279,6 +1411,24 @@ do_stop() {
   else
     say "未在运行"
   fi
+}
+
+# 生成的命令行是 set -uo pipefail 跑的。下面每个 \$ 都必须带反斜杠：
+# 这整段在安装时被套进外层 heredoc 展开一次，少了反斜杠就当场展开，
+# 到了运行时只剩一个空变量名，报 unbound variable。
+wait_port_free() {
+  local i=0
+  while [ "\$i" -lt 10 ]; do
+    if command -v ss >/dev/null 2>&1; then
+      ss -lnt 2>/dev/null | awk -v p=":\$PORT" '\$4 ~ p"\$" {found=1} END{exit !found}' || return 0
+    elif command -v lsof >/dev/null 2>&1; then
+      lsof -ti "tcp:\$PORT" >/dev/null 2>&1 || return 0
+    else
+      sleep 1; return 0
+    fi
+    i=\$((i + 1)); sleep 1
+  done
+  return 0
 }
 
 health() {
@@ -1353,12 +1503,14 @@ do_restore() {
   say "已从 \$src 恢复，服务已重启"
 }
 
-# 不带参数就报状态：`simpleurl` 敲下去是想知道「现在怎么样」，不是想读一屏用法。
-# 但它必须排在 `*` 分支之前——case 是从上往下匹配的，`*` 在前面就永远轮不到。
+# 不带参数就报状态：敲下去是想知道「现在怎么样」，不是想读一屏用法。
+# 但它必须排在 * 分支之前——case 从上往下匹配，* 在前面就永远轮不到。
 case "\${1:-status}" in
   start)   do_start ;;
   stop)    do_stop ;;
-  restart) do_stop >/dev/null; sleep 1; do_start ;;
+  # 停完不能立刻起：uvicorn 放端口要一点时间，抢跑会 bind 失败，
+  # 留下一个「restart 之后反而没了」的现场
+  restart) do_stop >/dev/null; wait_port_free; do_start ;;
   status)  site_status ;;
   url)     site_url; echo ;;
   log)
@@ -1436,6 +1588,7 @@ summary() {
   printf "    simpleurl backup      备份数据\n"
   printf "    simpleurl password    重置管理员密码\n"
   hr
+  [ -n "$PREV_BACKUP" ] && printf "  %s上一版数据已备份到 %s（只留最近 5 份）%s\n" "$DIM" "$PREV_BACKUP" "$RST"
   printf "  %s密码请立刻抄走。之后可在后台「设置 → 管理员账号」改，改完重启不丢。%s\n" "$YELLOW" "$RST"
   [ -z "$PUBLIC_URL" ] && printf "  %s想让短链显示成自己的域名？在 %s/.env 里设 PUBLIC_URL=https://s.example.com 再 restart。%s\n" "$DIM" "$INSTALL_DIR" "$RST"
   if [ -n "${PROXY_FILE:-}" ] && [ -f "$PROXY_FILE" ]; then
@@ -1518,12 +1671,19 @@ do_install() {
 
   # 升级前先看一眼远端版本：已经最新就不折腾了，别每次都重装依赖、重启服务。
   # 注意命令顺序：函数调用放最后，「函数返回 1」就不会把整个 if 判成失败。
-  if same_as_remote && [ "$ACTION_UPGRADE" = "y" ] && [ "$reuse" = "y" ]; then
-    ok "已经是最新代码，服务不动"
-    local url="http://$(detect_ip):$PORT"
-    [ -n "$PUBLIC_URL" ] && url="$PUBLIC_URL"
-    printf "  站点 %s\n  后台 %s/admin\n\n" "$url" "$url"
-    exit 0
+  if [ "$ACTION_UPGRADE" = "y" ] && [ "$reuse" = "y" ]; then
+    local same_rc=0
+    same_as_remote || same_rc=$?
+    if [ "$same_rc" = "0" ]; then
+      ok "已经是最新代码（v$REMOTE_PEEK），服务不动"
+      local url="http://$(detect_ip):$PORT"
+      [ -n "$PUBLIC_URL" ] && url="$PUBLIC_URL"
+      printf "  站点 %s\n  后台 %s/admin\n\n" "$url" "$url"
+      exit 0
+    fi
+    # 探不到远端（离线 / 没令牌 / 网络不通）不能当成「已最新」：那会让升级永远空转。
+    # 也不能当成「有新版」：离线机器每次都会白下载一遍。说清楚，然后照常走一遍。
+    [ "$same_rc" = "2" ] && warn "探不到远端版本（没令牌或网络受限），照常下载确认"
   fi
 
   # 旧进程要在换代码之前停：它占着端口、拿着 SQLite 的写锁，还在 import 即将被覆盖的
@@ -1632,6 +1792,7 @@ do_install() {
     fi
   fi
   summary
+  return 0
 }
 
 main() {
@@ -1642,7 +1803,8 @@ main() {
     upgrade)
       ACTION="install"; ACTION_UPGRADE="y"
       [ -f "$INSTALL_DIR/.env" ] || die "$INSTALL_DIR 里没有安装记录，用 install 而不是 upgrade"
-      banner; do_install; exit 0 ;;
+      # banner 由 do_install 自己打（只打一次），这里再打一遍就是两遍
+      do_install; exit 0 ;;
     install)
       do_install ;;
   esac
