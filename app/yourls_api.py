@@ -37,9 +37,13 @@ def _base(request: Request) -> str:
 
 
 def _params(request: Request) -> dict:
-    """query 优先，表单 body 补充（中间件读不到就算了，不报错）。"""
+    """query 优先，表单 body 补充。"""
     params = dict(request.query_params)
     body = getattr(request.state, "form", None)
+    if getattr(request.state, "form_error", None):
+        # 读不到表单就别装作没有参数：客户端 POST 了一堆字段却被回
+        # 「缺少 url 参数」，排查方向全被带偏。缺 python-multipart 时就是这症状。
+        raise ServiceError("服务端无法解析表单请求体，请确认已安装 python-multipart", 500)
     if body:
         for key, value in body.items():
             params.setdefault(key, value)
@@ -51,14 +55,20 @@ class _FormCacheMiddleware(BaseHTTPMiddleware):
 
     Starlette 的 request.form() 只能读一次，且不同 httpx 版本下 TestClient
     发 form 的行为有差异，所以在中间件里统一读一次最稳妥。
+
+    读失败要记下原因：这里吞掉异常，路由那边就只剩「参数为空」，
+    客户端明明发了一整份 form 却被告知缺 url —— 真正的病根（缺
+    python-multipart）永远不会浮出水面。
     """
 
     async def dispatch(self, request: Request, call_next):
         if request.method == "POST":
             try:
                 request.state.form = await request.form()
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - 记下来，交给路由决定怎么报
                 request.state.form = None
+                request.state.form_error = exc
+                logger.warning("表单体解析失败：%s", exc)
         return await call_next(request)
 
 
