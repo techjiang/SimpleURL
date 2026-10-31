@@ -403,7 +403,10 @@ class TestInstallV30:
         assert "bash -n" in body, "换脚本前必须先验语法，否则一个坏文件能把机器上的升级入口弄死"
         assert "is_shell_script" in body, "HTML 外壳也会被当作脚本下载回来"
         boot = src[src.index("do_install() {"):]
-        assert 'exec bash "$fresh_script" upgrade --yes' in boot
+        # 重跑时把「已经跑过体检 / 端口已定」一并带过去（v31 补），
+        # 所以这里只钉住「拿着新脚本换壳重跑」这件事本身
+        assert 'exec bash "$fresh_script"' in boot
+        assert "REEXEC_ACTION" in boot, "换壳重跑要沿用原来的动作（安装 / 升级）"
 
     def test_script_reexec_cannot_loop(self):
         assert "SCRIPT_REEXEC" in self.text()

@@ -31,14 +31,16 @@ REPO_URL="${REPO_URL:-$GIT_HOST/$REPO_SLUG.git}"
 API_HOST="${API_HOST:-https://api.cnb.cool}"
 # 源码包地址：CNB 走 OpenAPI 的 archive 接口；其它平台用各自的归档地址
 default_tarball() {
-  case "$GIT_HOST" in
-    *cnb.cool*)
-      # 有令牌走 OpenAPI（私库也能拉、拿得到真 tar.gz）；没令牌退回网页路由，
-      # 由 is_tarball 挡掉 HTML 外壳后自动改用 git clone
+  # 平台按 GIT_HOST / API_HOST / REPO_URL 认：换镜像、走自建源时可能只有其中一个变，
+  # 只看 GIT_HOST 会把 CNB 的路径规则（/-/git/archive、/-/git/raw）整段跳过。
+  case "$GIT_HOST $API_HOST $REPO_URL" in
+    *cnb.cool*|*"$REPO_SLUG"*)
+      # 有令牌走 OpenAPI（私库也能拉）；没令牌走网页的 /-/git/archive ——
+      # 它返回的也是真 tar.gz（对过魔数），而 /-/archive 是前端页面，只有 HTML 外壳。
       if [ -n "${CNB_TOKEN:-}" ]; then
         printf '%s/%s/-/git/archive/%s.tar.gz' "$API_HOST" "$REPO_SLUG" "$REPO_BRANCH"
       else
-        printf '%s/%s/-/archive/%s.tar.gz' "$GIT_HOST" "$REPO_SLUG" "$REPO_BRANCH"
+        printf '%s/%s/-/git/archive/%s.tar.gz' "$GIT_HOST" "$REPO_SLUG" "$REPO_BRANCH"
       fi ;;
     *)
       printf '%s/%s/-/archive/%s.tar.gz' "$GIT_HOST" "$REPO_SLUG" "$REPO_BRANCH" ;;
@@ -108,7 +110,6 @@ SUB_ARGS=()          # 转发给 simpleurl 的额外参数
 ASSUME_YES="n"
 SKIP_HEALTH="n"
 STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
-STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -126,13 +127,13 @@ while [ $# -gt 0 ]; do
                  LOG_FILE="$INSTALL_DIR/simpleurl.log"; MARK_FILE="$INSTALL_DIR/.simpleurl-managed" ;;
     --no-health) SKIP_HEALTH="y" ;;
     --strict)    STRICT="y" ;;
-    --strict)    STRICT="y" ;;
     --force)     ASSUME_YES="y" ;;
     --help|-h)   ACTION="help" ;;
+    --version|-V) ACTION="version" ;;
     # 帮助里列出的管理子命令：脚本自己不重复实现一遍，转给安装时生成的
     # simpleurl 命令。以前这些词会直接落到「未知参数」上 —— 帮助里写得
     # 明明白白，照着敲却全报错，是最伤信任的那种不一致。
-    status|start|stop|restart|log|url|password|config|backup|restore)
+    status|start|stop|restart|log|url|password|config|backup|restore|version)
                  ACTION="$1"
                  shift
                  SUB_ARGS=("$@")   # 解析循环会把 $@ 消耗光，这里先留一份
@@ -171,10 +172,10 @@ SimpleURL 安装脚本 v$VERSION
   ./install.sh doctor         只做环境体检，不装任何东西
   ./install.sh upgrade        更新到最新代码（失败自动回滚）
   ./install.sh uninstall      卸载（会二次确认）
+  ./install.sh --version      打印脚本版本
   ./install.sh --help         这段说明
 
   可选参数：--port 8000  --dir ~/simpleurl  --runtime docker|python  --no-health
-  doctor 加 --strict：连「提醒」也算不通过（CI 用）
   doctor 加 --strict：连「提醒」也算不通过（CI 用）
 
 环境变量（都可选）：
@@ -319,7 +320,15 @@ mirror_url() { # url
   printf '%s' "$1"
 }
 
-is_cnb() { case "$GIT_HOST" in *cnb.cool*) return 0 ;; esac; return 1; }
+is_cnb() {
+  # 认三家：官方域名、镜像域名（API_HOST 含 slug）、以及「地址里就写着本仓库」的自建源。
+  # 只认 cnb.cool 的话，换源之后 /-/git/archive 与 /-/git/raw 这套路径规则会被整段跳过。
+  case "$GIT_HOST $API_HOST $REPO_URL" in
+    *cnb.cool*) return 0 ;;
+    *"$REPO_SLUG"*) return 0 ;;
+  esac
+  return 1
+}
 
 # 私有仓库：CNB_TOKEN（或环境里的 CNB 令牌）会被换成 Basic 头，可直接拉私库源码
 auth_header() {
@@ -378,7 +387,12 @@ remote_peek_version() {
   # 所以这里拿回来的是不是 Python 仍然由 is_python_file 把关。
   local urls=()
   if is_cnb; then
+    # /-/raw/... 是前端路由，curl 回来是 200 的 HTML 外壳（「Page not found」那页），
+    # 真正的裸文件在 /-/git/raw/...。这条排前面，/raw 留作别家平台的兜底。
+    # API_HOST 与网页域名都试：换过镜像时只有一边是通的。
+    urls+=("$GIT_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/app/__init__.py")
     [ -n "${CNB_TOKEN:-}" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/app/__init__.py")
+    [ "$API_HOST" != "$GIT_HOST" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/app/__init__.py")
     urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/app/__init__.py")
   else
     urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/app/__init__.py")
@@ -555,11 +569,21 @@ doctor() {
   # 用真实端口：只 `bash install.sh doctor`（不带 --port）时 PORT 还是默认值，
   # 报「8940 空闲」而实际服务跑在 18940，等于体检没做
   [ -n "${port_override:-}" ] && PORT="$port_override"
-  # 端口。重装 / 升级时被上次的自己占着是常态，报冲突只会吓人一跳
+  # 有安装记录 = 这台机器上装过：端口是「装的时候那个」，冲突建议就不该是
+  # 「自动换个口」——升级会照旧用记录里的端口启动。
+  local has_install="n"
+  [ -s "$MARK_FILE" ] && has_install="y"
+  # 端口。三件事要分清，混在一起就会给出错的建议：
+  #   · 空闲                        → 升级会用它，没问题
+  #   · 有安装记录且在听             → 就是自己的服务，绝不会「自动改用别的端口」
+  #   · 有安装记录但没人听           → 服务停了 / 挂了，这是提醒不是冲突
+  #   · 没有安装记录却被占           → 真的冲突，装的时候会换口
   if ! port_in_use "$PORT"; then
     d_ok "端口 $PORT 空闲"
   elif port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
     d_ok "端口 $PORT 由上次安装的 SimpleURL 自己占着（重装会先停掉）"
+  elif [ "$has_install" = "y" ]; then
+    d_warn "端口 $PORT 被别的程序占用（升级仍按记录里的端口启动，届时可能起不来）"
   else
     local alt; alt="$(next_free_port "$PORT")"
     d_warn "端口 $PORT 被别的程序占用${alt:+，装的时候会自动改用 $alt}"
@@ -704,6 +728,33 @@ remote_size() { # url
   curl -fsSI -m 15 "$1" 2>/dev/null | awk 'BEGIN{IGNORECASE=1}/^content-length:/{gsub("\r","");print $2}' | tail -1
 }
 
+# 源码包解出来要不要削掉一层目录？看 tar 里第一个条目的路径：
+#   `app/__init__.py` 这种以「仓库名/」开头的，削一层才落成 app/…
+#   直接 `app/__init__.py` 开头的（CNB 的 /-/git/archive 就是这样），削一层会把
+#   app/ 本身削掉，main.py / core/ 平铺到安装根目录 —— 文件一个不少、服务也起得来，
+#   于是没人发现装出来的是一份和仓库不一样的副本，升级还会再砸一遍。
+tar_strip_level() { # tarball —— 0 或 1
+  local first
+  first="$(tar -tzf "$1" 2>/dev/null | head -1)" || return 0
+  # 只有一个顶层名字、且路径里确实带斜杠：才值得削
+  case "$first" in
+    */?*) printf '1' ;;
+    *) printf '0' ;;
+  esac
+}
+
+extract_tarball() { # tarball stage
+  local tarball="$1" stage="$2" strip
+  strip="$(tar_strip_level "$tarball")"
+  [ -n "$strip" ] || strip=0
+  tar -xzf "$tarball" -C "$stage" --strip-components="$strip" 2>/dev/null || return 1
+  # 解完还是有嵌套的 app/app/：说明第一层猜错了，翻过来再试一次
+  if [ ! -f "$stage/app/main.py" ] && [ -f "$stage/app/app/main.py" ]; then
+    tar -xzf "$tarball" -C "$stage" --strip-components=1 2>/dev/null || return 1
+  fi
+  [ -f "$stage/app/main.py" ]
+}
+
 stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回非 0
   local stage="$1" urls=() u tarball
   tarball="$stage/.src.tar.gz"
@@ -717,15 +768,31 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
      && [ -f "$SELF_DIR/install.sh" ]; then
     return 2
   fi
+  # 从仓库目录里直接装（README 的第一种用法 ./install.sh --yes）也一样：
+  # 脚本身边就是完整源码，没有理由再下一遍。
+  # 但只有「搬到别处」时才省这一步。目标目录就是仓库自己时不能再省——
+  # 那就成了原地踏步：什么都拦下了，可依赖、venv、启动一样都没做。
+  if [ "$ACTION_UPGRADE" != "y" ] && [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/app/main.py" ] \
+     && [ -f "$SELF_DIR/install.sh" ] && [ -f "$SELF_DIR/.cnb.yml" ] \
+     && [ "$SELF_DIR" != "$(cd "$INSTALL_DIR" 2>/dev/null && pwd || echo "")" ]; then
+    return 2
+  fi
 
   # 源码包优先：不依赖 git，也不受仓库体积影响
   [ "$(mirror_url "$REPO_TARBALL")" != "$REPO_TARBALL" ] && urls+=("$(mirror_url "$REPO_TARBALL")")
   urls+=("$REPO_TARBALL")
+  # 换过镜像 / 自建源时，GIT_HOST 与 API_HOST 只有一个是通的。补上另一半。
+  if is_cnb; then
+    case "$REPO_TARBALL" in
+      *"$API_HOST"*) urls+=("${REPO_TARBALL/"$API_HOST"/"$GIT_HOST"}") ;;
+      *"$GIT_HOST"*) urls+=("${REPO_TARBALL/"$GIT_HOST"/"$API_HOST"}") ;;
+    esac
+  fi
   for u in ${urls[@]+"${urls[@]}"}; do
     rm -f "$tarball"
     # is_tarball 认 gzip 魔数，网页外壳（HTML）在这一步就被挡掉
     if fetch "$u" "$tarball" >/dev/null 2>&1 && is_tarball "$tarball"; then
-      if tar -xzf "$tarball" -C "$stage" --strip-components=1 2>/dev/null && [ -f "$stage/app/main.py" ]; then
+      if extract_tarball "$tarball" "$stage"; then
         rm -f "$tarball"
         return 0
       fi
@@ -766,25 +833,40 @@ stash_user_files() { # 返回暂存目录（没有要留的就返回空）
 }
 
 # 把 $1 里的源码替换进安装目录（先清白名单条目，再整体拷过去）
+# 安装目录里的 install.sh 必须活过每一次落盘。
+#
+# clear_source 会按 SOURCE_ENTRIES 把 install.sh 删掉（它在清单里，因为「脚本也要
+# 能自更新」）。删掉之后能不能补回来，原来只挂在「源码包里带了 install.sh」这一条上：
+# 带了才在 clear_source 之前留影子，不带就什么都不留 —— 而 CNB 的源码包正好不带。
+# 于是从仓库目录装出来的机器，第一次升级就把自己的 install.sh 弄丢，
+# `simpleurl upgrade / doctor / uninstall` 从此一律报「缺少 install.sh」。
+# 现在无条件留影子：有就留，没有就把正在跑的这份（$SELF_PATH）留一份。
+preserve_self() { # stage
+  local stage="$1" src=""
+  if [ -f "$INSTALL_DIR/install.sh" ]; then
+    src="$INSTALL_DIR/install.sh"
+  elif [ -n "$SELF_DIR" ] && [ -f "$SELF_PATH" ]; then
+    src="$SELF_PATH"
+  fi
+  [ -n "$src" ] || return 0
+  cp -f "$src" "$stage/.install.sh.before" 2>/dev/null || return 0
+  SELF_SNAPSHOT="$stage/.install.sh.before"
+}
+
 apply_source() { # stage
   local stage="$1" stash="" f
   stash="$(stash_user_files "$stage/.userfiles")"
   # 这一步必须排在 clear_source 之前 —— 那个函数会先把 SOURCE_ENTRIES 里的
   # install.sh 删掉，删完再来判断「有没有旧脚本」，永远判成没有，自更新就
   # 静默失效：安装目录里永远是装那天的脚本，新脚本里的修法一个都用不上。
-  if [ -f "$stage/install.sh" ]; then
-    if [ -f "$INSTALL_DIR/install.sh" ]; then
-      # 先留一份自己的备份：目录里那份马上会被删掉。内容是「新脚本」还是
-      # 「旧脚本自己的影子」都能接受 —— 反正下面要么用它做比较，要么拿它兜底。
-      cp -f "$INSTALL_DIR/install.sh" "$stage/.install.sh.before" 2>/dev/null || true
-      SELF_SNAPSHOT="$stage/.install.sh.before"
-      if cmp -s "$stage/install.sh" "$INSTALL_DIR/install.sh"; then
-        # 一模一样，不用更新（也就不用留 pending）
-        rm -f "$stage/install.sh"
-      else
-        cp -f "$stage/install.sh" "$INSTALL_DIR/.install.sh.pending"
-        SELF_UPDATE_PENDING="y"
-      fi
+  preserve_self "$stage"
+  if [ -f "$stage/install.sh" ] && [ -f "$INSTALL_DIR/install.sh" ]; then
+    if cmp -s "$stage/install.sh" "$INSTALL_DIR/install.sh"; then
+      # 一模一样，不用更新（也就不用留 pending）
+      rm -f "$stage/install.sh"
+    else
+      cp -f "$stage/install.sh" "$INSTALL_DIR/.install.sh.pending"
+      SELF_UPDATE_PENDING="y"
     fi
   fi
   clear_source
@@ -812,6 +894,18 @@ apply_source() { # stage
   SELF_SNAPSHOT=""
 }
 
+# 脚本身边那份源码：拷到 stage，形状和远端包解出来的一样（带 app/）
+copy_local_source() { # stage
+  local stage="$1" e
+  [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/app/main.py" ] || return 1
+  mkdir -p "$stage"
+  for e in $SOURCE_ENTRIES; do
+    [ -e "$SELF_DIR/$e" ] || continue
+    cp -a "$SELF_DIR/$e" "$stage/" 2>/dev/null || true
+  done
+  [ -f "$stage/app/main.py" ]
+}
+
 install_source() {
   mkdir -p "$INSTALL_DIR"
   local stage="$INSTALL_DIR/.stage"
@@ -822,15 +916,26 @@ install_source() {
   stage_source "$stage" || rc=$?
   if [ "$rc" = "2" ]; then
     rm -rf "$stage"
-    ok "本地版本与安装目录一致，跳过下载"
-    SOURCE_REUSED="y"
-    return 0
+    # 只有安装目录里真的有源码，才谈得上「一致」。
+    if [ -f "$INSTALL_DIR/app/main.py" ]; then
+      ok "本地版本与安装目录一致，跳过下载"
+      SOURCE_REUSED="y"
+      return 0
+    fi
+    # 脚本身边就是完整源码，直接拷过去 —— 比再下一次包稳，也快得多
+    warn "脚本身边有源码，但 $INSTALL_DIR 里还没有，直接用这一份"
+    mkdir -p "$stage"
+    copy_local_source "$stage" || die "从 $SELF_DIR 复制源码失败"
+    rc=0
   fi
   if [ "$rc" != "0" ]; then
     rm -rf "$stage"
     # 已有安装 / 离线环境：「下载失败」不等于不能继续
     if [ -f "$INSTALL_DIR/app/main.py" ]; then
-      warn "拿不到远端源码，沿用 $INSTALL_DIR 里已有的代码继续"
+      warn "拿不到远端源码（地址：$REPO_TARBALL / git clone 也不通）"
+      warn "本轮沿用 $INSTALL_DIR 里已有的代码，**代码没有更新**"
+      warn "  · 想指定来源：REPO_TARBALL=<源码包地址> 或 REPO_URL=<git 地址>"
+      warn "  · 网络受限时先装好代理 / 配 GIT_HOST，再 simpleurl upgrade"
       SOURCE_REUSED="y"
       return 0
     fi
@@ -1203,7 +1308,13 @@ stop_running() {
     # 不核对就 kill，等于把别人的进程顺手杀掉——所以先确认它真在建
     # 目录里跑。核对不上就只删文件，不动进程。
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_our_service "$pid"; then
+      # 发完 TERM 不能马上接着删库：uvicorn 的收尾（关连接、写完 WAL）要一点时间，
+      # 下面的 while 循环只盯端口 —— 端口可能在进程还活着的时候就已经放开了。
+      # 等进程真的不在，等不到就 KILL。
       kill "$pid" 2>/dev/null || true
+      local n=0
+      while [ "$n" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do n=$((n + 1)); sleep 1; done
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     fi
     rm -f "$INSTALL_DIR/simpleurl.pid"
   else
@@ -1213,6 +1324,9 @@ stop_running() {
     # 走到 rm -f，pid 文件存在时 elif 永远轮不到，端口上那个孤儿就一直留着。
     if port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
       kill "$PORT_HOLDER_PID" 2>/dev/null || true
+      local m=0
+      while [ "$m" -lt 10 ] && kill -0 "$PORT_HOLDER_PID" 2>/dev/null; do m=$((m + 1)); sleep 1; done
+      kill -0 "$PORT_HOLDER_PID" 2>/dev/null && kill -9 "$PORT_HOLDER_PID" 2>/dev/null || true
     fi
   fi
   # 等它真的放开端口：紧接着就要覆盖源码了，进程还在读旧文件就是在给自己挖坑
@@ -1233,6 +1347,9 @@ next_free_port() { # start —— 往后找 40 个，都没有就返回空
 }
 
 check_port_free() {
+  # 换壳重跑的那一轮：端口在 A 轮已经定过，别再「自动换个口」——
+  # 同一件事两次给不同结论，比只给一次错的还糟。
+  [ "${SIMPLEURL_PORT_FIXED:-n}" = "y" ] && return 0
   port_in_use "$PORT" || return 0
   local who=""
   if need_cmd ss; then who="$(ss -lntp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $NF; exit}')"; fi
@@ -1508,7 +1625,9 @@ fetch_latest_script() { # 输出可执行的脚本路径，取不到就输出空
   rm -rf "$dir"; mkdir -p "$dir"
   out="$dir/install.sh"
   if is_cnb; then
+    urls+=("$GIT_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/install.sh")
     [ -n "${CNB_TOKEN:-}" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/install.sh")
+    [ "$API_HOST" != "$GIT_HOST" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/install.sh")
     urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/install.sh")
   else
     urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/install.sh")
@@ -1622,8 +1741,21 @@ do_start() {
     sudo systemctl start "\$NAME" && say "已启动 systemd 服务 \$NAME"; return 0
   fi
   setsid nohup "\$DIR/start.sh" >>"\$DIR/simpleurl.log" 2>&1 </dev/null &
-  echo \$! > "\$DIR/simpleurl.pid"
-  say "已后台启动，PID \$(cat "\$DIR/simpleurl.pid")"
+  local pid=\$!
+  echo \$pid > "\$DIR/simpleurl.pid"
+  # 起没起来要说实话：start.sh 里的 exec 失败时这一步两秒内就退了，
+  # 屏幕上却只留一句「已后台启动」，人要去翻日志才知道根本没跑起来。
+  # 等两秒：uvicorn 起得来就还活着，起不来这个 pid 两秒内已经退了。
+  # 不能用 kill -0 循环 —— 循环条件是「还活着就等」，进程一退就提前跳出，
+  # 那样只能抓到「起不来」，抓不到「起来了」。
+  sleep 2
+  if kill -0 "\$pid" 2>/dev/null; then
+    say "已后台启动，PID \$pid"
+  else
+    warn "进程立刻退出了（PID \$pid），最近日志："
+    tail -n 12 "\$DIR/simpleurl.log" 2>/dev/null | sed 's/^/    /'
+    return 1
+  fi
 }
 
 do_stop() {
@@ -1792,6 +1924,7 @@ case "\${1:-status}" in
   restart) do_stop >/dev/null; do_start ;;
   status)  site_status ;;
   url)     site_url; echo ;;
+  version) say "install.sh $VERSION（运行方式 $RUNTIME，代码 $(cat "\$DIR/app/__init__.py" 2>/dev/null | sed -n 's/^__version__ *= *\"\(.*\)\"/\1/p' | head -1)）" ;;
   log)
     if [ "\$RUNTIME" = "docker" ]; then docker logs --tail 100 -f "\$NAME"
     else tail -n 100 -f "\$DIR/simpleurl.log"; fi ;;
@@ -1845,6 +1978,7 @@ simpleurl status              运行状态与健康检查
 simpleurl start | stop | restart
 simpleurl log                 跟踪日志
 simpleurl url                 打印站点与后台地址
+simpleurl version             脚本与代码版本
 simpleurl password              看当前管理员密码（只读）
 simpleurl password --reset      换成随机新密码
 simpleurl password 新密码       设成指定的密码
@@ -1874,7 +2008,11 @@ summary() {
   printf "  %s站点首页%s    %s%s%s\n" "$DIM" "$RST" "$BOLD" "$url" "$RST"
   printf "  %s管理后台%s    %s%s%s\n" "$DIM" "$RST" "$BOLD" "$admin_url" "$RST"
   printf "  %s管理员账号%s  %s\n" "$DIM" "$RST" "$ADMIN_USER"
-  printf "  %s管理员密码%s  %s%s%s\n" "$DIM" "$RST" "$YELLOW" "$ADMIN_PASS" "$RST"
+  if [ -n "$ADMIN_PASS" ]; then
+    printf "  %s管理员密码%s  %s%s%s\n" "$DIM" "$RST" "$YELLOW" "$ADMIN_PASS" "$RST"
+  else
+    printf "  %s管理员密码%s  %s未改动（simpleurl password 看，--reset 换新的）%s\n" "$DIM" "$RST" "$DIM" "$RST"
+  fi
   printf "  %s访问模式%s    %s\n" "$DIM" "$RST" "$ACCESS_MODE"
   printf "  %s安装目录%s    %s\n" "$DIM" "$RST" "$INSTALL_DIR"
   hr
@@ -1999,22 +2137,38 @@ do_install() {
     ok "网络探测：直连官方源"
   fi
 
-  doctor || die "环境体检没过，按上面的提示处理后再跑一次"
+  # 换壳重跑的那一轮不再体检：A 轮刚跑过、结论就是「可以装」，重跑一遍只会在屏幕上
+  # 多出一份结论，还可能因为「端口正被自己占着」前后说法不一。
+  if [ "${SCRIPT_DOCTORED:-n}" = "y" ]; then
+    ok "环境体检已在换脚本前通过"
+  else
+    doctor || die "环境体检没过，按上面的提示处理后再跑一次"
+  fi
 
   # 升级前先看一眼远端版本：已经最新就不折腾了，别每次都重装依赖、重启服务。
   # 注意命令顺序：函数调用放最后，「函数返回 1」就不会把整个 if 判成失败。
-  # 升级时换掉安装目录里的脚本自己：否则这台机器永远用装那天的脚本去升代码。
-  if [ "$ACTION_UPGRADE" = "y" ] && [ "$reuse" = "y" ] && [ "$SCRIPT_REEXEC" != "y" ] \
-     && [ "$SCRIPT_FETCHED" != "y" ]; then
-    local fresh_script; fresh_script="$(fetch_latest_script)"
+  # 换脚本要对**升级和重装都做**：`./install.sh` 在已有安装上就是「重装代码」，
+  # 以前只有 upgrade 换壳，于是从仓库目录重跑一次就把安装目录里的脚本打回旧版
+  # ——机器上从此跑着旧脚本，新脚本里的修法一个都用不上。
+  if [ "$reuse" = "y" ] && [ "$SCRIPT_REEXEC" != "y" ] && [ "$SCRIPT_FETCHED" != "y" ]; then
+    local fresh_script REEXEC_ACTION; fresh_script="$(fetch_latest_script)"
+    REEXEC_ACTION="install"
+    [ "$ACTION_UPGRADE" = "y" ] && REEXEC_ACTION="upgrade"
     if [ -n "$fresh_script" ]; then
       SCRIPT_URL_HINT="$fresh_script"
       if ! cmp -s "$fresh_script" "$INSTALL_DIR/install.sh" 2>/dev/null; then
         ok "安装脚本可更新，换成远端最新版再继续"
         # 换壳重跑：本进程还带着旧脚本已经解析好的逻辑，直接往下跑等于没换
         SCRIPT_REEXEC="y"
+        # 换壳重跑要带着这几件事过去，否则屏幕上同一件事会报两遍、还可能报成两种：
+        #  · RUNTIME_OVERRIDE：A 轮认出的运行方式。不带过去，B 轮会把体检结论重算一遍。
+        #  · SCRIPT_DOCTORED=y：体检刚跑过、结论是「可以装」，B 轮不用再跑。
+        #  · SIMPLEURL_PORT_FIXED=y：A 轮已经就端口做过决定，B 轮别再「自动换个口」。
+        # 端口本身不用传 —— B 轮自己会从 .env 读出同一个值。
         SIMPLEURL_HOME="$INSTALL_DIR" SCRIPT_REEXEC=y \
-          exec bash "$fresh_script" upgrade --yes
+          RUNTIME_OVERRIDE="${RUNTIME_OVERRIDE:-$prev_runtime}" \
+          SCRIPT_DOCTORED=y SIMPLEURL_PORT_FIXED=y \
+          exec bash "$fresh_script" "$REEXEC_ACTION" --yes
       fi
       rm -rf "$INSTALL_DIR/.stage-script"
     else
@@ -2084,8 +2238,17 @@ do_install() {
     case "$ACCESS_MODE" in public|admin|invite) : ;; *) ACCESS_MODE="public" ;; esac
     SECRET_KEY="$(gen_key 32)"
   else
-    [ -n "${ADMIN_PASS:-}" ] || ADMIN_PASS="$(gen_password)"
-    [ -n "${SECRET_KEY:-}" ] || SECRET_KEY="$(gen_key 32)"
+    # 升级时绝不能悄悄换掉凭据：
+    #  · ADMIN_TOKEN 读不到 → 生成新密码，屏幕上滚过去的那一行就是唯一线索；
+    #    更糟的是 summary 会把新密码当成「当前密码」打出来，而库里/index 里
+    #    早先抄走的那份就此失效。这里只提醒，不动它。
+    #  · SECRET_KEY 换掉 = 所有已登录的会话当场下线、签名回执全部作废。
+    # 这两样都只在「首次安装」时才允许生成。
+    [ -n "${ADMIN_PASS:-}" ] || warn "安装记录里读不到管理员密码，沿用原配置不动（要换密码：simpleurl password --reset）"
+    [ -n "${SECRET_KEY:-}" ] || {
+      SECRET_KEY="$(gen_key 32)"
+      warn "读不到 SECRET_KEY，生成了新的：已登录会话会全部失效"
+    }
     [ -n "${ACCESS_MODE:-}" ] || ACCESS_MODE="public"
   fi
 
@@ -2114,7 +2277,13 @@ do_install() {
     warn "使用 Python 直装（更省资源）"
     install_python_mode
     DATABASE_URL="sqlite:///$INSTALL_DIR/simpleurl.db"
-    write_env "$existing_env"
+    # 升级时不要把 .env 整份重写：README 教用户在 .env 里设 PUBLIC_URL、改端口，
+    # 而重写会把人家手写的那几行冲掉。只在「首次安装」或「文件不在」时生成。
+    if [ "$reuse" = "n" ] || [ ! -f "$existing_env" ]; then
+      write_env "$existing_env"
+    else
+      ok "沿用现有配置：$existing_env（要改就 simpleurl config）"
+    fi
     write_start_wrapper
     if ! setup_systemd; then
       if ! start_background; then
@@ -2153,6 +2322,7 @@ do_install() {
 
 main() {
   case "$ACTION" in
+    version) printf 'SimpleURL 安装脚本 v%s\n' "$VERSION"; exit 0 ;;
     status|start|stop|restart|log|url|password|config|backup|restore)
       forward_subcommand "$ACTION" ${SUB_ARGS[@]+"${SUB_ARGS[@]}"} ;;
     help) usage; exit 0 ;;

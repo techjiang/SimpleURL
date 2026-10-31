@@ -296,23 +296,37 @@ curl -fsSL -H "Authorization: Basic $(printf 'cnb:%s' "$CNB_TOKEN" | base64)" \
 simpleurl status      # 状态 + 健康检查（等价 ./install.sh status）
 simpleurl log         # 跟踪日志
 simpleurl restart     # 重启
-simpleurl password    # 重置管理员密码（不给参数就随机生成）
+simpleurl password    # 看当前管理员密码（只读；--reset 才换新的）
 simpleurl backup      # 备份数据库与配置
 simpleurl restore     # 从备份恢复
 simpleurl upgrade     # 升级到最新代码
 simpleurl doctor      # 环境体检
 simpleurl url         # 打印站点与后台地址
+simpleurl version     # 脚本与代码版本
 simpleurl config      # 查看 / 编辑配置
 ```
 
 也可以在安装目录直接 `./install.sh upgrade` —— 脚本自己认得自己住哪儿。
+`./install.sh --version` 打印脚本版本，`./install.sh doctor --strict` 在流水线里用。
 
 ### 升级是怎么做的
 
 1. 只拉 `app/__init__.py` 比版本号。**一样就直接说「已经是最新，服务不动」**，不重装依赖、不重启
 2. 不一样才动：先把数据库和 `.env` 备份到 `.backup/<时间戳>/`（只留最近 5 份）
-3. **先停旧进程**，再替换代码 → 按 `requirements.txt` 指纹决定要不要重装依赖 → 重启
+3. **先停旧进程并等它真的退出**，再替换代码 → 按 `requirements.txt` 指纹决定要不要重装依赖 → 重启
 4. 任何一步失败，按备份回滚数据与配置，`die` 时给出备份路径
+
+几条容易踩的边界，脚本自己认：
+
+- **`.env` 升级时不重写**。你在里面改的 `PUBLIC_URL`、端口不会因为升一次级就被冲掉；
+  要改配置用 `simpleurl config`。
+- **凭据不会被悄悄换掉**。读不到 `ADMIN_TOKEN` 只提醒，不会生成新密码再把新密码当「当前密码」打出来。
+- **源码包结构自己认**。CNB 的 `/-/git/archive` 条目不带顶层目录，别的平台带，脚本先看 tar 再决定削不削一层 ——
+  削错了会把 `main.py`、`core/` 平铺到安装根目录，那种副本能让服务照常起来，但从此和仓库不是同一份代码。
+- **安装目录里的 `install.sh` 不会丢**。源码包里没带它也照样补回来，否则 `simpleurl upgrade / doctor / uninstall`
+  会一起变成「缺少 install.sh」。
+- **取不到远端源码必须说清楚**。屏幕上写的是「代码没有更新」，并给出 `REPO_TARBALL` / `REPO_URL` 怎么指。
+  以前只留一句「沿用已有代码继续」，人以为升完了。
 
 远端版本比本地旧时**不会**覆盖（防降级），要强行覆盖换 `--branch <分支>`。
 
@@ -329,7 +343,8 @@ simpleurl config      # 查看 / 编辑配置
 `REPO_URL` / `REPO_TARBALL` / `REPO_SLUG`（换安装来源）。
 
 参数：`--yes` 全默认、`--port`、`--dir`、`--runtime docker|python`、`--branch`、`--uninstall`、
-`--no-health`（跳过装完的验收，仅用于离线环境自测）。
+`--no-health`（跳过装完的验收，仅用于离线环境自测）、`--strict`（doctor 把提醒也当阻塞）、
+`--version`。
 
 > 注意：CNB 的 `/-/raw/...`、`/-/archive/...` 是前端路由，`curl` 直接取会拿到 HTML 外壳。
 > 脚本对下载内容一律验 gzip 魔数，所以就算令牌没带对，也只会退回去用 `git clone`，不会把网页当源码解压。
