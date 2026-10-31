@@ -40,15 +40,19 @@ def _block(name: str) -> str:
 
 
 def _generated_cli() -> str:
-    """安装时生成的那份 simpleurl 命令（heredoc 正文，含转义）。
+    """安装时生成的那份 simpleurl 命令（heredoc 正文）。
 
     它是给用户敲的入口，出问题最隐蔽：主脚本改了、生成模板没跟上，
     装到机器上还是旧逻辑。所以直接对模板本身做断言。
+
+    模板已改成 <<'SU_CLI_EOF' 的**字面量**（v2.5.0）：正文不再经过 shell 展开，
+    所以这里取出来就是最终落盘的形状 —— 断言可以照着真实文件写，
+    不必再往反斜杠里钻。
     """
     text = INSTALL.read_text(encoding="utf-8")
-    start = text.index('${SUDO} tee "$cli"')
-    end = text.index("\nEOF\n", start)
-    return text[start:end]
+    start = text.index("<<'SU_CLI_EOF'")
+    body = text[start:].split("\n", 1)[1]
+    return body[: body.index("\nSU_CLI_EOF")]
 
 
 def _free_port() -> int:

@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.4.0"
+VERSION="2.5.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -75,7 +75,10 @@ else
   # 是最自然的用法，不该因为「脚本不在安装目录里」就跑去 $HOME/simpleurl 报
   # 「没有安装记录」。装了多份时以最近一次安装为准。
   INSTALL_DIR="$HOME/simpleurl"
-  for _mark in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
+  # 先看全局命令（两份安装时以最近一次为准），再扫常见位置下的影子 ——
+  # 全局命令被后装的那份覆盖后，影子是唯一还能认出前一份目录的线索。
+  for _mark in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" \
+               "$HOME"/simpleurl/simpleurl "$HOME"/*/simpleurl/simpleurl; do
     [ -f "$_mark" ] || continue
     _dir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$_mark" 2>/dev/null | head -1)"
     if [ -n "$_dir" ] && [ -f "$_dir/.simpleurl-managed" ]; then INSTALL_DIR="$_dir"; break; fi
@@ -110,6 +113,8 @@ SUB_ARGS=()          # 转发给 simpleurl 的额外参数
 ASSUME_YES="n"
 SKIP_HEALTH="n"
 STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
+PORT_EXPLICIT="n"    # 端口是用户显式给的（--port / PORT=）还是默认值
+[ -n "${PORT:-}" ] && PORT_EXPLICIT="y"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -120,7 +125,7 @@ while [ $# -gt 0 ]; do
     doctor|check) ACTION="doctor" ;;
     --runtime)   shift; RUNTIME_OVERRIDE="${1:-}" ;;
     --branch)    shift; REPO_BRANCH="${1:-main}"; REPO_TARBALL="$(default_tarball)" ;;
-    --port)      shift; PORT="${1:-$PORT}" ;;
+    --port)      shift; PORT="${1:-$PORT}"; PORT_EXPLICIT="y" ;;
     # --dir 要同时改写 SIMPLEURL_HOME：install_cli / 卸载 / 升级都从它算安装目录，
     # 只改 INSTALL_DIR 会让后面几步偷偷回到 $HOME/simpleurl
     --dir)       shift; SIMPLEURL_HOME="${1:-$SIMPLEURL_HOME}"; INSTALL_DIR="$SIMPLEURL_HOME"
@@ -331,14 +336,22 @@ is_cnb() {
 }
 
 # 私有仓库：CNB_TOKEN（或环境里的 CNB 令牌）会被换成 Basic 头，可直接拉私库源码
-auth_header() {
-  local tok="${CNB_TOKEN:-}"
+# 带令牌请求时只发给 OpenAPI 域名。
+#
+# 给网页域名带上 Authorization 会被直接拒绝：cnb.cool 网关回 400
+# （「Bad Request」，报文 42 字节），curl -f 于是判失败 —— 而这条 URL 恰好是
+# 列表里的第一个。结果是：设了 CNB_TOKEN 的机器，取远端脚本和探版本一路全失败，
+# 屏幕上只剩一句「探不到远端版本」，看起来像网络问题，其实是自己把请求写坏了。
+# 所以网页域名用匿名请求，令牌只给 api.*。
+auth_header() { # [host]
+  local tok="${CNB_TOKEN:-}" host="${1:-}"
   [ -n "$tok" ] || return 0
+  case "$host" in *"$API_HOST"*) : ;; *) return 0 ;; esac
   printf 'Authorization: Basic %s' "$(printf 'cnb:%s' "$tok" | base64 | tr -d '\n')"
 }
 
 fetch() { # url out
-  local auth; auth="$(auth_header)"
+  local auth; auth="$(auth_header "$1")"
   if need_cmd curl; then
     if [ -n "$auth" ]; then curl -fL --retry 2 --connect-timeout 10 -m 300 -H "$auth" -o "$2" "$1"
     else curl -fL --retry 2 --connect-timeout 10 -m 300 -o "$2" "$1"; fi
@@ -489,14 +502,48 @@ port_in_use() { # port
 # 用 ss 拿 pid 要 root；拿不到就没法判断，按「不是自己人」处理 —— 宁可不杀，
 # 也不要因为认错而误杀别人的服务。
 PORT_HOLDER_PID=""
+# 谁在听这个端口？返回 pid 放在 PORT_HOLDER_PID。
+#
+# 以前只有 ss 一条路：而 ss 要装 iproute2，slim / minbase / 老 Debian 上默认没有，
+# 于是「端口被占」的判定成立（port_in_use 有 /proc 兜底）、「占的是不是自己人」
+# 却永远判不出来。两者一撞，重装时就报一句「端口被别的程序占用」——
+# 占着的其实是刚被自己停掉、还在收尾的那一个。四种探测按可靠性依次退。
 port_holder_pid() { # port
   PORT_HOLDER_PID=""
-  need_cmd ss || return 1
-  local line
-  line="$(ss -lntp 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {print; exit}')"
-  [ -n "$line" ] || return 1
-  PORT_HOLDER_PID="$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
-  [ -n "$PORT_HOLDER_PID" ]
+  local p="$1" hex inode pid line
+  # 注意这里不能写成「有 ss 就直接 return 它的结果」：ss 在非 root 下、
+  # 或者目标进程属于别的用户时，pid= 那一栏是空的。原来那种写法会带着一个
+  # 空 pid 提前返回，后面 /proc 那条最可靠的兜底根本轮不到执行 —— 于是
+  # 重装时把自己正在跑的服务判成「别的程序」，屏幕上多一句吓人的提醒。
+  if need_cmd ss; then
+    line="$(ss -lntp 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {print; exit}' || true)"
+    PORT_HOLDER_PID="$(printf '%s' "$line" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')"
+    [ -n "$PORT_HOLDER_PID" ] && return 0
+  fi
+  # 内核视角：/proc/net/tcp 给出 socket 的 inode，再去 /proc/*/fd 里找谁拿着它。
+  # 不需要任何外部命令，容器里也一定能用。
+  if [ -r /proc/net/tcp ]; then
+    hex="$(printf '%04X' "$p" 2>/dev/null || echo "")"
+    if [ -n "$hex" ]; then
+      inode="$(awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h {print $10; exit}' \
+        /proc/net/tcp /proc/net/tcp6 2>/dev/null | head -1)"
+      if [ -n "$inode" ] && [ "$inode" != "0" ]; then
+        pid="$(find /proc/[0-9]*/fd -lname "socket:\[$inode\]" 2>/dev/null \
+          | sed -n 's|^/proc/\([0-9]*\)/fd/.*|\1|p' | head -1)"
+        if [ -n "$pid" ]; then PORT_HOLDER_PID="$pid"; return 0; fi
+      fi
+    fi
+  fi
+  if need_cmd lsof; then
+    pid="$(lsof -ti "tcp:$p" -sTCP:LISTEN 2>/dev/null | head -1)"
+    [ -n "$pid" ] || pid="$(lsof -ti "tcp:$p" 2>/dev/null | head -1)"
+    if [ -n "$pid" ]; then PORT_HOLDER_PID="$pid"; return 0; fi
+  fi
+  if need_cmd fuser; then
+    pid="$(fuser -n tcp "$p" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | head -1 || true)"
+    if [ -n "$pid" ]; then PORT_HOLDER_PID="$pid"; return 0; fi
+  fi
+  return 1
 }
 
 # 这个 pid 是上次本脚本留下的服务进程吗？两条件：它自己的命令行落在安装目录里，
@@ -621,6 +668,18 @@ doctor() {
     d_warn "没有免密 sudo：跳过 systemd，用后台进程 + 开机自启兜底"
   fi
 
+  # 安装目录里不该出现仓库的开发文件：requirements-dev.txt / pytest.ini / .cnb.yml
+  # 只对「已经有安装」的目录查（首次安装时目录还是空的），而且只提醒不拦——
+  # 它们不影响服务，但会让人以为安装目录等于仓库，照着自己去 pip install -r
+  # requirements-dev.txt，装上一堆跟运行无关的东西。
+  if [ "$has_install" = "y" ]; then
+    local dev_left=""
+    for _dev in requirements-dev.txt pytest.ini .cnb.yml; do
+      [ -e "$INSTALL_DIR/$_dev" ] && dev_left="$dev_left $_dev"
+    done
+    [ -n "${dev_left// /}" ] && d_warn "安装目录里有开发文件${dev_left}（不影响运行，安装时会顺手清掉）"
+  fi
+
   # 对外地址
   local ip; ip="$(detect_ip)"
   is_private_ip "$ip" && d_ok "本机地址 $ip" || d_ok "本机地址 $ip（公网）"
@@ -670,8 +729,13 @@ backup_data() {
 # 源码目录里认得的顶层条目：换代码时只管这些，其它（.venv/.env/数据/备份）一概不碰
 # 注意不含 install.sh 和 simpleurl：它们自己就是入口/命令行，
 # 覆盖成远端的旧版会让人下次跑到旧脚本
-SOURCE_ENTRIES="app requirements.txt requirements-dev.txt .env.example Dockerfile docker-compose.yml
-.dockerignore .gitignore pytest.ini run.sh scripts README.md .cnb.yml install.sh"
+SOURCE_ENTRIES="app requirements.txt .env.example Dockerfile docker-compose.yml
+.dockerignore .gitignore run.sh scripts README.md install.sh"
+# 仓库里还有一批「开发用」文件：requirements-dev.txt、pytest.ini、.cnb.yml。
+# 它们不是运行所需，以前却跟着一起装进安装目录 —— 于是安装目录看起来像仓库，
+# 有人照着 README 在安装目录里 pip install -r requirements-dev.txt，装上一堆
+# 跟服务无关的东西。现在不装了；老安装里残留的，换代码时顺手清掉。
+DEV_ENTRIES="requirements-dev.txt pytest.ini .cnb.yml"
 # 清单里的 install.sh 不能直接覆盖安装目录里那份：它此刻可能正在被执行
 # （upgrade 就是从它跑起来的），覆盖到一半整份脚本就变样了，后面的函数全成
 # 别人家的行号。所以先登记成「待更新」，等跑完再由 self_update_script 落盘。
@@ -705,6 +769,12 @@ clear_source() {
     done
   fi
   for entry in $SOURCE_ENTRIES; do
+    rm -rf "${INSTALL_DIR:?}/$entry"
+  done
+  # 开发文件不装，也不留：老安装里躺着的那几份在这里清掉。
+  # 排在 SOURCE_ENTRIES 之后、落在「拷入新代码」之前，才不会把刚清干净的
+  # 目录又脏回去。
+  for entry in $DEV_ENTRIES; do
     rm -rf "${INSTALL_DIR:?}/$entry"
   done
 }
@@ -763,10 +833,17 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
   # 但 /workspace 拷出去的脚本没有 install.sh，得从远端取 —— 否则装出来是半截。
   # `upgrade` 例外：升级的全部意义就是「拿远端那份」，拿本地现成的等于原地转圈，
   # 还会报一句「源码已就绪」骗人。
+  #
+  # 判据带上版本：脚本可能比目录里的代码新（升级流程就是一例 —— 换壳用的是远端
+  # 脚本，但换壳后自己判断「脚本在安装目录里」就直接沿用旧代码，等于没升）。
+  # 脚本版本更新时必须照常走下载，否则「升了脚本、没升代码」会一直这么歪着。
   if [ "$ACTION_UPGRADE" != "y" ] && [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/app/main.py" ] \
      && [ "$SELF_DIR" = "$(cd "$INSTALL_DIR" 2>/dev/null && pwd || echo "")" ] \
      && [ -f "$SELF_DIR/install.sh" ]; then
-    return 2
+    if ! [ -f "$MARK_FILE" ] || ! version_lt "$(sed -n 's/^version=//p' "$MARK_FILE" | head -1)" "$VERSION"; then
+      return 2
+    fi
+    warn "脚本比安装目录里的旧（v$(sed -n 's/^version=//p' "$MARK_FILE" | head -1) → v$VERSION），照常取源码"
   fi
   # 从仓库目录里直接装（README 的第一种用法 ./install.sh --yes）也一样：
   # 脚本身边就是完整源码，没有理由再下一遍。
@@ -860,13 +937,19 @@ apply_source() { # stage
   # install.sh 删掉，删完再来判断「有没有旧脚本」，永远判成没有，自更新就
   # 静默失效：安装目录里永远是装那天的脚本，新脚本里的修法一个都用不上。
   preserve_self "$stage"
-  if [ -f "$stage/install.sh" ] && [ -f "$INSTALL_DIR/install.sh" ]; then
-    if cmp -s "$stage/install.sh" "$INSTALL_DIR/install.sh"; then
+  # stage 里的 install.sh 只作「待更新」证据，随后立刻摘掉：clear_source 会按
+  # SOURCE_ENTRIES 删安装目录里的 install.sh，紧接着 `cp -a "$stage/."` 把它拷回来。
+  # 这一对必须成对出现，少一半就是两种事故：先拷后删 = 把自己正在跑的脚本删掉
+  # （upgrade 中途整份脚本消失）；先删后不拷 = 安装目录里再没有 install.sh，
+  # 之后的 upgrade / doctor / uninstall 一律报「缺少 install.sh」。
+  if [ -f "$stage/install.sh" ]; then
+    if [ -f "$INSTALL_DIR/install.sh" ] && cmp -s "$stage/install.sh" "$INSTALL_DIR/install.sh"; then
       # 一模一样，不用更新（也就不用留 pending）
       rm -f "$stage/install.sh"
     else
       cp -f "$stage/install.sh" "$INSTALL_DIR/.install.sh.pending"
       SELF_UPDATE_PENDING="y"
+      rm -f "$stage/install.sh"
     fi
   fi
   clear_source
@@ -920,6 +1003,13 @@ install_source() {
     if [ -f "$INSTALL_DIR/app/main.py" ]; then
       ok "本地版本与安装目录一致，跳过下载"
       SOURCE_REUSED="y"
+      # 说「一致」只对代码成立：上一版脚本留下的开发文件（requirements-dev.txt
+      # 等）还躺在安装目录里，它们是「不装」的那一类，顺手清掉，别等下次换代码。
+      local dev; local dev_cleaned=""
+      for dev in $DEV_ENTRIES; do
+        if [ -e "$INSTALL_DIR/$dev" ]; then rm -rf "${INSTALL_DIR:?}/$dev"; dev_cleaned="$dev_cleaned $dev"; fi
+      done
+      [ -n "${dev_cleaned// /}" ] && ok "清掉旧版留下的开发文件：$dev_cleaned"
       return 0
     fi
     # 脚本身边就是完整源码，直接拷过去 —— 比再下一次包稳，也快得多
@@ -1695,101 +1785,110 @@ install_cli() {
   fi
   [ -n "$SUDO" ] && $SUDO mkdir -p "$bindir" || mkdir -p "$bindir"
   local cli="$bindir/simpleurl"
-  # heredoc 用 <<EOF（要展开 $INSTALL_DIR 等），代价是正文里的反引号也会被安装时执行：
-  # 正文里一句 `simpleurl status` 这样的注释，会在安装时被当成命令替换执行掉，
-  # 屏幕上多出几行 "command not found"，注释本身也变形。所以正文里一律不写反引号。
-  ${SUDO} tee "$cli" >/dev/null <<EOF
+  # heredoc 用 <<'QUOTED'：正文一个字节都不展开，`$` 和反引号都按字面写。
+  #
+  # 以前这里是 <<EOF 加「每个 $ 都要转义、正文不许出现反引号」的约定。约定
+  # 守不住：`version` 那一行里嵌套的 $(cat app/__init__.py | sed ...) 装了两次
+  # 反斜杠还是被外层吃掉，落盘的命令里那个子命令整段消失，于是 simpleurl version
+  # 永远打「代码 」后面空白；顺带还有一处把 heredoc 定界符写成了 $USAGE。
+  # 少一次展开就少一类 bug：安装目录路径这类真正要展开的，就在正文里另写一遍。
+  # 正文一个字节都不展开（<<'SU_CLI_EOF'）：模板里的 $ 与反引号按字面写。
+  # 装的时候才知道的值，用 __SU_*__ 占位，渲染完再 sed 替换。
+  local rendered="$cli.render"
+  ${SUDO} tee "$rendered" >/dev/null <<'SU_CLI_EOF'
 #!/usr/bin/env bash
-# SimpleURL 管理命令（install.sh $VERSION 生成）
+# SimpleURL 管理命令（由 install.sh __SU_SCRIPT_VERSION__ 生成；__SU_*__ 在安装时被替换成真实值）
 set -uo pipefail
-DIR="$INSTALL_DIR"
-NAME="$SERVICE_NAME"
-MARK="\$DIR/.simpleurl-managed"
-G=\$'\033[32m'; R=\$'\033[31m'; D=\$'\033[2m'; N=\$'\033[0m'
+DIR="__SU_DIR__"
+NAME="__SU_NAME__"
+MARK="$DIR/.simpleurl-managed"
+G=$'\033[32m'; R=$'\033[31m'; D=$'\033[2m'; N=$'\033[0m'
 
 # 运行方式以安装时写的标记为准，命令本身不再带上过期信息
-meta() { sed -n "s/^\$1=//p" "\$MARK" 2>/dev/null | head -1; }
-RUNTIME="\$(meta runtime)"
-PORT="\$(meta port)"
-URL_HINT="\$(grep -E '^PUBLIC_URL=' "\$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-[ -n "\$PORT" ] || PORT=8000
+meta() { sed -n "s/^$1=//p" "$MARK" 2>/dev/null | head -1; }
+RUNTIME="$(meta runtime)"
+PORT="$(meta port)"
+CODE_VER="$(meta code_version)"
+SCRIPT_VER="__SU_SCRIPT_VERSION__"
+URL_HINT="$(grep -E '^PUBLIC_URL=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+[ -n "$PORT" ] || PORT=8000
 
-say() { printf '%s\n' "\$*"; }
-warn() { printf "%s!%s %s\n" "\$R" "\$N" "\$*"; }
+say() { printf '%s\n' "$*"; }
+warn() { printf "%s!%s %s\n" "$R" "$N" "$*"; }
 
 running() {
-  if [ "\$RUNTIME" = "docker" ]; then
-    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "\$NAME"
-  elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
-    systemctl is-active --quiet "\$NAME"
+  if [ "$RUNTIME" = "docker" ]; then
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$NAME"
+  elif [ -f "/etc/systemd/system/$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet "$NAME"
   else
-    [ -f "\$DIR/simpleurl.pid" ] && kill -0 "\$(cat "\$DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null
+    [ -f "$DIR/simpleurl.pid" ] && kill -0 "$(cat "$DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null
   fi
 }
 
 site_url() {
-  if [ -n "\$URL_HINT" ]; then printf '%s' "\$URL_HINT"; return; fi
-  local ip; ip="\$(hostname -I 2>/dev/null | awk '{print \$1}')"
-  printf 'http://%s:%s' "\${ip:-127.0.0.1}" "\$PORT"
+  if [ -n "$URL_HINT" ]; then printf '%s' "$URL_HINT"; return; fi
+  local ip; ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf 'http://%s:%s' "${ip:-127.0.0.1}" "$PORT"
 }
 
 do_start() {
   if running; then say "已在运行"; return 0; fi
-  if [ "\$RUNTIME" = "docker" ]; then
-    docker start "\$NAME" >/dev/null && say "已启动容器 \$NAME"; return 0
-  elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl start "\$NAME" && say "已启动 systemd 服务 \$NAME"; return 0
+  if [ "$RUNTIME" = "docker" ]; then
+    docker start "$NAME" >/dev/null && say "已启动容器 $NAME"; return 0
+  elif [ -f "/etc/systemd/system/$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl start "$NAME" && say "已启动 systemd 服务 $NAME"; return 0
   fi
-  setsid nohup "\$DIR/start.sh" >>"\$DIR/simpleurl.log" 2>&1 </dev/null &
-  local pid=\$!
-  echo \$pid > "\$DIR/simpleurl.pid"
+  setsid nohup "$DIR/start.sh" >>"$DIR/simpleurl.log" 2>&1 </dev/null &
+  local pid=$!
+  echo $pid > "$DIR/simpleurl.pid"
   # 起没起来要说实话：start.sh 里的 exec 失败时这一步两秒内就退了，
   # 屏幕上却只留一句「已后台启动」，人要去翻日志才知道根本没跑起来。
   # 等两秒：uvicorn 起得来就还活着，起不来这个 pid 两秒内已经退了。
   # 不能用 kill -0 循环 —— 循环条件是「还活着就等」，进程一退就提前跳出，
   # 那样只能抓到「起不来」，抓不到「起来了」。
   sleep 2
-  if kill -0 "\$pid" 2>/dev/null; then
-    say "已后台启动，PID \$pid"
+  if kill -0 "$pid" 2>/dev/null; then
+    say "已后台启动，PID $pid"
   else
-    warn "进程立刻退出了（PID \$pid），最近日志："
-    tail -n 12 "\$DIR/simpleurl.log" 2>/dev/null | sed 's/^/    /'
+    warn "进程立刻退出了（PID $pid），最近日志："
+    tail -n 12 "$DIR/simpleurl.log" 2>/dev/null | sed 's/^/    /'
     return 1
   fi
 }
 
 do_stop() {
-  if [ "\$RUNTIME" = "docker" ]; then
-    docker stop "\$NAME" >/dev/null 2>&1 && say "已停止容器 \$NAME" || say "容器未运行"
-  elif [ -f "/etc/systemd/system/\$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl stop "\$NAME" >/dev/null 2>&1 && say "已停止 \$NAME"
-  elif [ -f "\$DIR/simpleurl.pid" ]; then
-    local pid; pid="\$(cat "\$DIR/simpleurl.pid" 2>/dev/null)"
-    if [ -n "\$pid" ] && kill -0 "\$pid" 2>/dev/null; then
-      kill "\$pid" 2>/dev/null || true
+  if [ "$RUNTIME" = "docker" ]; then
+    docker stop "$NAME" >/dev/null 2>&1 && say "已停止容器 $NAME" || say "容器未运行"
+  elif [ -f "/etc/systemd/system/$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
+    sudo systemctl stop "$NAME" >/dev/null 2>&1 && say "已停止 $NAME"
+  elif [ -f "$DIR/simpleurl.pid" ]; then
+    local pid; pid="$(cat "$DIR/simpleurl.pid" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
       # 只发 TERM 就在屏幕上说「已停止」是不作数的：uvicorn 收尾要一点时间，
       # 卡住的进程还会一直占着端口。等不到就上 KILL，还不行就明说。
       local n=0
-      while [ "\$n" -lt 10 ] && kill -0 "\$pid" 2>/dev/null; do n=\$((n + 1)); sleep 1; done
-      if kill -0 "\$pid" 2>/dev/null; then
-        kill -9 "\$pid" 2>/dev/null || true
+      while [ "$n" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do n=$((n + 1)); sleep 1; done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
         sleep 1
       fi
-      if kill -0 "\$pid" 2>/dev/null; then warn "进程 \$pid 没能停掉（权限？）"
-      else say "已停止（PID \$pid）"; fi
+      if kill -0 "$pid" 2>/dev/null; then warn "进程 $pid 没能停掉（权限？）"
+      else say "已停止（PID $pid）"; fi
     else
       say "记录里的进程已不在（pid 文件过期，已清理）"
     fi
-    rm -f "\$DIR/simpleurl.pid"
+    rm -f "$DIR/simpleurl.pid"
   else
     say "未在运行"
   fi
   # 停完等端口真的放开。do_stop 返回的那一刻如果端口还占着，紧接着的
   # do_start 会 bind 失败，而屏幕上只留下一句「已启动」。
-  wait_port_free || warn "端口 \$PORT 仍被占用，启动可能失败（simpleurl log 看详情）"
+  wait_port_free || warn "端口 $PORT 仍被占用，启动可能失败（simpleurl log 看详情）"
 }
 
-# 生成的命令行是 set -uo pipefail 跑的。下面每个 \$ 都必须带反斜杠：
+# 生成的命令行是 set -uo pipefail 跑的。下面每个 $ 都必须带反斜杠：
 # 这整段在安装时被套进外层 heredoc 展开一次，少了反斜杠就当场展开，
 # 到了运行时只剩一个空变量名，报 unbound variable。
 # 端口探测：ss / lsof / netstat 都没有时，退回内核的 proc/net/tcp。
@@ -1798,32 +1897,32 @@ do_stop() {
 port_listening() {
   local hex
   if command -v ss >/dev/null 2>&1; then
-    ss -lnt 2>/dev/null | awk -v p=":\$PORT" '\$4 ~ p"\$" {found=1} END{exit !found}'
-    return \$?
+    ss -lnt 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
+    return $?
   elif command -v lsof >/dev/null 2>&1; then
-    lsof -ti "tcp:\$PORT" >/dev/null 2>&1
-    return \$?
+    lsof -ti "tcp:$PORT" >/dev/null 2>&1
+    return $?
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -lnt 2>/dev/null | awk -v p=":\$PORT" '\$4 ~ p"\$" {found=1} END{exit !found}'
-    return \$?
+    netstat -lnt 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
+    return $?
   elif [ -r /proc/net/tcp ]; then
-    hex="\$(printf '%04X' "\$PORT" 2>/dev/null)"
+    hex="$(printf '%04X' "$PORT" 2>/dev/null)"
     local f
     for f in /proc/net/tcp /proc/net/tcp6; do
-      [ -r "\$f" ] || continue
-      awk -v h=":\$hex" '\$4 == "0A" && substr(\$2, length(\$2) - 4) == h {found=1} END{exit !found}' "\$f" 2>/dev/null && return 0
+      [ -r "$f" ] || continue
+      awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h {found=1} END{exit !found}' "$f" 2>/dev/null && return 0
     done
     return 1
   fi
-  (exec 3<>"/dev/tcp/127.0.0.1/\$PORT") >/dev/null 2>&1 && return 0
+  (exec 3<>"/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1 && return 0
   return 1
 }
 
 wait_port_free() {
   local i=0
-  while [ "\$i" -lt 10 ]; do
+  while [ "$i" -lt 10 ]; do
     port_listening || return 0
-    i=\$((i + 1)); sleep 1
+    i=$((i + 1)); sleep 1
   done
   return 1
 }
@@ -1831,9 +1930,9 @@ wait_port_free() {
 health() {
   command -v curl >/dev/null 2>&1 || return 0
   local code
-  code="\$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:\$PORT/healthz" 2>/dev/null || echo 000)"
-  if [ "\$code" = "200" ]; then printf "  健康检查 %s200 OK%s\n" "\$G" "\$N"
-  else printf "  健康检查 %s%s%s\n" "\$R" "\$code" "\$N"; fi
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || echo 000)"
+  if [ "$code" = "200" ]; then printf "  健康检查 %s200 OK%s\n" "$G" "$N"
+  else printf "  健康检查 %s%s%s\n" "$R" "$code" "$N"; fi
 }
 
 # 不带参数只打印当前密码，带 --reset 或直接给新密码才动手改。
@@ -1841,81 +1940,81 @@ health() {
 # 还得回头去翻刚滚过去的那行输出。所以默认改成只读。
 show_password() {
   local raw
-  raw="\$(grep -E '^ADMIN_TOKEN=' "\$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
-  [ -n "\$raw" ] || { warn "找不到 ADMIN_TOKEN，看看 simpleurl config"; return 1; }
-  say "账号：\${raw%%:*}"
-  say "密码：\${raw#*:}"
-  say "后台：\$(site_url)/admin"
+  raw="$(grep -E '^ADMIN_TOKEN=' "$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  [ -n "$raw" ] || { warn "找不到 ADMIN_TOKEN，看看 simpleurl config"; return 1; }
+  say "账号：${raw%%:*}"
+  say "密码：${raw#*:}"
+  say "后台：$(site_url)/admin"
   say "（要换密码：simpleurl password --reset）"
 }
 
 set_password() {
-  local pass="\${1:-}" cred
-  if [ -z "\$pass" ]; then
-    pass="\$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z2-9' | cut -c1-16)"
+  local pass="${1:-}" cred
+  if [ -z "$pass" ]; then
+    pass="$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z2-9' | cut -c1-16)"
   fi
-  cred="admin:\$pass"
-  if [ "\$RUNTIME" = "docker" ]; then
-    docker exec "\$NAME" python - "\$cred" <<'PY'
+  cred="admin:$pass"
+  if [ "$RUNTIME" = "docker" ]; then
+    docker exec "$NAME" python - "$cred" <<'PY'
 import pathlib, re, sys
 p = pathlib.Path('/data/.env')
 text = p.read_text() if p.exists() else ''
-text = re.sub(r'^ADMIN_TOKEN=.*\$', '', text, flags=re.M).rstrip('\n')
+text = re.sub(r'^ADMIN_TOKEN=.*$', '', text, flags=re.M).rstrip('\n')
 p.write_text(text + '\nADMIN_TOKEN=' + sys.argv[1] + '\n')
 PY
-    docker restart "\$NAME" >/dev/null 2>&1 || true
+    docker restart "$NAME" >/dev/null 2>&1 || true
   else
-    if sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=\$cred|" "\$DIR/.env" 2>/dev/null; then :
-    else sed -i '' "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=\$cred|" "\$DIR/.env"; fi
-    rm -f "\$DIR/.env.bak"
+    if sed -i.bak "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$cred|" "$DIR/.env" 2>/dev/null; then :
+    else sed -i '' "s|^ADMIN_TOKEN=.*|ADMIN_TOKEN=$cred|" "$DIR/.env"; fi
+    rm -f "$DIR/.env.bak"
     do_stop >/dev/null; sleep 1; do_start >/dev/null
   fi
-  say "新密码：\$pass"
-  say "账号：admin　后台：\$(site_url)/admin"
+  say "新密码：$pass"
+  say "账号：admin　后台：$(site_url)/admin"
   say "（改完记得同步改你自己的密码管理器）"
 }
 
 site_status() {
-  if running; then printf "%s● 运行中%s\n" "\$G" "\$N"
-  else printf "%s● 已停止%s\n" "\$R" "\$N"; fi
+  if running; then printf "%s● 运行中%s\n" "$G" "$N"
+  else printf "%s● 已停止%s\n" "$R" "$N"; fi
   health
-  printf "  站点 %s\n  后台 %s/admin\n" "\$(site_url)" "\$(site_url)"
-  if [ "\$RUNTIME" = "docker" ]; then docker ps --filter "name=^\$NAME\$" --format '  容器 {{.Status}} · {{.Ports}}' 2>/dev/null || true; fi
+  printf "  站点 %s\n  后台 %s/admin\n" "$(site_url)" "$(site_url)"
+  if [ "$RUNTIME" = "docker" ]; then docker ps --filter "name=^$NAME$" --format '  容器 {{.Status}} · {{.Ports}}' 2>/dev/null || true; fi
   return 0
 }
 
 do_backup() {
-  local out="\${1:-\$HOME/simpleurl-backup-\$(date +%Y%m%d-%H%M%S).tar.gz}"
-  mkdir -p "\$(dirname "\$out")"
-  if [ "\$RUNTIME" = "docker" ]; then
-    docker run --rm -v "\${NAME}-data:/data" -v "\$(dirname "\$out"):/backup" alpine \\
-      tar -czf "/backup/\$(basename "\$out")" -C /data . >/dev/null && say "已备份到 \$out"
+  local out="${1:-$HOME/simpleurl-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
+  mkdir -p "$(dirname "$out")"
+  if [ "$RUNTIME" = "docker" ]; then
+    docker run --rm -v "${NAME}-data:/data" -v "$(dirname "$out"):/backup" alpine \
+      tar -czf "/backup/$(basename "$out")" -C /data . >/dev/null && say "已备份到 $out"
   else
-    tar -czf "\$out" -C "\$DIR" simpleurl.db .env 2>/dev/null && say "已备份到 \$out"
+    tar -czf "$out" -C "$DIR" simpleurl.db .env 2>/dev/null && say "已备份到 $out"
   fi
 }
 
 # 从备份里恢复数据。只覆盖数据库和配置，代码不动。
 do_restore() {
-  local src="\${1:-}" tmp
-  [ -n "\$src" ] && [ -f "\$src" ] || { warn "用法：simpleurl restore <备份文件.tar.gz>"; return 2; }
-  if [ "\$RUNTIME" = "docker" ]; then
-    warn "容器模式请手动恢复：docker run --rm -v \${NAME}-data:/data -v \$(dirname "\$src"):/b alpine tar -xzf /b/\$(basename "\$src") -C /data"
+  local src="${1:-}" tmp
+  [ -n "$src" ] && [ -f "$src" ] || { warn "用法：simpleurl restore <备份文件.tar.gz>"; return 2; }
+  if [ "$RUNTIME" = "docker" ]; then
+    warn "容器模式请手动恢复：docker run --rm -v ${NAME}-data:/data -v $(dirname "$src"):/b alpine tar -xzf /b/$(basename "$src") -C /data"
     return 2
   fi
-  tmp="\$(mktemp -d)"
-  tar -xzf "\$src" -C "\$tmp" 2>/dev/null || { warn "不是有效的备份包"; rm -rf "\$tmp"; return 2; }
+  tmp="$(mktemp -d)"
+  tar -xzf "$src" -C "$tmp" 2>/dev/null || { warn "不是有效的备份包"; rm -rf "$tmp"; return 2; }
   do_stop >/dev/null
-  [ -f "\$tmp/simpleurl.db" ] && cp -a "\$tmp/simpleurl.db" "\$DIR/" && rm -f "\$DIR/simpleurl.db-wal" "\$DIR/simpleurl.db-shm"
-  [ -f "\$tmp/.env" ] && cp -a "\$tmp/.env" "\$DIR/"
-  rm -rf "\$tmp"
+  [ -f "$tmp/simpleurl.db" ] && cp -a "$tmp/simpleurl.db" "$DIR/" && rm -f "$DIR/simpleurl.db-wal" "$DIR/simpleurl.db-shm"
+  [ -f "$tmp/.env" ] && cp -a "$tmp/.env" "$DIR/"
+  rm -rf "$tmp"
   do_start >/dev/null
-  say "已从 \$src 恢复，服务已重启"
+  say "已从 $src 恢复，服务已重启"
 }
 
 # 不带参数就报状态：敲下去是想知道「现在怎么样」，不是想读一屏用法。
 # 但它必须排在 * 分支之前——case 从上往下匹配，* 在前面就永远轮不到。
-case "\${1:-status}" in
+case "${1:-status}" in
   start)   do_start ;;
   stop)    do_stop ;;
   # 停完不能立刻起：uvicorn 放端口要一点时间，抢跑会 bind 失败，
@@ -1924,54 +2023,58 @@ case "\${1:-status}" in
   restart) do_stop >/dev/null; do_start ;;
   status)  site_status ;;
   url)     site_url; echo ;;
-  version) say "install.sh $VERSION（运行方式 $RUNTIME，代码 $(cat "\$DIR/app/__init__.py" 2>/dev/null | sed -n 's/^__version__ *= *\"\(.*\)\"/\1/p' | head -1)）" ;;
+  # 代码版本取标记文件里的 code_version：它由安装/升级流程写入，可靠。
+  # 这里原来写的是 $(cat app/__init__.py | sed ...) —— 嵌套的 $( ) 在安装时
+  # 被外层 heredoc 展开掉了（反斜杠只护住了最外层），落盘的命令行里那个子命令
+  # 直接消失，于是 simpleurl version 永远打印「代码 」后面一片空白。
+  version) say "install.sh $SCRIPT_VER（运行方式 $RUNTIME，代码 $CODE_VER）" ;;
   log)
-    if [ "\$RUNTIME" = "docker" ]; then docker logs --tail 100 -f "\$NAME"
-    else tail -n 100 -f "\$DIR/simpleurl.log"; fi ;;
+    if [ "$RUNTIME" = "docker" ]; then docker logs --tail 100 -f "$NAME"
+    else tail -n 100 -f "$DIR/simpleurl.log"; fi ;;
   password)
     # 不带参数 = 看密码（只读），--reset = 换成随机新密码
-    case "\${2:-}" in
+    case "${2:-}" in
       ""|--show) show_password ;;
       --reset)   set_password "" ;;
-      *)         set_password "\${2}" ;;
+      *)         set_password "${2}" ;;
     esac ;;
   config)
-    if [ "\$RUNTIME" = "docker" ]; then
-      docker exec "\$NAME" cat /data/.env 2>/dev/null || cat "\$DIR/.env.docker"
+    if [ "$RUNTIME" = "docker" ]; then
+      docker exec "$NAME" cat /data/.env 2>/dev/null || cat "$DIR/.env.docker"
       say ""
-      say "（Docker 模式改配置：docker exec -it \$NAME vi /data/.env 后 simpleurl restart）"
+      say "（Docker 模式改配置：docker exec -it $NAME vi /data/.env 后 simpleurl restart）"
     else
-      "\${EDITOR:-vi}" "\$DIR/.env"
+      "${EDITOR:-vi}" "$DIR/.env"
     fi ;;
-  backup)  do_backup "\${2:-}" ;;
-  restore) do_restore "\${2:-}" ;;
+  backup)  do_backup "${2:-}" ;;
+  restore) do_restore "${2:-}" ;;
   upgrade)
     # 升级要连脚本一起换。否则装了 v2.2 的机器永远用 2.2 的脚本去升代码，
     # 新脚本里的修法自己用不上——上一轮的安装目录里躺着的就是旧脚本。
-    local script="\$DIR/install.sh"
-    if [ -f "\$DIR/install.sh" ]; then
-      local newest="\$DIR/install.sh.new"
-      if [ -n "\${SU_REMOTE_SCRIPT:-}" ] && [ -s "\$SU_REMOTE_SCRIPT" ]; then
-        if bash -n "\$SU_REMOTE_SCRIPT" 2>/dev/null; then cp "\$SU_REMOTE_SCRIPT" "\$newest" 2>/dev/null || true; fi
+    local script="$DIR/install.sh"
+    if [ -f "$DIR/install.sh" ]; then
+      local newest="$DIR/install.sh.new"
+      if [ -n "${SU_REMOTE_SCRIPT:-}" ] && [ -s "$SU_REMOTE_SCRIPT" ]; then
+        if bash -n "$SU_REMOTE_SCRIPT" 2>/dev/null; then cp "$SU_REMOTE_SCRIPT" "$newest" 2>/dev/null || true; fi
       fi
-      if [ -s "\$newest" ]; then script="\$newest"; fi
+      if [ -s "$newest" ]; then script="$newest"; fi
     fi
-    if [ -f "\$script" ]; then SIMPLEURL_HOME="\$DIR" exec bash "\$script" upgrade --yes
-    else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
+    if [ -f "$script" ]; then SIMPLEURL_HOME="$DIR" exec bash "$script" upgrade --yes
+    else warn "缺少 $DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   doctor)
-    if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" doctor
-    else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
+    if [ -f "$DIR/install.sh" ]; then exec bash "$DIR/install.sh" doctor
+    else warn "缺少 $DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   uninstall)
-    # 卸载会把 \$DIR 整个删掉，跑在里面的 install.sh 也会一起消失；
+    # 卸载会把 $DIR 整个删掉，跑在里面的 install.sh 也会一起消失；
     # 先拷一份到临时目录再跑，否则中途读不到脚本后半截
-    if [ -f "\$DIR/install.sh" ]; then
-      local tmp; tmp="\$(mktemp -d 2>/dev/null || echo "/tmp/.su-uninstall.\$\$")"
-      cp "\$DIR/install.sh" "\$tmp/install.sh" && chmod +x "\$tmp/install.sh"
-      SIMPLEURL_HOME="\$DIR" exec bash "\$tmp/install.sh" --uninstall
-    else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
+    if [ -f "$DIR/install.sh" ]; then
+      local tmp; tmp="$(mktemp -d 2>/dev/null || echo "/tmp/.su-uninstall.$$")"
+      cp "$DIR/install.sh" "$tmp/install.sh" && chmod +x "$tmp/install.sh"
+      SIMPLEURL_HOME="$DIR" exec bash "$tmp/install.sh" --uninstall
+    else warn "缺少 $DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   "")      site_status ;;
   help|--help|-h|*)
-    cat <<'\USAGE' | sed "s/^/  /;s/^  \$//"
+    cat <<'\USAGE' | sed "s/^/  /"
 SimpleURL 管理命令
 
 simpleurl status              运行状态与健康检查
@@ -1991,8 +2094,22 @@ simpleurl uninstall           卸载
 \USAGE
     ;;
 esac
-EOF
-  ${SUDO} chmod +x "$cli"
+SU_CLI_EOF
+  local esc_dir esc_name esc_ver
+  esc_dir="$(printf '%s' "$INSTALL_DIR" | sed 's/[&|\\]/\\&/g')"
+  esc_name="$(printf '%s' "$SERVICE_NAME" | sed 's/[&|\\]/\\&/g')"
+  esc_ver="$(printf '%s' "$VERSION" | sed 's/[&|\\]/\\&/g')"
+  $SUDO sed -i.su "s|__SU_DIR__|$esc_dir|g;s|__SU_NAME__|$esc_name|g;s|__SU_SCRIPT_VERSION__|$esc_ver|g" "$rendered"
+  # 权限显式给 755：`cat > file` 沿用已存在文件的权限，而 mktemp / 某些 umask
+  # 环境下会是 600 —— 装完 root 敲 simpleurl 能用（root 不看权限位），
+  # 换成普通运维账号就 Permission denied，而且报错长得像「文件坏了」。
+  $SUDO sh -c "cat '$rendered' > '$cli' && chmod 755 '$cli'"
+  $SUDO rm -f "$rendered" "$rendered.su"
+  # 安装目录里再留一份影子。机器上只装一份时用不到它，装了两份就是救命的：
+  # /usr/local/bin/simpleurl 只有一个名字，装第二份会把第一份覆盖掉，于是
+  # 第一份的 install.sh 再也找不到「属于自己的」命令行。有影子就够了，
+  # forward_subcommand 优先用它 —— 这也是「这套安装的东西放自己家里」。
+  $SUDO sh -c "cp -f '$cli' '$INSTALL_DIR/simpleurl' && chmod 755 '$INSTALL_DIR/simpleurl'" 2>/dev/null || true
   ok "管理命令已就位：$cli"
   case ":$PATH:" in *":$bindir:"*) : ;; *) warn "$bindir 不在 PATH，可用绝对路径 $cli" ;; esac
 }
@@ -2024,6 +2141,13 @@ summary() {
   printf "    simpleurl password    看管理员密码（--reset 换新的）\n"
   hr
   [ -n "$PREV_BACKUP" ] && printf "  %s上一版数据已备份到 %s（只留最近 5 份）%s\n" "$DIM" "$PREV_BACKUP" "$RST"
+  # 升级 / 重装时把「这轮动了什么」说清楚：装的人最想知道的是这个，
+  # 而不是再去 ls 一遍安装目录自己比对。
+  if [ -n "${PREV_CODE_VERSION:-}" ] && [ "$PREV_CODE_VERSION" != "$CODE_VERSION" ]; then
+    printf "  %s代码已更新 %s → %s%s\n" "$DIM" "$PREV_CODE_VERSION" "$CODE_VERSION" "$RST"
+  elif [ "$SOURCE_REUSED" = "y" ]; then
+    printf "  %s本轮代码未变动（只重装了依赖 / 重启了服务）%s\n" "$DIM" "$RST"
+  fi
   printf "  %s密码请立刻抄走。之后可在后台「设置 → 管理员账号」改，改完重启不丢。%s\n" "$YELLOW" "$RST"
   [ -z "$PUBLIC_URL" ] && printf "  %s想让短链显示成自己的域名？在 %s/.env 里设 PUBLIC_URL=https://s.example.com 再 restart。%s\n" "$DIM" "$INSTALL_DIR" "$RST"
   if [ -n "${PROXY_FILE:-}" ] && [ -f "$PROXY_FILE" ]; then
@@ -2063,6 +2187,7 @@ do_uninstall() {
     kill "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null || true
   fi
   rm -f /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" 2>/dev/null || true
+  rm -f "$INSTALL_DIR/simpleurl" 2>/dev/null || true
   # 卸载是唯一「删整个目录」的地方：路径异常（空 / / / $HOME）时宁可不删
   case "$INSTALL_DIR" in
     ""|"/"|"$HOME"|"$HOME/"|"/root"|"/usr"|"/usr/local") die "安装目录 ${INSTALL_DIR} 不像本脚本装的，拒绝删除" ;;
@@ -2081,14 +2206,31 @@ forward_subcommand() {
     echo "还没装好（$INSTALL_DIR 里没有安装记录）。先跑：./install.sh --yes" >&2
     return 1
   fi
-  # 只认「这套安装自己的」命令：优先用安装目录里那份，其次才是 PATH 里的。
-  # 以前直接拿 /usr/local/bin/simpleurl 兜底，机器上装着多份 SimpleURL 时
-  # 会转到别人的安装上去——症状是「明明指定了目录，改的却是另一个站」。
+  # 只认「这套安装自己的」命令。以前兜底直接拿 $PATH 里的 simpleurl，
+  # 机器上装着两份 SimpleURL 时，`./install.sh status --dir /a` 会转到
+  # /usr/local/bin/simpleurl（指向 /b）上去——症状是「明明指定了目录，
+  # 打印/改动的却是另一个站」。现在 PATH 里那条也必须先核对 DIR 再采用。
+  local cand cdir foreign=""
   for cand in "$INSTALL_DIR/simpleurl" \
               "$(command -v simpleurl 2>/dev/null || true)" \
               /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
-    if [ -n "$cand" ] && [ -x "$cand" ]; then cli="$cand"; break; fi
+    [ -n "$cand" ] && [ -x "$cand" ] || continue
+    cdir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$cand" 2>/dev/null | head -1)"
+    if [ "$cand" = "$INSTALL_DIR/simpleurl" ] || [ -z "$cdir" ] || [ "$cdir" = "$INSTALL_DIR" ]; then
+      cli="$cand"; break
+    fi
+    [ -n "$foreign" ] || foreign="$cdir"
   done
+  # 机器上只装了别的目录那一份：不要静悄悄地转过去，也不要装作没装。
+  # 说清楚谁负责这个目录，把下一步给人。
+  if [ -z "$cli" ] && [ -n "$foreign" ]; then
+    cat >&2 <<MSG
+$(printf '%s!%s ' "$YELLOW" "$RST")这个目录（$INSTALL_DIR）没有自己的 simpleurl 命令
+    机器上的 simpleurl 指向：$foreign
+    重跑一次生成：SIMPLEURL_HOME=$INSTALL_DIR bash $INSTALL_DIR/install.sh --yes
+MSG
+    return 1
+  fi
   if [ -z "$cli" ]; then
     echo "找不到 simpleurl 命令。重跑一次 ./install.sh --yes 即可生成" >&2
     return 1
@@ -2103,7 +2245,7 @@ load_existing_env() { # envfile
   SITE_NAME="$(grep -E '^SITE_NAME=' "$f" | head -1 | cut -d= -f2- || echo "$SITE_NAME")"
   PORT="$(grep -E '^PORT=' "$f" | head -1 | cut -d= -f2- || echo "$PORT")"
   PUBLIC_URL="$(grep -E '^PUBLIC_URL=' "$f" | head -1 | cut -d= -f2- || echo "")"
-  ACCESS_MODE="$(grep -E '^ACCESS_MODE=' "$f" | head -1 | cut -d= -f2- || echo "public")"
+  ACCESS_MODE="$(grep -E '^ACCESS_MODE=' "$f" | head -1 | cut -d= -f2- || echo "open")"
   SECRET_KEY="$(grep -E '^SECRET_KEY=' "$f" | head -1 | cut -d= -f2- || echo "")"
   raw_token="$(grep -E '^ADMIN_TOKEN=' "$f" | head -1 | cut -d= -f2- || echo "")"
   case "$raw_token" in
@@ -2122,6 +2264,14 @@ do_install() {
   local reuse="n"
   local prev_runtime=""
   [ -f "$MARK_FILE" ] && prev_runtime="$(sed -n 's/^runtime=//p' "$MARK_FILE" | head -1)"
+  # 端口按安装记录走。`./install.sh --yes` 在已有安装上是「重装同一份代码」，
+  # 它以前却不读记录：端口还是默认的 8940，体检于是拿 8940 去查，
+  # 报一句「8940 空闲」，紧接着在 18950 上重启服务。现在缺省即沿用记录，
+  # 只有显式 --port / PORT= 才覆盖。
+  if [ -z "$PORT_EXPLICIT" ] && [ -f "$MARK_FILE" ]; then
+    local rec_port; rec_port="$(sed -n 's/^port=//p' "$MARK_FILE" | head -1)"
+    [ -n "$rec_port" ] && PORT="$rec_port"
+  fi
 
   if [ -f "$existing_env" ]; then
     reuse="y"
@@ -2145,6 +2295,10 @@ do_install() {
     doctor || die "环境体检没过，按上面的提示处理后再跑一次"
   fi
 
+  # 记下「换代码之前」的版本，装完好说清这轮到底动了什么
+  PREV_CODE_VERSION=""
+  [ -f "$MARK_FILE" ] && PREV_CODE_VERSION="$(sed -n 's/^code_version=//p' "$MARK_FILE" | head -1)"
+
   # 升级前先看一眼远端版本：已经最新就不折腾了，别每次都重装依赖、重启服务。
   # 注意命令顺序：函数调用放最后，「函数返回 1」就不会把整个 if 判成失败。
   # 换脚本要对**升级和重装都做**：`./install.sh` 在已有安装上就是「重装代码」，
@@ -2156,8 +2310,11 @@ do_install() {
     [ "$ACTION_UPGRADE" = "y" ] && REEXEC_ACTION="upgrade"
     if [ -n "$fresh_script" ]; then
       SCRIPT_URL_HINT="$fresh_script"
-      if ! cmp -s "$fresh_script" "$INSTALL_DIR/install.sh" 2>/dev/null; then
-        ok "安装脚本可更新，换成远端最新版再继续"
+      # 只有远端「更新」才换壳。用 != 而不是「内容不同就换」：
+      # 装的是刚改过的本地版本时，远端 main 反而是旧的 —— 那种情况下换壳等于
+      # 把本地这份原地降级（跑一遍升级，最后落盘的脚本比开始前还老）。
+      if version_lt "$(script_version "$INSTALL_DIR/install.sh")" "$(script_version "$fresh_script")"; then
+        ok "安装脚本可更新（v$(script_version "$INSTALL_DIR/install.sh") → v$(script_version "$fresh_script")），换成远端最新版再继续"
         # 换壳重跑：本进程还带着旧脚本已经解析好的逻辑，直接往下跑等于没换
         SCRIPT_REEXEC="y"
         # 换壳重跑要带着这几件事过去，否则屏幕上同一件事会报两遍、还可能报成两种：
@@ -2234,8 +2391,12 @@ do_install() {
     ask_password "管理员密码"
     ADMIN_PASS="${ANSWER:-$(gen_password)}"
 
-    ask "访问模式 public 谁都能建 / admin 仅管理员 / invite 邀请码" "public"; ACCESS_MODE="$ANSWER"
-    case "$ACCESS_MODE" in public|admin|invite) : ;; *) ACCESS_MODE="public" ;; esac
+    # 选项要和站点真正认的值一致。站点只认 open / admin（见 app/core/access.py），
+    # 以前这里问的是 public / admin / invite：public 落到 normalize_mode 里会被
+    # 兜底成 open，「刚好」是对的；而 invite（邀请码）那个模式在早几轮重构里
+    # 已经没有了，选它等于什么都没发生。写对一次，比事后解释省事。
+    ask "访问模式 open 谁都能建 / admin 仅管理员" "open"; ACCESS_MODE="$ANSWER"
+    case "$ACCESS_MODE" in open|admin) : ;; *) ACCESS_MODE="open" ;; esac
     SECRET_KEY="$(gen_key 32)"
   else
     # 升级时绝不能悄悄换掉凭据：
@@ -2249,7 +2410,8 @@ do_install() {
       SECRET_KEY="$(gen_key 32)"
       warn "读不到 SECRET_KEY，生成了新的：已登录会话会全部失效"
     }
-    [ -n "${ACCESS_MODE:-}" ] || ACCESS_MODE="public"
+    # 老安装里存的 public 等价于 open，先归一，后面写 .env / 日报都用得着
+    case "${ACCESS_MODE:-}" in open|admin) : ;; public|"") ACCESS_MODE="open" ;; *) ACCESS_MODE="open" ;; esac
   fi
 
   echo
@@ -2294,8 +2456,9 @@ do_install() {
     fi
   fi
 
+  CODE_VERSION="$(remote_version "$INSTALL_DIR")"
   printf 'version=%s\ncode_version=%s\nruntime=%s\nport=%s\ninstalled_at=%s\n' \
-    "$VERSION" "$(remote_version "$INSTALL_DIR")" "$RUNTIME" "$PORT" \
+    "$VERSION" "$CODE_VERSION" "$RUNTIME" "$PORT" \
     "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARK_FILE"
   install_cli
   # 走到这里代码已换完、服务已起来、验收也过了 —— 只有这时才换脚本自己。

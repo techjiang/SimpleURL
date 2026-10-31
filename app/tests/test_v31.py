@@ -50,10 +50,11 @@ def _code_only(name: str) -> str:
 
 
 def _generated_cli() -> str:
+    """install_cli 里那段字面量 heredoc 的正文（v2.5.0 起是 <<'SU_CLI_EOF'）。"""
     text = _text()
-    start = text.index('${SUDO} tee "$cli"')
-    end = text.index("\nEOF\n", start)
-    return text[start:end]
+    start = text.index("<<'SU_CLI_EOF'")
+    body = text[start:].split("\n", 1)[1]
+    return body[: body.index("\nSU_CLI_EOF")]
 
 
 def _run(*args: str, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:

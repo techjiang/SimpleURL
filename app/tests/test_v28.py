@@ -139,20 +139,23 @@ def test_preview_page_covers_light_and_dark():
 # ---------------------------------------------------------------- 安装脚本
 
 def _cli_script() -> str:
-    """把 install_cli 里生成的管理命令原样抠出来，单独跑一遍。"""
+    """把 install_cli 里生成的管理命令原样抠出来，单独跑一遍。
+
+    模板自 v2.5.0 起是 <<'SU_CLI_EOF' 的字面量 heredoc：正文不再经 shell 展开，
+    所以抠出来就是最终落盘的样子，不用再还原 \$。
+    """
     src = INSTALL.read_text(encoding="utf-8")
-    m = re.search(r"tee \"\$cli\" >/dev/null <<EOF\n(.*?)\nEOF\n", src, re.S)
+    m = re.search(r"tee \"\$rendered\" >/dev/null <<'SU_CLI_EOF'\n(.*?)\nSU_CLI_EOF\n", src, re.S)
     assert m, "找不到 install_cli 里生成的命令正文"
     return m.group(1)
 
 
 def _render_cli(tmp_path: Path) -> Path:
-    # 生成命令的 heredoc 没加引号（外层要展开 $INSTALL_DIR），所以源码里凡是
-    # 想留给运行时的 $ 都写成 \$。抠出来单独跑时得把它们还原，否则 case 的
-    # `${1:-status}` 会原样留在文件中，两个分支都不匹配。
-    script = _cli_script().replace("\\$", "$")
-    script = script.replace('DIR="$INSTALL_DIR"', f'DIR="{tmp_path}"')
-    script = script.replace('NAME="$SERVICE_NAME"', 'NAME="simpleurl"')
+    # 正文已是字面量，只需把安装时替换的占位换成本次测试的目录。
+    script = _cli_script()
+    script = script.replace("__SU_DIR__", str(tmp_path))
+    script = script.replace("__SU_NAME__", "simpleurl")
+    script = script.replace("__SU_SCRIPT_VERSION__", "9.9.9")
     path = tmp_path / "simpleurl"
     path.write_text(script, encoding="utf-8")
     (tmp_path / ".simpleurl-managed").write_text("version=2.1.0\ncode_version=1.5.0\nruntime=python\nport=1\n")
@@ -239,7 +242,7 @@ def test_install_cleans_legacy_flat_sources():
 # ---------------------------------------------------------------- v29：安装脚本再加固
 # 这一轮全是「真装一遍才现形」的坑，光读代码看不出来，所以能写成契约的都写进来。
 
-CLI_HEREDOC = re.compile(r'tee "\$cli" >/dev/null <<EOF\n(.*?)\nEOF\n', re.S)
+CLI_HEREDOC = re.compile(r"tee \"\$rendered\" >/dev/null <<'SU_CLI_EOF'\n(.*?)\nSU_CLI_EOF\n", re.S)
 
 
 class TestInstallV29:
@@ -251,8 +254,13 @@ class TestInstallV29:
     # ---- 生成的 simpleurl 命令
 
     def test_generated_cli_has_no_bare_backticks(self):
-        """外层 heredoc 是 <<EOF（要展开 $INSTALL_DIR），正文里的反引号会先被
-        安装进程执行掉：一句注释能变成 command not found，屏幕上一片红。"""
+        """正文里不该出现反引号。
+
+        以前 heredoc 是 <<EOF，正文里的反引号会先被安装进程执行掉：一句注释
+        能变成 command not found，屏幕上一片红。现在模板是 <<'SU_CLI_EOF'
+        的字面量，风险已经消失 —— 但「注释里别写反引号」这条仍然值得钉住：
+        万一有人把 heredoc 改回展开式，这条会立刻变红。
+        """
         body = CLI_HEREDOC.search(self.text())
         assert body, "找不到生成管理命令的 heredoc"
         assert "`" not in body.group(1), "生成的命令里有反引号，安装时会被当成命令替换执行"
