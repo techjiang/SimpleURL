@@ -1546,6 +1546,19 @@ health() {
   else printf "  健康检查 %s%s%s\n" "\$R" "\$code" "\$N"; fi
 }
 
+# 不带参数只打印当前密码，带 --reset 或直接给新密码才动手改。
+# 原来不给参数就随机重置，而它是最常敲的一条：敲一下等于把现成的密码作废，
+# 还得回头去翻刚滚过去的那行输出。所以默认改成只读。
+show_password() {
+  local raw
+  raw="\$(grep -E '^ADMIN_TOKEN=' "\$DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  [ -n "\$raw" ] || { warn "找不到 ADMIN_TOKEN，看看 simpleurl config"; return 1; }
+  say "账号：\${raw%%:*}"
+  say "密码：\${raw#*:}"
+  say "后台：\$(site_url)/admin"
+  say "（要换密码：simpleurl password --reset）"
+}
+
 set_password() {
   local pass="\${1:-}" cred
   if [ -z "\$pass" ]; then
@@ -1623,7 +1636,13 @@ case "\${1:-status}" in
   log)
     if [ "\$RUNTIME" = "docker" ]; then docker logs --tail 100 -f "\$NAME"
     else tail -n 100 -f "\$DIR/simpleurl.log"; fi ;;
-  password) set_password "\${2:-}" ;;
+  password)
+    # 不带参数 = 看密码（只读），--reset = 换成随机新密码
+    case "\${2:-}" in
+      ""|--show) show_password ;;
+      --reset)   set_password "" ;;
+      *)         set_password "\${2}" ;;
+    esac ;;
   config)
     if [ "\$RUNTIME" = "docker" ]; then
       docker exec "\$NAME" cat /data/.env 2>/dev/null || cat "\$DIR/.env.docker"
@@ -1667,7 +1686,9 @@ simpleurl status              运行状态与健康检查
 simpleurl start | stop | restart
 simpleurl log                 跟踪日志
 simpleurl url                 打印站点与后台地址
-simpleurl password [新密码]    重置管理员密码（不给参数就随机生成）
+simpleurl password              看当前管理员密码（只读）
+simpleurl password --reset      换成随机新密码
+simpleurl password 新密码       设成指定的密码
 simpleurl config              查看 / 编辑配置
 simpleurl backup [路径]        备份数据库与配置
 simpleurl restore <备份>       从备份恢复数据
@@ -1703,7 +1724,7 @@ summary() {
   printf "    simpleurl log         看日志\n"
   printf "    simpleurl upgrade     升级到最新代码\n"
   printf "    simpleurl backup      备份数据\n"
-  printf "    simpleurl password    重置管理员密码\n"
+  printf "    simpleurl password    看管理员密码（--reset 换新的）\n"
   hr
   [ -n "$PREV_BACKUP" ] && printf "  %s上一版数据已备份到 %s（只留最近 5 份）%s\n" "$DIM" "$PREV_BACKUP" "$RST"
   printf "  %s密码请立刻抄走。之后可在后台「设置 → 管理员账号」改，改完重启不丢。%s\n" "$YELLOW" "$RST"

@@ -147,3 +147,37 @@ class TestWordmarkInk:
     def test_preview_pairs_each_ink_with_its_background(self):
         html = (LOGO / "preview.html").read_text(encoding="utf-8")
         assert "logo-horizontal-dark.svg" in html, "深底那段没换成浅色字标"
+
+
+class TestGeneratedCliHygiene:
+    """生成的 simpleurl 命令里，注释也会被外层 heredoc 先执行一遍。
+
+    真实踩过两次：注释里写一句 `simpleurl password`，安装时被当成命令替换，
+    整行替换成多行输出，剩下的半句成了多行注释 —— 后面的函数全被注掉。
+    屏幕上一句 No such file or directory，看着完全不像「注释写错了」。
+    """
+
+    CLI_HEREDOC = re.compile(r'tee "\$cli" >/dev/null <<EOF\n(.*?)\nEOF', re.S)
+
+    def _body(self) -> str:
+        m = self.CLI_HEREDOC.search(INSTALL.read_text(encoding="utf-8"))
+        assert m, "找不到生成管理命令的 heredoc"
+        return m.group(1)
+
+    def test_no_bare_backticks(self):
+        assert "`" not in self._body(), "生成的命令里有反引号，安装时会被当成命令替换执行"
+
+    def test_every_dollar_is_escaped(self):
+        """正文里的 $ 全都要写成 \\$：heredoc 没加引号，漏一个就在安装时展开。"""
+        body = self._body()
+        raw = re.findall(r"(?<!\\)\$\(", body)
+        assert not raw, f"有 {len(raw)} 处未转义的 $( ，安装时会被提前执行"
+
+    def test_password_without_args_is_read_only(self):
+        """`simpleurl password` 是最常敲的一条，敲一下就把密码作废太伤。
+
+        默认只看，--reset 才换新的。
+        """
+        body = self._body()
+        assert "show_password" in body
+        assert "--reset" in body
