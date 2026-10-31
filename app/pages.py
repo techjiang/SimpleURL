@@ -216,7 +216,7 @@ def manifest(request: Request, db: Session = Depends(get_db)):
         "scope": ".",
         "display": "standalone",
         "background_color": "#070b14",
-        "theme_color": "#4f8cff",
+        "theme_color": "#6366f1",
         "icons": icons,
     }
     return JSONResponse(

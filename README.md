@@ -33,7 +33,7 @@
 - **CSV 导入** — 把自己导出的表格、Excel 另存的 CSV 直接灌进来，中英文表头都认，没表头按「哪列像链接」猜
 - **告警外推** — Webhook / 邮件 / Bark 三通道，部署自检与配额告警出现时自动推一条，同类 1 小时内不重复
 - **精致界面** — 深色玻璃质感、响应式、无框架依赖、极光动效
-- **无背景 Logo** — 提供 SVG 矢量与 16~512px PNG，深浅底色通用
+- **无背景 Logo** — 一枚 S 形的折返线，只有笔画本身、没有底板。SVG 矢量 + 16~1024px PNG，全尺寸同一副几何；另附单色版（墨色 / 反白）与 PWA 蒙版版
 
 ## 快速开始
 
@@ -289,10 +289,11 @@ curl -fsSL -H "Authorization: Basic $(printf 'cnb:%s' "$CNB_TOKEN" | base64)" \
 
 ### 装完的日常
 
-安装目录里自带 `install.sh`，`/usr/local/bin/simpleurl` 只是它的门脸：
+安装目录里自带 `install.sh`，`/usr/local/bin/simpleurl` 只是它的门脸。
+两种写法等价，`./install.sh status` 会转给它：
 
 ```bash
-simpleurl status      # 状态 + 健康检查
+simpleurl status      # 状态 + 健康检查（等价 ./install.sh status）
 simpleurl log         # 跟踪日志
 simpleurl restart     # 重启
 simpleurl password    # 重置管理员密码（不给参数就随机生成）

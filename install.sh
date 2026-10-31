@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.4.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -104,6 +104,7 @@ PREV_IMAGE=""
 PREV_BACKUP=""
 INTERACTIVE=1
 ACTION="install"
+SUB_ARGS=()          # 转发给 simpleurl 的额外参数
 ASSUME_YES="n"
 SKIP_HEALTH="n"
 
@@ -124,6 +125,14 @@ while [ $# -gt 0 ]; do
     --no-health) SKIP_HEALTH="y" ;;
     --force)     ASSUME_YES="y" ;;
     --help|-h)   ACTION="help" ;;
+    # 帮助里列出的管理子命令：脚本自己不重复实现一遍，转给安装时生成的
+    # simpleurl 命令。以前这些词会直接落到「未知参数」上 —— 帮助里写得
+    # 明明白白，照着敲却全报错，是最伤信任的那种不一致。
+    status|start|stop|restart|log|url|password|config|backup|restore)
+                 ACTION="$1"
+                 shift
+                 SUB_ARGS=("$@")   # 解析循环会把 $@ 消耗光，这里先留一份
+                 break ;;
     *) echo "未知参数：$1（--help 看用法）" >&2; exit 2 ;;
   esac
   shift
@@ -1744,6 +1753,31 @@ do_uninstall() {
   ok "已卸载干净"
 }
 
+# ---------------------------------------------------------------- 子命令转发
+# 帮助里列出的管理子命令由安装时生成的命令负责实现，脚本这里只做转发。
+# 不重复实现一遍：两份逻辑迟早会漂移，而漂移的是「文档说的」和「实际做的」。
+forward_subcommand() {
+  local sub="$1" cli=""
+  shift
+  if [ ! -f "$MARK_FILE" ]; then
+    echo "还没装好（$INSTALL_DIR 里没有安装记录）。先跑：./install.sh --yes" >&2
+    return 1
+  fi
+  # 只认「这套安装自己的」命令：优先用安装目录里那份，其次才是 PATH 里的。
+  # 以前直接拿 /usr/local/bin/simpleurl 兜底，机器上装着多份 SimpleURL 时
+  # 会转到别人的安装上去——症状是「明明指定了目录，改的却是另一个站」。
+  for cand in "$INSTALL_DIR/simpleurl" \
+              "$(command -v simpleurl 2>/dev/null || true)" \
+              /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then cli="$cand"; break; fi
+  done
+  if [ -z "$cli" ]; then
+    echo "找不到 simpleurl 命令。重跑一次 ./install.sh --yes 即可生成" >&2
+    return 1
+  fi
+  exec "$cli" "$sub" ${1+"$@"}
+}
+
 # ---------------------------------------------------------------- 主流程
 # 读已有安装的配置：升级时原样沿用，不重新提问
 load_existing_env() { # envfile
@@ -1936,6 +1970,8 @@ do_install() {
 
 main() {
   case "$ACTION" in
+    status|start|stop|restart|log|url|password|config|backup|restore)
+      forward_subcommand "$ACTION" ${SUB_ARGS[@]+"${SUB_ARGS[@]}"} ;;
     help) usage; exit 0 ;;
     doctor) banner; doctor; exit $? ;;
     uninstall) banner; do_uninstall; exit 0 ;;
