@@ -19,6 +19,8 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/static/logo/icon-180.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/static/app.css" />
+  {# 自定义样式/脚本放在这里，install.sh 升级时会保留（app/ 其它文件都会被覆盖）。 #}
+  <link rel="stylesheet" href="/static/site.css" onerror="this.remove()" />
   <meta name="csrf-token" content="{{ csrf_token(request) }}" />
 </head>
 <body>
@@ -48,6 +50,7 @@
     <span class="dot">·</span>
     <span>{{ site_tagline }}</span>
   </footer>
-  {% block scripts %}<script src="/static/app.js" defer nonce="{{ csp_nonce(request) }}"></script>{% endblock %}
+  {% block scripts %}<script src="/static/app.js" defer nonce="{{ csp_nonce(request) }}"></script>
+  <script src="/static/site.js" defer nonce="{{ csp_nonce(request) }}" onerror="this.remove()"></script>{% endblock %}
 </body>
 </html>

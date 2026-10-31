@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.3.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -69,7 +69,16 @@ if [ -n "${SIMPLEURL_HOME:-}" ]; then
 elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/.simpleurl-managed" ]; then
   INSTALL_DIR="$SELF_DIR"
 else
+  # 第三条路：本机已经装过（CLI 里记着目录）。从任意位置跑 `bash install.sh upgrade`
+  # 是最自然的用法，不该因为「脚本不在安装目录里」就跑去 $HOME/simpleurl 报
+  # 「没有安装记录」。装了多份时以最近一次安装为准。
   INSTALL_DIR="$HOME/simpleurl"
+  for _mark in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
+    [ -f "$_mark" ] || continue
+    _dir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$_mark" 2>/dev/null | head -1)"
+    if [ -n "$_dir" ] && [ -f "$_dir/.simpleurl-managed" ]; then INSTALL_DIR="$_dir"; break; fi
+  done
+  unset _mark _dir
 fi
 # 8000 是各种开发服务器的默认口，撞车概率太高；8940 冷门、好记、不占常用段
 PORT="${PORT:-8940}"
@@ -276,7 +285,7 @@ probe_network() {
        PIP_TRUSTED_HOST="$(printf '%s' "$PIP_INDEX_URL" | sed -E 's#https?://([^/]+)/.*#\1#')"; return 0 ;;
   esac
   need_cmd curl || { CN_MIRROR_ON=0; return 0; }
-  if [ -n "${PIP_INDEX_URL:-}" ] && curl -fsS -m 3 -o /dev/null "$PIP_INDEX_URL" 2>/dev/null; then
+  if [ -n "${PIP_INDEX_URL:-}" ] && probe_curl "$PIP_INDEX_URL"; then
     CN_MIRROR_ON=1; PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-$(printf '%s' "$PIP_INDEX_URL" | sed -E 's#https?://([^/]+)/.*#\1#')}"
   elif pick_pip_mirror; then
     CN_MIRROR_ON=1
@@ -295,6 +304,8 @@ mirror_url() { # url
   printf '%s' "$1"
 }
 
+is_cnb() { case "$GIT_HOST" in *cnb.cool*) return 0 ;; esac; return 1; }
+
 # 私有仓库：CNB_TOKEN（或环境里的 CNB 令牌）会被换成 Basic 头，可直接拉私库源码
 auth_header() {
   local tok="${CNB_TOKEN:-}"
@@ -311,6 +322,12 @@ fetch() { # url out
     if [ -n "$auth" ]; then wget -q -T 30 --header="$auth" -O "$2" "$1"
     else wget -q -T 30 -O "$2" "$1"; fi
   else die "需要 curl 或 wget"; fi
+}
+
+# 网络探测专用：短超时，失败返回非 0，绝不 die —— 探测失败只该降级，不该中止安装
+probe_curl() { # url
+  need_cmd curl || return 1
+  curl -fsS -m 3 -o /dev/null "$1" 2>/dev/null
 }
 
 # ---------------------------------------------------------------- 版本
@@ -336,13 +353,16 @@ remote_peek_version() {
   tmp="$(mktemp 2>/dev/null || echo "/tmp/.su-v.$$")"
   # 网页路由（/-/raw）在 CNB 上返回 200 的 HTML 外壳，从里面正则找版本永远找不到，
   # 于是「升级」看着跑了、实际什么都没换。有令牌才走 OpenAPI 的 git/raw。
+  # 没有令牌也别直接跳过去猜：网页路由其实会 302 到带签名的真实文件地址，
+  # `curl -L` 跟到底照样拿得到真源码，只是不能靠它判断「404 还是离线」——
+  # 所以这里拿回来的是不是 Python 仍然由 is_python_file 把关。
   local urls=()
-  case "$GIT_HOST" in
-    *cnb.cool*)
-      [ -n "${CNB_TOKEN:-}" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/app/__init__.py") ;;
-    *)
-      urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/app/__init__.py") ;;
-  esac
+  if is_cnb; then
+    [ -n "${CNB_TOKEN:-}" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/app/__init__.py")
+    urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/app/__init__.py")
+  else
+    urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/app/__init__.py")
+  fi
   urls+=("https://raw.githubusercontent.com/${REPO_SLUG}/$REPO_BRANCH/app/__init__.py")
   for url in ${urls[@]+"${urls[@]}"}; do
     if fetch "$url" "$tmp" >/dev/null 2>&1 && is_python_file "$tmp"; then
@@ -418,13 +438,17 @@ port_holder_pid() { # port
 is_our_service() { # pid
   local pid="$1" cwd=""
   [ -n "$pid" ] || return 1
+  # 没有 /proc（macOS、部分精简容器）或当前用户看不到别的用户的进程时，
+  # 这里一律判定「不是自己人」：宁可多报一次端口占用（并换个口），
+  # 也不能因为读不到就默认「自己的」然后把陌生进程杀掉。
+  [ -d "/proc/$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   if [ -f "$INSTALL_DIR/simpleurl.pid" ] && [ "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" = "$pid" ]; then
     return 0
   fi
   cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   [ "$cwd" = "$INSTALL_DIR" ] && return 0
-  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$INSTALL_DIR" && return 0
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F -- "$INSTALL_DIR" && return 0
   return 1
 }
 
@@ -566,6 +590,12 @@ backup_data() {
 # 覆盖成远端的旧版会让人下次跑到旧脚本
 SOURCE_ENTRIES="app requirements.txt requirements-dev.txt .env.example Dockerfile docker-compose.yml
 .dockerignore .gitignore pytest.ini run.sh scripts README.md .cnb.yml"
+# `app/` 整体覆盖，但下面两类文件必须活下来：
+#  · site.css / site.js —— 装完想改个配色、加段统计，最自然的做法就是写在这里。
+#    升级把 app/ 整个换掉，等于每次升级都把用户的改动删一遍。
+#  · logo/preview.html —— 出图工具的面板，只有跑了 scripts/gen_logo.py 才存在，
+#    远端源码里没有，顺手删掉只是让人下次出图时发现少了东西
+KEEP_ENTRIES="app/static/site.css app/static/site.js app/static/logo/preview.html"
 
 # 早期版本把 app/ 里的模块平铺着拷进了安装根目录（main.py / core/ / templates/ …）。
 # 换代码时这些副本必须一起清掉：它们既是伸手不见的垃圾，又会在 Python 的
@@ -655,13 +685,42 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
   return 1
 }
 
+# 用户放在 app/ 里的自定义文件：换代码前挪走，换完放回来。
+# 不这么做的话，升级会把 site.css / site.js 一起删掉 —— 那是用户唯一
+# 能改样式又不用碰源码的地方，每次升级清一遍等于逼人 fork。
+stash_user_files() { # 返回暂存目录（没有要留的就返回空）
+  local dir="$1" f keep=""
+  for f in $KEEP_ENTRIES; do
+    # preview.html 是出图工具的产物，不是用户改动，不用提示
+    [ -f "$INSTALL_DIR/$f" ] && keep="$keep $f"
+  done
+  [ -n "$keep" ] || { printf ''; return 0; }
+  for f in $keep; do
+    mkdir -p "$dir/$(dirname "$f")"
+    cp -a "$INSTALL_DIR/$f" "$dir/$f" 2>/dev/null || true
+  done
+  printf '%s' "$dir"
+}
+
 # 把 $1 里的源码替换进安装目录（先清白名单条目，再整体拷过去）
 apply_source() { # stage
-  local stage="$1"
+  local stage="$1" stash="" f
+  stash="$(stash_user_files "$stage/.userfiles")"
   clear_source
   # 解压出来的 `.git` 之类不要带进来
   rm -rf "$stage/.git"
   cp -a "$stage/." "$INSTALL_DIR/"
+  if [ -n "$stash" ]; then
+    local kept=""
+    for f in $KEEP_ENTRIES; do
+      [ -f "$stash/$f" ] || continue
+      mkdir -p "$INSTALL_DIR/$(dirname "$f")"
+      cp -a "$stash/$f" "$INSTALL_DIR/$f"
+      kept="$kept ${f##*/}"
+    done
+    [ -n "${kept// /}" ] && ok "你自己放的静态文件已保留：$kept"
+  fi
+  rm -rf "$stage/.userfiles"
 }
 
 install_source() {
@@ -1051,7 +1110,12 @@ stop_running() {
     $SUDO systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
   elif [ -f "$INSTALL_DIR/simpleurl.pid" ]; then
     local pid; pid="$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null || echo "")"
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    # pid 文件可能过期：机器重启过、进程崩过，那个 pid 早被别人复用了。
+    # 不核对就 kill，等于把别人的进程顺手杀掉——所以先确认它真在建
+    # 目录里跑。核对不上就只删文件，不动进程。
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_our_service "$pid"; then
+      kill "$pid" 2>/dev/null || true
+    fi
     rm -f "$INSTALL_DIR/simpleurl.pid"
   elif port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
     # 没有 pid 文件（被删过、或是手动起的进程），但端口上确实是自己那个服务：
@@ -1128,6 +1192,8 @@ wait_health() { # [max]
 VERIFY_SESSION_DIR=""
 VERIFY_CODE=""
 VERIFY_TARGET="${VERIFY_TARGET:-}"   # 仅用于自测：换一个验收要创建的短链目标
+SCRIPT_REEXEC="${SCRIPT_REEXEC:-n}"   # 已为「换新脚本」重跑过一次，防无限自举
+SCRIPT_FETCHED="n"                    # 本轮是否已经尝试过取远端脚本
 
 verify_cleanup() {
   local rc=$?
@@ -1339,6 +1405,38 @@ rollback_or_die() { # message
   die "$msg"
 }
 
+# ---------------------------------------------------------------- 脚本自更新
+# 安装目录里那份 install.sh 是装的那一刻的版本。如果升级只换 app/，机器上永远
+# 跑着旧脚本：后来修掉的坑一个都用不上，而「修脚本」只能靠人再手敲一遍 curl。
+# 所以升级时顺手把远端脚本也取一份，取回来先 bash -n 验语法，验过才用。
+SCRIPT_URL_HINT=""   # 取到的远端脚本路径（空 = 没取到，沿用本地那份）
+fetch_latest_script() { # 输出可执行的脚本路径，取不到就输出空
+  local dir="$INSTALL_DIR/.stage-script" tmp urls=() out
+  rm -rf "$dir"; mkdir -p "$dir"
+  out="$dir/install.sh"
+  if is_cnb; then
+    [ -n "${CNB_TOKEN:-}" ] && urls+=("$API_HOST/$REPO_SLUG/-/git/raw/$REPO_BRANCH/install.sh")
+    urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/install.sh")
+  else
+    urls+=("$GIT_HOST/$REPO_SLUG/-/raw/$REPO_BRANCH/install.sh")
+  fi
+  urls+=("https://raw.githubusercontent.com/${REPO_SLUG}/$REPO_BRANCH/install.sh")
+  for tmp in ${urls[@]+"${urls[@]}"}; do
+    if fetch "$tmp" "$out" >/dev/null 2>&1 && is_shell_script "$out"; then
+      bash -n "$out" 2>/dev/null && { printf '%s' "$out"; return 0; }
+      warn "远端脚本语法检查没过，继续用本地这份"
+    fi
+    rm -f "$out"
+  done
+  printf ''
+}
+
+is_shell_script() { # file：认得 shebang 才行，CNB 网页路由会把 HTML 当脚本喂回来
+  [ -s "$1" ] || return 1
+  head -c 2 "$1" | grep -q '<' && return 1
+  head -1 "$1" | grep -qE '^#!.*(bash|sh)'
+}
+
 # ---------------------------------------------------------------- simpleurl 命令
 # 生成管理命令。它自己读 MARK_FILE 决定运行方式，所以脚本挪走、升级过
 # 也不会跑到旧逻辑上。
@@ -1528,7 +1626,17 @@ case "\${1:-status}" in
   backup)  do_backup "\${2:-}" ;;
   restore) do_restore "\${2:-}" ;;
   upgrade)
-    if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" upgrade --yes
+    # 升级要连脚本一起换。否则装了 v2.2 的机器永远用 2.2 的脚本去升代码，
+    # 新脚本里的修法自己用不上——上一轮的安装目录里躺着的就是旧脚本。
+    local script="\$DIR/install.sh"
+    if [ -f "\$DIR/install.sh" ]; then
+      local newest="\$DIR/install.sh.new"
+      if [ -n "\${SU_REMOTE_SCRIPT:-}" ] && [ -s "\$SU_REMOTE_SCRIPT" ]; then
+        if bash -n "\$SU_REMOTE_SCRIPT" 2>/dev/null; then cp "\$SU_REMOTE_SCRIPT" "\$newest" 2>/dev/null || true; fi
+      fi
+      if [ -s "\$newest" ]; then script="\$newest"; fi
+    fi
+    if [ -f "\$script" ]; then SIMPLEURL_HOME="\$DIR" exec bash "\$script" upgrade --yes
     else warn "缺少 \$DIR/install.sh，请重新执行安装脚本"; exit 2; fi ;;
   doctor)
     if [ -f "\$DIR/install.sh" ]; then exec bash "\$DIR/install.sh" doctor
@@ -1603,8 +1711,14 @@ do_uninstall() {
   if [ ! -f "$MARK_FILE" ]; then
     die "$INSTALL_DIR 不是本脚本装的目录，为安全起见不自动删"
   fi
-  ask_yes "确认删除 $INSTALL_DIR 与全部数据？（不可恢复）" "n"
-  [ "$ANSWER" = "y" ] || die "已取消（非交互请加 --force）"
+  # --force 是「我知道自己在删什么」的显式确认。以前它只被解析、从不生效，
+  # 非交互卸载永远卡在这个反问上 —— 用法说明里写着 --force，实际不能用。
+  if [ "$ASSUME_YES" = "y" ]; then
+    warn "按 --force 跳过确认，直接删除 $INSTALL_DIR"
+  else
+    ask_yes "确认删除 $INSTALL_DIR 与全部数据？（不可恢复）" "n"
+    [ "$ANSWER" = "y" ] || die "已取消（非交互请加 --force）"
+  fi
   if need_cmd docker && docker container inspect "$SERVICE_NAME" >/dev/null 2>&1; then
     docker rm -f "$SERVICE_NAME" >/dev/null 2>&1 || true
     docker volume rm "${SERVICE_NAME}-data" >/dev/null 2>&1 || true
@@ -1622,7 +1736,11 @@ do_uninstall() {
     kill "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" 2>/dev/null || true
   fi
   rm -f /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" 2>/dev/null || true
-  rm -rf "$INSTALL_DIR"
+  # 卸载是唯一「删整个目录」的地方：路径异常（空 / / / $HOME）时宁可不删
+  case "$INSTALL_DIR" in
+    ""|"/"|"$HOME"|"$HOME/"|"/root"|"/usr"|"/usr/local") die "安装目录 ${INSTALL_DIR} 不像本脚本装的，拒绝删除" ;;
+  esac
+  rm -rf "${INSTALL_DIR:?}"
   ok "已卸载干净"
 }
 
@@ -1671,6 +1789,27 @@ do_install() {
 
   # 升级前先看一眼远端版本：已经最新就不折腾了，别每次都重装依赖、重启服务。
   # 注意命令顺序：函数调用放最后，「函数返回 1」就不会把整个 if 判成失败。
+  # 升级时换掉安装目录里的脚本自己：否则这台机器永远用装那天的脚本去升代码。
+  if [ "$ACTION_UPGRADE" = "y" ] && [ "$reuse" = "y" ] && [ "$SCRIPT_REEXEC" != "y" ] \
+     && [ "$SCRIPT_FETCHED" != "y" ]; then
+    local fresh_script; fresh_script="$(fetch_latest_script)"
+    if [ -n "$fresh_script" ]; then
+      SCRIPT_URL_HINT="$fresh_script"
+      if ! cmp -s "$fresh_script" "$INSTALL_DIR/install.sh" 2>/dev/null; then
+        ok "安装脚本可更新，换成远端最新版再继续"
+        # 换壳重跑：本进程还带着旧脚本已经解析好的逻辑，直接往下跑等于没换
+        SCRIPT_REEXEC="y"
+        SIMPLEURL_HOME="$INSTALL_DIR" SCRIPT_REEXEC=y \
+          exec bash "$fresh_script" upgrade --yes
+      fi
+      rm -rf "$INSTALL_DIR/.stage-script"
+    else
+      warn "取不到远端安装脚本，本轮沿用本地这份（升级代码不受影响）"
+    fi
+    # 一次尝试就够：短路升级会在下面 exit 0，重跑时又白拉一遍
+    SCRIPT_FETCHED="y"
+  fi
+
   if [ "$ACTION_UPGRADE" = "y" ] && [ "$reuse" = "y" ]; then
     local same_rc=0
     same_as_remote || same_rc=$?

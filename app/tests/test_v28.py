@@ -68,7 +68,9 @@ def test_all_sizes_are_the_same_drawing(size):
     box = _bbox(img)
     assert box, f"icon-{size}.png 是空图"
     w, h = box[2] - box[0], box[3] - box[1]
-    assert 0.55 <= w / h <= 0.95, f"icon-{size}.png 宽高比 {w / h:.2f}，与其它尺寸不是同一枚图"
+    # 宽松差：宽高比要「一致」，但图形本身可以是接近正方的。
+    # 之前卡在 0.95 只是因为上一版造型偏瘦，那是个几何巧合，不是判据。
+    assert 0.85 <= w / h <= 1.15, f"icon-{size}.png 宽高比 {w / h:.2f}，与其它尺寸不是同一枚图"
     fill = max(w, h) / size
     assert 0.55 <= fill <= 0.80, f"icon-{size}.png 图形占画布 {fill:.0%}，与其它尺寸不一致"
 
@@ -375,3 +377,73 @@ class TestInstallV29:
         src = self.text()
         body = src[src.index("verify_end_to_end() {"): src.index("# ---------------------------------------------------------------- 反向代理")]
         assert "%{http_code}" in body.split("清理")[0]
+
+
+# ---------------------------------------------------------------- v30：脚本自更新与保留用户文件
+# 这一轮的修法全是「装在机器上才发现」的类型，读代码看不出来。
+
+class TestInstallV30:
+    script = INSTALL
+
+    def text(self) -> str:
+        return self.script.read_text(encoding="utf-8")
+
+    def test_upgrade_refreshes_the_script_itself(self):
+        """只换 app/ 不换 install.sh，等于这台机器永远用装那天的脚本去升代码。
+
+        真实撞过：装完 v2.2 的机器升级了三次代码，脚本还是 2.2，
+        后来修掉的坑一个都用不上，最后得让人再手敲一遍 curl。
+        """
+        src = self.text()
+        assert "fetch_latest_script()" in src
+        body = src[src.index("fetch_latest_script() {"): src.index("install_cli() {")]
+        assert "bash -n" in body, "换脚本前必须先验语法，否则一个坏文件能把机器上的升级入口弄死"
+        assert "is_shell_script" in body, "HTML 外壳也会被当作脚本下载回来"
+        boot = src[src.index("do_install() {"):]
+        assert 'exec bash "$fresh_script" upgrade --yes' in boot
+
+    def test_script_reexec_cannot_loop(self):
+        assert "SCRIPT_REEXEC" in self.text()
+
+    def test_uninstall_honours_force(self):
+        """用法里写着非交互加 --force，可 --force 以前只被解析、从不生效：
+        非交互卸载永远卡在「确认删除？」上。"""
+        src = self.text()
+        body = src[src.index("do_uninstall() {"):src.index("# ---------------------------------------------------------------- 主流程")]
+        assert "ASSUME_YES" in body
+
+    def test_uninstall_refuses_insane_paths(self):
+        """删整个目录的操作，路径异常时宁可不删。"""
+        src = self.text()
+        body = src[src.index("do_uninstall() {"):src.index("# ---------------------------------------------------------------- 主流程")]
+        assert 'rm -rf "${INSTALL_DIR:?}"' in body
+        assert 'die "安装目录' in body
+
+    def test_upgrade_finds_install_dir_from_existing_cli(self):
+        """从任意位置跑 `bash install.sh upgrade` 是最自然的用法。"""
+        src = self.text()
+        head = src[: src.index('  INSTALL_DIR="$HOME/simpleurl"')]
+        tail = src[src.index('  INSTALL_DIR="$HOME/simpleurl"'): src.index("# 8000 是")]
+        assert ".simpleurl-managed" in head
+        assert "local/bin/simpleurl" in tail, "装了但不在安装目录里跑时，得从 CLI 里认出真实目录"
+
+    def test_user_static_files_survive_upgrade(self):
+        """app/ 整体覆盖时，用户自己加的 site.css / site.js 不能被删。"""
+        src = self.text()
+        assert "KEEP_ENTRIES" in src
+        assert "app/static/site.css" in src
+        assert "stash_user_files" in src
+
+    def test_stale_pid_file_does_not_kill_stranger(self):
+        """pid 文件可能过期，那个 pid 早被别人复用了——不核对就 kill 等于误杀。"""
+        src = self.text()
+        body = src[src.index("stop_running() {"): src.index("next_free_port()")]
+        assert "is_our_service" in body
+
+    def test_probe_failure_does_not_abort_install(self):
+        """网络探测只该降级，不该中止：离线机器照样能装（源码本地复用）。"""
+        src = self.text()
+        assert "probe_curl()" in src
+        body = src[src.index("probe_network() {"): src.index("# 这个地址值不值得走加速")]
+        assert "probe_curl" in body
+        assert "N-Mirror" not in body
