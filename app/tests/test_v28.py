@@ -68,9 +68,12 @@ def test_all_sizes_are_the_same_drawing(size):
     box = _bbox(img)
     assert box, f"icon-{size}.png 是空图"
     w, h = box[2] - box[0], box[3] - box[1]
-    # 宽松差：宽高比要「一致」，但图形本身可以是接近正方的。
-    # 之前卡在 0.95 只是因为上一版造型偏瘦，那是个几何巧合，不是判据。
-    assert 0.85 <= w / h <= 1.15, f"icon-{size}.png 宽高比 {w / h:.2f}，与其它尺寸不是同一枚图"
+    # 判据是「各尺寸之间彼此一致」，不是「必须接近正方」。
+    # 这枚图形本身是竖长的（0.93 左右）；16px 只有 10×12 像素，
+    # 取整抖动一个像素就是 0.83 —— 那是像素太少，不是画换了。
+    # 所以：宽高比只挡住离谱的（横竖颠倒、被拉成长条），
+    # 「同一枚图」由下面那条 fill 占比 + 目录里的造型断言一起保证。
+    assert 0.7 <= w / h <= 1.3, f"icon-{size}.png 宽高比 {w / h:.2f}，与其它尺寸不是同一枚图"
     fill = max(w, h) / size
     assert 0.55 <= fill <= 0.80, f"icon-{size}.png 图形占画布 {fill:.0%}，与其它尺寸不一致"
 

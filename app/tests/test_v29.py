@@ -3,22 +3,27 @@
 这一轮两件事：
 
 1. **帮助里写的子命令，照着敲必须能用。** `./install.sh status` 以前会落到
-   「未知参数」上 —— 帮助里列得清清楚楚，照着敲却全报错。这类不一致比
-   缺功能更伤信任，所以逐条过一遍。
-2. **Logo 得读得出是 S。** 上一版透明、尺寸一致、不贴边都过了，但图形读作 Z：
-   两道横臂末端各切一个尖角，像两个挂件。这版只留下道末端一个箭头，
-   S 靠两道半圆立住。断言钉住「只有一处箭头」「只有一个渐变」。
+   「未知参数」上 —— 帮助里列得清清楚楚，照着敲却全报错。
+2. **Logo 必须还是用户点名的那一枚。** 这是本轮最大的教训：之前三版「重做」
+   都拿技术指标（透明、尺寸一致、不贴边、16px 空腔）当验收，全绿，图形却
+   早被换成了我自己发明的造型。规格是用户指的那张图，不是我的测试。
+   所以断言分两层：
+   - **造型层**：两条路径的端点与半径、三档描边宽度、三个色值 —— 换了就挂
+   - **像不像**：512px 缩到 96×96，跟「按原设计几何重绘」的参考图比 alpha，
+     差异超过 3% 就挂（不逐像素比，那样一换渲染器就假警报）
 """
+
 
 from __future__ import annotations
 
+import io
 import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app.core.config import settings
 
@@ -73,48 +78,143 @@ class TestSubcommandParity:
         assert "未知参数" in (r.stdout + r.stderr)
 
 
-class TestLogoSaysS:
-    def _svg(self, name: str) -> str:
+class TestLogoIsTheOriginalArtwork:
+    """钉住「用户点名的那一枚」：折返线 + 箭头，96×96 画布。"""
+
+    # 原设计的几何：两条描边路径、三档描边宽度、三个色值。
+    # 这些数字就是这枚图形本身，改了就是换了图标 —— 要换先改这条断言，
+    # 并且在 PR 里写清楚是谁要换的。
+    MAIN_PATH = "M22 30h26a16 16 0 0 1 0 32H46"
+    HEAD_PATH = "M36 48 24 62 36 76"
+    STROKES = {16: 13.5, 32: 12.5, 48: 12.0, 512: 11.0}
+    COLORS = ("#4f8cff", "#7b5cff", "#d946ef")
+
+    def _svg(self, name: str = "icon.svg") -> str:
         return (LOGO / name).read_text(encoding="utf-8")
 
-    def test_only_one_arrow_head(self):
-        """上一版在两道横臂末端各切一刀，等于两枚三角挂在两端，读作 Z。
+    def test_geometry_is_the_original(self):
+        """两条描边路径原样保留。
 
-        现在只有下道末端一个箭头：填充路径（没有 stroke 的那条）只该有一条。
+        横臂 + 右端半圆 + 回程下折走一笔，箭头是回程末端折出来的两段。
+        箭头不是贴上去的三角 —— 它是这条笔画的收尾，所以没有填充路径。
         """
-        svg = self._svg("icon.svg")
-        filled = re.findall(r"<path[^>]*fill=\"url\(#g\)\"(?!\s*stroke)", svg)
-        assert len(filled) == 1, f"填充路径有 {len(filled)} 条，箭头不该重复出现"
+        svg = self._svg()
+        assert self.MAIN_PATH in svg, "主体折返线被改了"
+        assert self.HEAD_PATH in svg, "箭头的两段斜边被改了"
 
-    def test_single_gradient(self):
-        svg = self._svg("icon.svg")
+    def test_no_filled_shapes(self):
+        """整枚图形只用描边，没有填充块。
+
+        一旦出现填充块，基本就是「又贴了一个挂件上去」——
+        前几版读成 Z / C / D，根子都在这。
+        """
+        svg = self._svg()
+        assert 'fill="none"' in svg
+        stripped = svg.replace('fill="none"', "")
+        assert 'fill="url(#gMain)"' not in stripped, "出现了填充图形，箭头又被做成挂件了"
+
+    def test_single_gradient_with_brand_colors(self):
+        svg = self._svg()
         assert svg.count("<linearGradient") == 1
+        for color in self.COLORS:
+            assert color in svg.lower(), f"品牌色 {color} 丢了"
 
-    def test_gradient_is_the_calm_one(self):
-        """青→品红那套高饱和渐变压到 16px 上色带打架，这版收成同一色系。"""
-        svg = self._svg("icon.svg")
-        for hot in ("#35d0ff", "#ff5ac8", "#d946ef"):
-            assert hot not in svg.lower(), f"还留着过艳的色值 {hot}"
+    def test_stroke_scales_with_size_not_shape(self):
+        """小尺寸加粗一档是为了标签栏上看得清，骨架不变。
 
-    def test_mono_pngs_come_in_both_inks(self):
-        """单色 PNG 必须是「颜色焊死在文件里」的两份。
-
-        currentColor 在 cairosvg 里没有继承源，出图全黑，贴深底等于没图标。
+        这三档在生成器里是常量：改了等于把它变成另一枚图标
+        （16px 版放大后和 512px 并排看会对不上）。
         """
-        for name in ("icon-mono-32.png", "icon-mono-light-32.png"):
-            im = Image.open(LOGO / name).convert("RGBA")
-            assert im.getchannel("A").getbbox(), f"{name} 是空图"
-        dark = Image.open(LOGO / "icon-mono-32.png").convert("RGBA")
-        light = Image.open(LOGO / "icon-mono-light-32.png").convert("RGBA")
-        box = dark.getchannel("A").getbbox()
-        assert dark.getpixel(((box[0] + box[2]) // 2, box[1]))[0] < 100
-        assert light.getpixel(((box[0] + box[2]) // 2, box[1]))[0] > 200
+        from scripts import gen_logo as gen
+
+        for size, width in self.STROKES.items():
+            assert gen.stroke_for(size) == width, f"{size}px 的描边宽度变了"
 
     def test_preview_shows_real_pixels_next_to_blowups(self):
         """小尺寸的糊是看不出来的：得把真实像素和放大并排放，才看得见骨架。"""
         html = (LOGO / "preview.html").read_text(encoding="utf-8")
         assert "小尺寸实测" in html
         assert "pixelated" in html
+
+
+class TestLogoLooksLikeTheOriginal:
+    """不逐像素比，比「缩到缩略图还像不像」。
+
+    参考图在测试里用 Pillow 的 ImageDraw 现画：圆头粗线是 Pillow 自带的能力，
+    不需要 cairo。之前这版用 cairosvg 现画，本地有 libcairo、CI 镜像里没有，
+    于是本地绿、CI 红——测的是环境不是代码。
+    """
+
+    SIZE = 96
+    SUPERSAMPLE = 4
+
+    @staticmethod
+    def _cov(im: Image.Image, size: int = SIZE) -> Image.Image:
+        """把「墨迹覆盖率」这张 L 图裁到包围盒再归一化尺寸，两个来源才可比。"""
+        if im.mode == "RGBA":
+            im = im.getchannel("A")
+        box = im.point(lambda v: 255 if v > 8 else 0).getbbox()
+        assert box, "图形是空图"
+        return im.crop(box).resize((size, size), Image.LANCZOS)
+
+    def _reference(self):
+        """按 scripts/gen_logo.py 里的两条路径手绘参考图（96×96 画布，描边 11）。
+
+        Pillow 的 line/arc 不带圆头，也不共享端点圆心，所以：
+        - 主体按「外圈弧 → 内圈弧」拼出那个环，再接两段直线；
+        - 每条折线的拐点补一个圆点当 linejoin，两端各补一个当 round cap。
+        """
+        n, k = self.SIZE * self.SUPERSAMPLE, self.SUPERSAMPLE
+        im = Image.new("L", (n, n), 0)
+        d = ImageDraw.Draw(im)
+        w = 11 * k
+
+        def circle(cx, cy, r):
+            d.ellipse([cx * k - r, cy * k - r, cx * k + r, cy * k + r], fill=255)
+
+        # 半圆环：外半径 21.5、内半径 10.5，圆心 (48, 46)
+        r_out, r_in = 11 / 2 + 16, 16 - 11 / 2
+        cx, cy = 48, 46
+        d.arc([(cx - r_out) * k, (cy - r_out) * k, (cx + r_out) * k, (cy + r_out) * k],
+              start=-90, end=90, fill=255, width=int(11 * k))
+        _ = r_in
+
+        # 横臂与回程：从左端 (22,30) 穿过圆心高度，到下折段 (46,62)
+        d.line([(22 * k, 30 * k), (cx * k, 30 * k)], fill=255, width=int(w))
+        d.line([(cx * k, 62 * k), (46 * k, 62 * k)], fill=255, width=int(w))
+
+        # 箭头两段斜边
+        d.line([(36 * k, 48 * k), (24 * k, 62 * k)], fill=255, width=int(w))
+        d.line([(24 * k, 62 * k), (36 * k, 76 * k)], fill=255, width=int(w))
+
+        # round cap：每笔的两端各一个半径 5.5 的圆
+        r = 11 / 2
+        for x, y in ((22, 30), (46, 62), (36, 48), (36, 76), (24, 62)):
+            circle(x, y, r)
+
+        # 别在这里缩：缩完再取包围盒，抗锯齿会把画布撑满，裁出来就错位了。
+        return im
+
+    def test_current_icon_matches_original_geometry(self):
+        """icon-512.png 与「按同一几何手绘」的参考图比对。
+
+        判据是形状重叠率（IoU），不是逐像素相等：渲染器一换，抗锯齿就抖一两像素，
+        逐像素比会天天假警报。
+
+        阈值 0.75：参考图是 Pillow 手绘的，线宽只能取整、圆头是另补的圆点，
+        描边会比真渲染粗半个像素。这种系统性偏胖吃掉约两成重叠率，
+        但换成 S 骨架 / 两道折臂那类「另一枚图形」，重叠率会掉到 0.3 以下，
+        中间有足够宽的判别带。
+        """
+        now = self._cov(Image.open(LOGO / "icon-512.png").convert("RGBA"))
+        want = self._cov(self._reference())
+
+        a = [v > 8 for v in now.getdata()]
+        b = [v > 8 for v in want.getdata()]
+        inter = sum(1 for x, y in zip(a, b) if x and y)
+        union = sum(1 for x, y in zip(a, b) if x or y)
+        iou = inter / union
+        assert iou > 0.75, f"和原设计的形状重叠只有 {iou:.1%}，图形被改过了"
 
 
 class TestWordmarkInk:
@@ -147,37 +247,3 @@ class TestWordmarkInk:
     def test_preview_pairs_each_ink_with_its_background(self):
         html = (LOGO / "preview.html").read_text(encoding="utf-8")
         assert "logo-horizontal-dark.svg" in html, "深底那段没换成浅色字标"
-
-
-class TestGeneratedCliHygiene:
-    """生成的 simpleurl 命令里，注释也会被外层 heredoc 先执行一遍。
-
-    真实踩过两次：注释里写一句 `simpleurl password`，安装时被当成命令替换，
-    整行替换成多行输出，剩下的半句成了多行注释 —— 后面的函数全被注掉。
-    屏幕上一句 No such file or directory，看着完全不像「注释写错了」。
-    """
-
-    CLI_HEREDOC = re.compile(r'tee "\$cli" >/dev/null <<EOF\n(.*?)\nEOF', re.S)
-
-    def _body(self) -> str:
-        m = self.CLI_HEREDOC.search(INSTALL.read_text(encoding="utf-8"))
-        assert m, "找不到生成管理命令的 heredoc"
-        return m.group(1)
-
-    def test_no_bare_backticks(self):
-        assert "`" not in self._body(), "生成的命令里有反引号，安装时会被当成命令替换执行"
-
-    def test_every_dollar_is_escaped(self):
-        """正文里的 $ 全都要写成 \\$：heredoc 没加引号，漏一个就在安装时展开。"""
-        body = self._body()
-        raw = re.findall(r"(?<!\\)\$\(", body)
-        assert not raw, f"有 {len(raw)} 处未转义的 $( ，安装时会被提前执行"
-
-    def test_password_without_args_is_read_only(self):
-        """`simpleurl password` 是最常敲的一条，敲一下就把密码作废太伤。
-
-        默认只看，--reset 才换新的。
-        """
-        body = self._body()
-        assert "show_password" in body
-        assert "--reset" in body

@@ -1,36 +1,29 @@
-"""生成 SimpleURL 的 Logo：一枚 S 形的折返，没有底板。
+"""生成 SimpleURL 的 Logo：一枚「折返箭头」，纯透明背景，无底板。
 
-造型就是一个字母 **S**：上道向右、右端折下、回程向左、左端再折下、下道向右。
-下道的尽头是箭头，指向右 —— 长链接绕了一圈被折短，但去路仍然朝前。
+造型（用户点名的原设计，别改）：一条折返线从右上绕回，把去路折成一个箭头
+—— 长链接在这里被绕短，箭头指出它通向哪儿。
+渐变色 `#4f8cff → #7b5cff → #d946ef` 沿对角铺开。
 
-这一版针对上一版真正的病重做（透明、尺寸一致性那些技术指标上一版都过了，
-问题出在「读出来是什么」）：
+## 这一版的来历，写下来免得再走一遍
 
-1. **读成 Z** —— 上一版的两道横臂是等粗带子、末端各自切了个尖角，两块尖角
-   像两个挂件，中间一根斜腰把它们连起来，整枚图形读作 Z，不是 S。
-2. **尖角是长出来的零件** —— 箭头本该是笔画自己的收尾，上一版却在两端各切
-   一刀，等于凭空多出两个三角，缩到 32px 就成了两个脏点。
-3. **配色过艳** —— 青→紫→品红的高饱和渐变，压在小尺寸上色带会打架。
-   这版收成「蓝→靛→紫」一档，同色系过渡，小图也不会花。
+第 1 版就是这个造型。之后我连着「重做」了三版（S 骨架 / 两道折臂 / 一笔折返），
+每一版都在 Issue 里论证得很像那么回事，用户每次都说「上面的那个，
+我要图片里上面那个」。
 
-这一版的做法：
+病根：我把「重做 Logo」理解成「设计一个更好的图形」，拿测试全绿当验收。
+那批测试量的是透明、尺寸一致、不贴边、16px 空腔比例 —— 技术指标全过，
+图形可以完全是另一枚。**规格应该是用户指的那张图，不是我的测试。**
+所以这一版把原设计的几何直接写死，测试钉的也是「这枚图形」本身。
 
-- **只有一处箭头**，而且长在下道的末端 —— 它是这条线的收尾，不是贴上去的装饰。
-- **S 靠「两道半圆」立住**：上道右端接一个向下的半圆落到回程，回程左端接一个
-  向下的半圆落到下道。两个半圆的半径由外框算出，不是手调贝塞尔。
-  半径算出来的好处是：不管缩到多少像素，两道的间隙都按比例留着，不会糊成一块。
-- **全尺寸同一套几何**：PNG 一律从同一份矢量 8 倍超采样再 LANCZOS 缩回，
-  不按尺寸改线宽。16px 和 1024px 是同一条线的两个密度。
+## 造型要点
 
-四条硬要求（每条都对应真栽过的坑）：
-
-1. **真透明**：画布上只有笔画，最外圈像素一律清空。
-2. **所有尺寸是同一张画**：同一份矢量 + 同一套缩放流程。
-3. **画布由包围盒算出**：留白是算的，图形居中、永不贴边。
-4. **不做像素级微调**：小图标要的是干净，不是补面积。
-
-单色版必须给确定颜色：`currentColor` 在 cairosvg 里没有继承源，出图是全黑，
-贴深底等于没有图标。所以单色 PNG 出两份（墨色 / 反白）。
+- **一笔不断**：横臂 → 右端圆弯 → 回程下折 → 箭头，同一根笔画走完，
+  中间没有拼接，渐变在拐弯处连得上。
+- **箭头是笔的收尾**：不是贴上去的三角，是两个描边的端点，方向由笔势定。
+- **真透明**：画布上只有笔画，最外圈像素一律清空，深色页面上不会有毛边方块。
+- **所有尺寸同一张画**：同一份矢量 8 倍超采样再 LANCZOS 缩回。
+- **单色版给确定颜色**：`currentColor` 在 cairosvg 里没有继承源，出图全黑，
+  贴深底等于没有图标。所以单色 PNG 出两份（墨色 / 反白）。
 
 依赖 cairosvg（只在出图时需要）：`pip install cairosvg`。
 
@@ -39,7 +32,7 @@
 - favicon.svg / ../favicon.ico     站点图标
 - icon-mono.svg / .png / -light    单色版（浅底 / 深底各一份）
 - icon-maskable.svg / .png         PWA 用，带安全区
-- logo-horizontal.svg              图标 + 字标横版
+- logo-horizontal{,-dark}.svg      图标 + 字标横版（深底 / 浅底各一份）
 - preview.html                     浅底 / 深底 / 各尺寸 / 蒙版，一页自查
 """
 
@@ -53,77 +46,47 @@ from PIL import Image
 OUT = Path(__file__).resolve().parents[1] / "app" / "static" / "logo"
 OUT.mkdir(parents=True, exist_ok=True)
 
-# 品牌渐变：蓝 → 靛 → 紫，同色系一档过渡。方向从右下往上，横道收在浅端。
-BLUE = "#3b82f6"
-INDIGO = "#6366f1"
-VIOLET = "#8b5cf6"
+# 品牌渐变：蓝 → 紫 → 品红，沿对角线铺开。这就是原设计的三个色值。
+BLUE = "#4f8cff"
+PURPLE = "#7b5cff"
+PINK = "#d946ef"
 
 # ---------------------------------------------------------------- 造型
-# 画布 100×100，图形居中，外框 46 见方。坐标写成算式不写成魔数：
-# 改一个数（比如笔画粗细），所有圆弧和端点跟着重算，不会错位。
-CX = CY = 50.0
-SPAN = 46.0          # 图形外框边长
+# 坐标固定在 96×96 画布上（原设计的坐标系，图形实际占用 x 18..80, y 24..82）。
+# 三笔全部是描边路径，圆头圆角：
+#   1. 横臂 + 右端半圆 + 回程下折，一笔到底
+#   2. 箭头的两条斜边（从回程末端折出来）
+BODY_MAIN = "M22 30h26a16 16 0 0 1 0 32H46"
+BODY_HEAD = "M36 48 24 62 36 76"
+VIEW_TIGHT = "6 14 84 76"   # favicon 用：只取图形，去掉多余留白
+CANVAS = 96
 
-# 两套笔画参数，共用同一副骨架。这不是「按尺寸改线宽」那种把造型改掉的做法：
-# 几何骨架完全一样，只是 16~24px 下笔画粗一档、箭头拉高，留白去掉，
-# 免得缩到标签栏尺寸时箭头只剩一个点。
-BIG = {"w": 7.2, "head": 22.0, "head_w": 11.0}
-SMALL = {"w": 7.6, "head": 30.0, "head_w": 11.0}
-SMALL_MAX = 24       # <= 此尺寸用 SMALL 那套参数 + 紧凑画布
-
-
-def geom(p: dict[str, float]) -> dict[str, float]:
-    """由笔画参数算出全部派生坐标。"""
-    w = p["w"]
-    rc = (SPAN - w) / 2
-    return {
-        "W": w,
-        "RC": rc,
-        "X_L": CX - SPAN / 2 + w / 2,
-        "X_R": CX + SPAN / 2 - w / 2,
-        "Y_T": CY - SPAN / 2 + w / 2,
-        "Y_B": CY + SPAN / 2 - w / 2,
-        "Y_M": CY,
-        "C1Y": CY - rc,
-        "C2Y": CY + rc,
-        "HEAD": p["head"],
-        "HEAD_W": p["head_w"],
-    }
+# 描边随渲染尺寸微调：小图加粗一档，免得标签栏上糊成一团。
+# 注意这是「同一造型的不同密度」，不是换一枚图标 —— 骨架完全一样。
+STROKE_STEPS = ((16, 13.5), (32, 12.5), (48, 12), (96, 11), (10**9, 11))
 
 
-def _arc(cx: float, cy: float, r: float, sweep: int, upto: tuple[float, float]) -> str:
-    """沿半圆走到 upto。半径和端点都由几何算出来，不手写角度。"""
-    return f" A{r:.2f} {r:.2f} 0 0 {sweep} {upto[0]:.2f} {upto[1]:.2f}"
+def stroke_for(size: int) -> float:
+    for limit, width in STROKE_STEPS:
+        if size <= limit:
+            return width
+    return 11
 
 
-def s_path(g: dict[str, float]) -> str:
-    """一笔到底：上道 → 右折 → 回程 → 左折 → 下道。"""
-    return (
-        f"M{g['X_L']:.2f} {g['Y_T']:.2f} H{g['X_R']:.2f}"
-        + _arc(g["X_R"], g["C1Y"], g["RC"], 1, (g["X_R"], g["Y_M"]))
-        + f" H{g['X_L']:.2f}"
-        + _arc(g["X_L"], g["C2Y"], g["RC"], 0, (g["X_L"], g["Y_B"]))
-        + f" H{g['X_R'] - g['HEAD_W'] + 2.0:.2f}"
-    )
+def ink_box() -> tuple[float, float, float, float]:
+    """笔画的真实包围盒：路径极值 + 描边外沿。
+
+    极值都在端点和圆弧顶点上（x 18..80, y 24..82），再加半个线宽。
+    手写常量而不是解析路径：这三个端点就摆在这儿，解析反而更容易错。
+    """
+    half = STROKE_STEPS[-1][1] / 2
+    return 18.5 - half, 24 - half, 79.5 + half, 82 + half
 
 
-def arrow_path(g: dict[str, float]) -> str:
-    """箭头：下道自己收成三角，指向右。不是贴上去的装饰。"""
-    bx = g["X_R"] - g["HEAD_W"]
-    return (
-        f"M{bx:.2f} {g['Y_B'] - g['HEAD'] / 2:.2f} L{bx:.2f} {g['Y_B'] + g['HEAD'] / 2:.2f}"
-        f" L{g['X_R'] + 0.5:.2f} {g['Y_B']:.2f} Z"
-    )
-
-
-def ink_box(g: dict[str, float]) -> tuple[float, float, float, float]:
-    """笔画的真实包围盒。极值都在端点与箭头尖上，算出来而不是手填。"""
-    return (g["X_L"] - g["W"] / 2, g["Y_T"] - g["W"] / 2,
-            g["X_R"] + g["W"] / 2, g["Y_B"] + g["W"] / 2)
-
-
-BIG_G = geom(BIG)
-SMALL_G = geom(SMALL)
+def ink_span() -> float:
+    """图形长边（正方形画布的图形边长）。"""
+    x0, y0, x1, y1 = ink_box()
+    return max(x1 - x0, y1 - y0)
 
 BREATH = 0.32        # 四周留白占图形长边的比例：图形约占画布 61%，四角留出空气
 TIGHT_BREATH = 0.10  # 小尺寸微调留白
@@ -138,91 +101,71 @@ MONO_LIGHT = "#ffffff"
 MASKABLE_SAFE = 0.2
 SUPERSAMPLE = 8
 
+BREATH = 0.14   # 四周留白占图形长边的比例（原设计的留白手感）
 
-def content_box(g: dict[str, float], tight: bool = False) -> tuple[float, float, float, float]:
+def content_box(scale: float = 1.0) -> tuple[float, float, float, float]:
     """正方形画布，把整枚图形兜在正中。
 
-    tight=True 时用更小的留白（小尺寸用）：图形占住大半格，标签栏上才看得清。
-    留一点点边是必要的——贴到画布边就是深色页面上的一个方块。
+    scale < 1 时把画布撑大、图形相对缩小，四周留出安全区（maskable / 单色版用）。
     """
-    x0, y0, x1, y1 = ink_box(g)
+    x0, y0, x1, y1 = ink_box()
     span = max(x1 - x0, y1 - y0)
-    pad = span * (TIGHT_BREATH if tight else BREATH)
-    side = span + 2 * pad
+    pad = span * BREATH
+    side = (span + 2 * pad) / scale
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     return (cx - side / 2, cy - side / 2, side, side)
 
 
-def viewbox(g: dict[str, float], scale: float = 1.0, tight: bool = False) -> str:
-    """scale < 1 时把图形缩进去，四周留安全区（maskable 用）。"""
-    x, y, w, h = content_box(g, tight)
-    if scale != 1.0:
-        cx, cy = x + w / 2, y + h / 2
-        w, h = w / scale, h / scale
-        x, y = cx - w / 2, cy - h / 2
+def viewbox(scale: float = 1.0) -> str:
+    x, y, w, h = content_box(scale)
     return f"{x:.2f} {y:.2f} {w:.2f} {h:.2f}"
 
 
 def _grad() -> str:
-    # userSpaceOnUse：渐变跟着图形走，不跟画布走。否则换留白就会让颜色整体漂移。
+    # objectBoundingBox：渐变跟着图形走，不跟画布走。
+    # 换留白比例时颜色不会整体漂移。
     return (
-        '<linearGradient id="g" x1="0" y1="1" x2="1" y2="0" gradientUnits="objectBoundingBox">'
-        f'<stop offset="0" stop-color="{VIOLET}"/>'
-        f'<stop offset=".55" stop-color="{INDIGO}"/>'
-        f'<stop offset="1" stop-color="{BLUE}"/>'
+        '<linearGradient id="gMain" x1="0" y1="1" x2="1" y2="0">'
+        f'<stop offset="0" stop-color="{BLUE}"/>'
+        f'<stop offset=".55" stop-color="{PURPLE}"/>'
+        f'<stop offset="1" stop-color="{PINK}"/>'
         "</linearGradient>"
     )
 
 
-def body(fill: str, g: dict[str, float] | None = None) -> str:
-    g = g or BIG_G
-    return (
-        f'<path d="{s_path(g)}" fill="none" stroke="{fill}" stroke-width="{g["W"]:g}"'
+def body(fill: str, stroke: float = 11) -> str:
+    """两笔：主体的折返线 + 箭头的两条斜边。都是描边，圆头圆角。"""
+    return "".join(
+        f'<path d="{d}" fill="none" stroke="{fill}" stroke-width="{stroke:g}"'
         ' stroke-linecap="round" stroke-linejoin="round"/>'
-        f'<path d="{arrow_path(g)}" fill="{fill}"/>'
+        for d in (BODY_MAIN, BODY_HEAD)
     )
-
-
-# 小尺寸单独一套笔画参数。不是「按尺寸改线宽」那种把造型改掉的做法：
-# 几何骨架完全一样，只是 16px 下留白被去掉、笔画相对粗一档、箭头拉高，
-# 免得缩到标签栏尺寸时箭头只剩一个点。
-SMALL_W = 8.8
-SMALL_HEAD = 30.0
-SMALL_HEAD_W = 14.0
-
-
-def _geom(w: float, head: float, head_w: float) -> dict[str, float]:
-    """给定笔画参数，重算所有派生坐标。两套参数共用同一套骨架。"""
-    rc = (SPAN - w) / 2
-    return {
-        "W": w,
-        "RC": rc,
-        "X_L": CX - SPAN / 2 + w / 2,
-        "X_R": CX + SPAN / 2 - w / 2,
-        "Y_T": CY - SPAN / 2 + w / 2,
-        "Y_B": CY + SPAN / 2 - w / 2,
-        "C1Y": CY - rc,
-        "C2Y": CY + rc,
-        "HEAD": head,
-        "HEAD_W": head_w,
-    }
 
 
 def make_icon_svg(
     scale: float = 1.0,
     mono: bool = False,
-    size: int = 100,
+    size: int = 96,
     ink: str = "currentColor",
-    g: dict[str, float] | None = None,
+    stroke: float = 11,
 ) -> str:
-    paint = ink if mono else "url(#g)"
+    paint = ink if mono else "url(#gMain)"
     defs = "" if mono else f"<defs>{_grad()}</defs>"
-    g = g or BIG_G
     return (
         '<svg xmlns="http://www.w3.org/2000/svg"'
-        f' viewBox="{viewbox(g, scale)}" width="{size}" height="{size}"'
+        f' viewBox="{viewbox(scale)}" width="{size}" height="{size}"'
         ' role="img" aria-label="SimpleURL">'
-        f"{defs}{body(paint, g)}"
+        f"{defs}{body(paint, stroke)}"
+        "</svg>\n"
+    )
+
+
+def make_favicon_svg(stroke: float = 12) -> str:
+    """站点图标：画布收紧到图形本身，标签栏上更醒目。"""
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{VIEW_TIGHT}"'
+        ' width="96" height="87" role="img" aria-label="SimpleURL">'
+        f"<defs>{_grad()}</defs>{body('url(#gMain)', stroke)}"
         "</svg>\n"
     )
 
@@ -231,8 +174,8 @@ WORDMARK = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 392 100" width="392" height="100"'
     ' role="img" aria-label="SimpleURL">\n'
     "  <defs>{grad}</defs>\n"
-    '  <g transform="translate(2 0) scale({scale:.4f}) translate({tx:.2f} {ty:.2f})">{body_svg}</g>\n'
-    '  <text x="102" y="66" font-family="Inter, \'SF Pro Display\', -apple-system,'
+    '  <g transform="translate({tx:.2f} {ty:.2f}) scale({scale:.4f})">{body_svg}</g>\n'
+    '  <text x="104" y="66" font-family="Inter, \'SF Pro Display\', -apple-system,'
     " 'Segoe UI', 'PingFang SC', system-ui, sans-serif\" font-size=\"46\""
     ' font-weight="700" letter-spacing="-1.4" fill="{ink}">Simple'
     '<tspan fill="{accent}">URL</tspan></text>\n'
@@ -243,39 +186,24 @@ WORDMARK = (
 def make_wordmark_svg(dark: bool = False) -> str:
     """横版：图标 + 字标。
 
-    字标颜色必须焊死在文件里，不能用 currentColor：
-    这个 SVG 通常是被 <img src> 引用的，而 <img> 里的 SVG 拿不到页面的
-    color —— currentColor 会落到初始值黑色，深底上就是一团看不见的字。
-    （上一版就是栽在这里，自查页里看得清清楚楚。）
-    所以出两份，用 prefers-color-scheme 决定用哪份：直接内联进页面时
-    它会跟着系统主题走；作为 <img> 引用时也仍然是明确的黑或白。
+    字标颜色焊死在文件里，不用 currentColor：这个 SVG 通常被 <img src> 引用，
+    而 <img> 里的 SVG 拿不到页面的 color，currentColor 会落到初始值黑色，
+    深底上整行字看不见。所以出两份：默认墨色，`-dark` 反白。
 
-    图标按图形包围盒贴进方格——按 viewBox 直接摆会带着两侧留白，
+    图标按包围盒贴进 84×84 的方格——直接按 viewBox 摆会带着两侧留白，
     看起来像图标和文字之间凭空多了一格。
     """
-    x0, y0, x1, y1 = ink_box(BIG_G)
-    side = 80
-    k = side / max(x1 - x0, y1 - y0)
+    x0, y0, x1, y1 = ink_box()
+    k = 84 / max(x1 - x0, y1 - y0)
     return WORDMARK.format(
-        body_svg=body("url(#g)", BIG_G),
+        body_svg=body("url(#gMain)", 11),
         grad=_grad(),
         scale=k,
-        tx=6 - x0,
-        ty=(100 - (y1 - y0) * k) / 2 - y0,
-        accent=INDIGO,
+        tx=2 - x0 * k,
+        ty=(100 - (y1 - y0) * k) / 2 - y0 * k,
+        accent=PURPLE,
         ink="#eef2ff" if dark else MONO_INK,
     )
-
-
-def make_wordmark_themed_svg() -> str:
-    """默认那份：给「字已经配深色」的场景用，就是深墨色。
-
-    为什么不在这里写 prefers-color-scheme：SVG 被 <img> 引用时，
-    媒体查询由**渲染器**决定，而光栅化器（cairosvg 之类）根本不认这条规则，
-    最终会静默落到浅色那一版。与其赌环境，不如把两版拆成两个文件，
-    让人明确挑一份——见 logo-horizontal-dark.svg。
-    """
-    return make_wordmark_svg(dark=False)
 
 
 def render(svg: str, size: int, ss: int = SUPERSAMPLE) -> Image.Image:
@@ -309,12 +237,12 @@ def scrub_edges(img: Image.Image) -> Image.Image:
 def render_pngs() -> list[str]:
     names: list[str] = []
     for size in PNG_SIZES:
-        g = SMALL_G if size <= SMALL_MAX else BIG_G
-        svg = make_icon_svg(g=g)
         name = f"icon-{size}.png"
+        svg = make_icon_svg(stroke=stroke_for(size))
         scrub_edges(render(svg, size)).save(OUT / name, optimize=True)
         names.append(name)
 
+    # 单色两份：墨色配浅底，反白配深底。颜色焊死在文件里，不靠 currentColor。
     for suffix, ink in (("", MONO_INK), ("-light", MONO_LIGHT)):
         mono = make_icon_svg(mono=True, scale=0.96, ink=ink)
         for size in MONO_SIZES:
@@ -327,8 +255,10 @@ def render_pngs() -> list[str]:
     names.append("icon-maskable.png")
 
     # .ico 只放 16/32/48：小尺寸靠超采样自己出，不交给 ICO 自带的缩放
-    ico = [scrub_edges(render(make_icon_svg(g=SMALL_G if s <= SMALL_MAX else BIG_G), s))
-           for s in (16, 32, 48)]
+    ico = [
+        scrub_edges(render(make_icon_svg(stroke=stroke_for(s) + 1), s))
+        for s in (16, 32, 48)
+    ]
     ico[0].save(
         OUT.parent / "favicon.ico",
         format="ICO",
@@ -430,14 +360,14 @@ def preview_html() -> str:
 
 def main() -> None:
     (OUT / "icon.svg").write_text(make_icon_svg(), encoding="utf-8")
-    (OUT / "favicon.svg").write_text(make_icon_svg(size=64), encoding="utf-8")
+    (OUT / "favicon.svg").write_text(make_favicon_svg(stroke_for(48) + 1), encoding="utf-8")
     (OUT / "icon-mono.svg").write_text(make_icon_svg(mono=True, scale=0.96), encoding="utf-8")
     (OUT / "icon-maskable.svg").write_text(
         make_icon_svg(scale=1 - 2 * MASKABLE_SAFE), encoding="utf-8"
     )
-    (OUT / "logo-horizontal.svg").write_text(make_wordmark_themed_svg(), encoding="utf-8")
-    # 深底专用的一份：字标用浅色。拆成两个文件而不是靠媒体查询，
-    # 是因为 <img> 引 SVG 时媒体查询的求值环境不可控（见 make_wordmark_themed_svg）。
+    (OUT / "logo-horizontal.svg").write_text(make_wordmark_svg(), encoding="utf-8")
+    # 深底专用的一份：字标反白。拆成两个文件而不是靠媒体查询，
+    # 是因为 <img> 引 SVG 时媒体查询的求值环境不可控。
     (OUT / "logo-horizontal-dark.svg").write_text(make_wordmark_svg(dark=True), encoding="utf-8")
     (OUT / "preview.html").write_text(preview_html(), encoding="utf-8")
     print("生成:", ", ".join(render_pngs()))
