@@ -107,6 +107,11 @@ else
 fi
 
 # 8000 是各种开发服务器的默认口，撞车概率太高；8940 冷门、好记、不占常用段
+# 先记下「用户有没有显式给过」再落默认值：「端口是不是用户指定的」这个判断
+# 后面要用（显式就不许自作主张换口），而默认值一填，这个信息就没了 ——
+# 以前那句判断排在填默认值之后，等于永远为真。
+PORT_FROM_ENV="n"
+[ -n "${PORT:-}" ] && PORT_FROM_ENV="y"
 PORT="${PORT:-8940}"
 SERVICE_NAME="${SERVICE_NAME:-simpleurl}"
 SITE_NAME="${SITE_NAME:-SimpleURL}"
@@ -138,8 +143,7 @@ SUB_ARGS=()          # 转发给 simpleurl 的额外参数
 ASSUME_YES="n"
 SKIP_HEALTH="n"
 STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
-PORT_EXPLICIT="n"    # 端口是用户显式给的（--port / PORT=）还是默认值
-[ -n "${PORT:-}" ] && PORT_EXPLICIT="y"
+PORT_EXPLICIT="$PORT_FROM_ENV"   # 端口是用户显式给的（--port / PORT=）还是默认值
 
 while [ $# -gt 0 ]; do
   case "$1" in

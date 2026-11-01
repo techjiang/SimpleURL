@@ -424,6 +424,34 @@ class TestScriptStillSane:
         assert found == {"__SU_DIR__", "__SU_NAME__", "__SU_SCRIPT_VERSION__"}
 
 
+class TestPortExplicitFlag:
+    """「端口是用户指定的」这个判断，必须排在填默认值之前。
+
+    以前那句 `[ -n "${PORT:-}" ] && PORT_EXPLICIT=y` 排在 PORT="${PORT:-8940}"
+    后面 —— 默认值一填，条件永远为真。于是重装时端口被占也「不会自动换」，
+    而用户根本没说要用哪个口。
+    """
+
+    def test_flag_set_before_default(self):
+        i_default = BODY.index('PORT="${PORT:-8940}"')
+        i_flag = BODY.index("PORT_EXPLICIT=\"$PORT_FROM_ENV\"")
+        assert i_default < i_flag
+        # 先记住用户有没有给过，再落默认值
+        assert BODY.index("PORT_FROM_ENV=\"y\"") < i_default
+
+    def test_env_port_wins(self, tmp_path):
+        """真跑一遍：显式 PORT 要判成显式，没说就是默认。"""
+        head = BODY[: BODY.index("while [ $# -gt 0 ]")]
+        script = tmp_path / "p.sh"
+        script.write_text(head + '\nprintf "%s|%s\\n" "$PORT" "$PORT_EXPLICIT"\n', encoding="utf-8")
+        r = subprocess.run(["bash", str(script)], capture_output=True, text=True,
+                           env={**os.environ, "PORT": "18999"}, timeout=60)
+        assert r.stdout.strip() == "18999|y", r.stdout + r.stderr
+        env = {k: v for k, v in os.environ.items() if k != "PORT"}
+        r2 = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env, timeout=60)
+        assert r2.stdout.strip() == "8940|n", r2.stdout + r2.stderr
+
+
 class TestPortOwnership:
     """端口上那个人是不是「自己人」，判错两边都疼。
 
