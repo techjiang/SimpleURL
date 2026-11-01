@@ -399,8 +399,17 @@ class TestCheckPortFreeWording:
     """「会改用 8081」这种话必须和实际行为一致。"""
 
     def test_explicit_port_does_not_promise_switch(self):
+        """显式给了端口时，doctor 不能说「装的时候会自动改用 X」。
+
+        断言钉在语义上而不是某一句话：改措辞是常事，但「显式端口 + 被占用」
+        这一支绝不能落回「会自动改用」——那句话后面紧跟的就是启动失败。
+        """
         body = func("doctor")
-        assert "你指定了端口，不会自动换" in body
+        seg = body[body.index('elif [ "$PORT_EXPLICIT" = "y" ]'):]
+        end = seg.find(chr(10) + "  else")
+        seg = seg[: end if end > 0 else 400]
+        assert "不会自动换" in seg or "不会自动换口" in seg
+        assert "会自动改用" not in seg
 
     def test_holder_pid_is_reported(self):
         body = func("check_port_free")

@@ -104,6 +104,24 @@ else
     if [ -n "$_dir" ] && [ -f "$_dir/.simpleurl-managed" ]; then INSTALL_DIR="$(_canon_dir "$_dir")"; break; fi
   done
   unset _mark _dir
+  # 走到这条分支说明「脚本不在任何安装目录里」——典型场景是把 install.sh 单独
+  # 拷到 /tmp 或某个空目录去跑。这时候再按上面那样去认「机器上已有的那份」，
+  # 就会替一个从没提到过的目录干活：实测在 /tmp/suB 里敲 `bash /tmp/suB/install.sh`，
+  # 屏幕上问的是「站点名称 / 端口」，装的却是 /root/simpleurl，把人已经配好的站点
+  # 换了个端口。所以把「认领已有安装」这件事收窄成两种情况：
+  #   · 显式 SIMPLEURL_HOME / --dir         —— 人说了算哪
+  #   · 脚本就叫 install.sh（或带了子命令）  —— 「给这台机器上那份做升级/体检」
+  # 其余（任意路径下的拷贝、直接跑）一律落到脚本自己所在的目录，眼见为实。
+  # 名字只作一个弱信号，别把话说得太满：`curl .../install.sh -o x.sh && bash x.sh`
+  # 这种用法里名字早变了，却依然该管这台机器上那份。所以放行的条件宽到
+  # 「文件名里带 install」（install.sh / su-install.sh / install-v2.sh 都算），
+  # 剩下的交给后面的「已有安装就沿用配置」去兜。
+  _self_name="$(basename "${BASH_SOURCE[0]:-install.sh}")"
+  case "$_self_name" in
+    *install*) : ;;
+    *) if [ -z "${SIMPLEURL_HOME:-}" ] && [ -z "${CLI_DIR:-}" ]; then INSTALL_DIR="$SELF_DIR"; fi ;;
+  esac
+  unset _self_name
 fi
 
 # 8000 是各种开发服务器的默认口，撞车概率太高；8940 冷门、好记、不占常用段
@@ -144,6 +162,7 @@ ASSUME_YES="n"
 SKIP_HEALTH="n"
 STRICT="n"           # doctor --strict：把「提醒」也算成阻塞
 PORT_EXPLICIT="$PORT_FROM_ENV"   # 端口是用户显式给的（--port / PORT=）还是默认值
+PORT_FROM_MARK="n"   # 端口沿用了安装记录（既不是默认值，也不是用户显式给的）
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -375,10 +394,18 @@ is_cnb() {
 # 列表里的第一个。结果是：设了 CNB_TOKEN 的机器，取远端脚本和探版本一路全失败，
 # 屏幕上只剩一句「探不到远端版本」，看起来像网络问题，其实是自己把请求写坏了。
 # 所以网页域名用匿名请求，令牌只给 api.*。
-auth_header() { # [host]
-  local tok="${CNB_TOKEN:-}" host="${1:-}"
+auth_header() { # [url]
+  local tok="${CNB_TOKEN:-}" url="${1:-}" host="" api_host=""
   [ -n "$tok" ] || return 0
-  case "$host" in *"$API_HOST"*) : ;; *) return 0 ;; esac
+  # 只比对主机名，不比对整条 URL。以前判的是「这串字符出现在 URL 的任意位置」——于是
+  #   https://evil.example/?x=api.cnb.cool
+  #   https://api.cnb.cool.attacker.example/
+  # 都会被判成「是 API 域名」，令牌就这么发出去了。URL 是人给的（REPO_URL /
+  # REPO_TARBALL / GIT_HOST 都能被环境变量改写），这一步不能靠子串。
+  host="${url#*://}"; host="${host%%/*}"
+  api_host="${API_HOST#*://}"; api_host="${api_host%%/*}"
+  [ -n "$api_host" ] || return 0
+  [ "$host" = "$api_host" ] || return 0
   printf 'Authorization: Basic %s' "$(printf 'cnb:%s' "$tok" | base64 | tr -d '\n')"
 }
 
@@ -654,8 +681,9 @@ doctor() {
   elif [ "$has_install" = "y" ]; then
     d_warn "端口 $PORT 被别的程序占用（升级仍按记录里的端口启动，届时可能起不来）"
   elif [ "$PORT_EXPLICIT" = "y" ]; then
-    # 端口是用户指定的：装的时候不会「自动换口」，「会改用 …」那句话是假的
-    d_warn "端口 $PORT 被别的程序占用（你指定了端口，不会自动换；占用它的进程还在就只有失败）"
+    # 端口是用户指定的（或沿用安装记录）：装的时候不会「自动换口」，
+    # 「会改用 …」那句话是假的 —— 屏幕上下一步就停下报错了
+    d_warn "端口 $PORT 被别的程序占用（端口是你指定或沿用记录的，不会自动换；占用它的进程还在就只有失败）"
   else
     local alt; alt="$(next_free_port "$PORT")"
     d_warn "端口 $PORT 被别的程序占用${alt:+，装的时候会自动改用 $alt}"
@@ -1577,6 +1605,14 @@ check_port_free() {
   # 换壳重跑的那一轮：端口在 A 轮已经定过，别再「自动换个口」——
   # 同一件事两次给不同结论，比只给一次错的还糟。
   [ "${SIMPLEURL_PORT_FIXED:-n}" = "y" ] && return 0
+  # 有安装记录 = 这个口是上次装的时候就定下的。哪怕这次没显式 --port，
+  # 它也不是「随便挑的默认值」：换个口等于让旧站点凭空搬家，摘要里的地址、
+  # 防火墙、反代上游全对不上。所以在这一支里，它也按「显式端口」对待。
+  #
+  # 判据是「这次端口相对于刚进来的默认值动过没有」，而不是「记录里那个数等于 PORT」：
+  # 上面 do_install 已经把记录里的端口填进 PORT 了，拿两个相等的数比永远是相等。
+  # 所以从 do_install 带一个「本轮端口是否沿用记录」的旗标下来。
+  local from_mark="${PORT_FROM_MARK:-n}"
   port_in_use "$PORT" || return 0
   local who=""
   if need_cmd ss; then who="$(ss -lntp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $NF; exit}')"; fi
@@ -1605,6 +1641,10 @@ check_port_free() {
   # 装完一切看着正常，站点却在另一个端口上。
   if [ "$PORT_EXPLICIT" = "y" ]; then
     warn "仍按你指定的 $PORT 继续；启动会失败就停下来报错，不会偷偷换口"
+    return 0
+  fi
+  if [ "$from_mark" = "y" ]; then
+    warn "仍按安装记录里的 $PORT 继续（要换就显式 --port 别的口）；启动失败会停下来报错"
     return 0
   fi
   if [ "$INTERACTIVE" = "0" ] || [ -z "$TTY" ]; then
@@ -2241,14 +2281,29 @@ site_status() {
   return 0
 }
 
+# 备份数据库与配置。失败要当场说清楚是「目录建不出来」还是「打包失败」——
+# 以前这两步都不看返回值，屏幕上只剩一条 mkdir 的原生报错，人还以为备份成了。
 do_backup() {
   local out="${1:-$HOME/simpleurl-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
-  mkdir -p "$(dirname "$out")"
+  local dir; dir="$(dirname "$out")"
+  if ! mkdir -p "$dir" 2>/dev/null || [ ! -w "$dir" ]; then
+    warn "备份目录不可写：$dir"
+    return 2
+  fi
   if [ "$RUNTIME" = "docker" ]; then
-    docker run --rm -v "${NAME}-data:/data" -v "$(dirname "$out"):/backup" alpine \
-      tar -czf "/backup/$(basename "$out")" -C /data . >/dev/null && say "已备份到 $out"
+    if docker run --rm -v "${NAME}-data:/data" -v "$dir:/backup" alpine \
+         tar -czf "/backup/$(basename "$out")" -C /data . >/dev/null 2>&1; then
+      say "已备份到 $out"
+    else
+      warn "备份失败（容器没起来或数据卷为空）"; return 2
+    fi
   else
-    tar -czf "$out" -C "$DIR" simpleurl.db .env 2>/dev/null && say "已备份到 $out"
+    if [ ! -f "$DIR/simpleurl.db" ]; then warn "没有数据库文件可备份：$DIR/simpleurl.db"; return 2; fi
+    if tar -czf "$out" -C "$DIR" simpleurl.db .env 2>/dev/null; then
+      say "已备份到 $out（$(du -h "$out" 2>/dev/null | cut -f1)）"
+    else
+      warn "打包失败：$out"; return 2
+    fi
   fi
 }
 
@@ -2565,6 +2620,19 @@ do_uninstall() {
   ok "已卸载干净"
 }
 
+# 两个路径是不是同一个文件。比较 inode + 设备号：符号链接、相对路径、
+# macOS 的 /tmp → /private/tmp 都会骗过字符串比较，inode 不会。
+is_same_file() { # a b
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  [ -e "$1" ] && [ -e "$2" ] || return 1
+  local a b
+  # -L 跟着符号链接走：不带它的话，`install.sh -> 别处/install.sh` 这种软链
+  # 会拿到链接自己的 inode，于是「同一个文件」判成不同 —— 紧接着就是 exec 到自己。
+  a="$(ls -diL "$1" 2>/dev/null | awk '{print $1}')"
+  b="$(ls -diL "$2" 2>/dev/null | awk '{print $1}')"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" = "$b" ]
+}
+
 # ---------------------------------------------------------------- 子命令转发
 # 帮助里列出的管理子命令由安装时生成的命令负责实现，脚本这里只做转发。
 # 不重复实现一遍：两份逻辑迟早会漂移，而漂移的是「文档说的」和「实际做的」。
@@ -2579,21 +2647,29 @@ forward_subcommand() {
   # 机器上装着两份 SimpleURL 时，`./install.sh status --dir /a` 会转到
   # /usr/local/bin/simpleurl（指向 /b）上去——症状是「明明指定了目录，
   # 打印/改动的却是另一个站」。现在 PATH 里那条也必须先核对 DIR 再采用。
+  #
+  # 资格判定只有一条：命令里记的 DIR 必须是这个安装目录。空 DIR 也不行 ——
+  # 以前「读不出 DIR 就当作自己的」，结果 /usr/local/bin/simpleurl 指向隔壁时
+  # 脚本反倒一句话不说地转了「隔壁」去（实测：显示的是另一个站的站点地址）。
+  # 判不出来就继续往下找，找不到就明说找不到，别猜。
   local cand cdir foreign=""
   for cand in "$INSTALL_DIR/simpleurl" \
               "$(command -v simpleurl 2>/dev/null || true)" \
               /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
     [ -n "$cand" ] && [ -x "$cand" ] || continue
+    # 同一个文件可能出现两次（$PATH 里那条就是 /usr/local/bin/simpleurl）
+    [ "$cand" = "$cli" ] && continue
     cdir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$cand" 2>/dev/null | head -1)"
-    if [ "$cand" = "$INSTALL_DIR/simpleurl" ] || [ -z "$cdir" ] || [ "$cdir" = "$INSTALL_DIR" ]; then
+    if [ -n "$cdir" ] && [ "$cdir" = "$INSTALL_DIR" ]; then
       cli="$cand"; break
     fi
-    [ -n "$foreign" ] || foreign="$cdir"
+    [ -n "$foreign" ] || foreign="${cdir:-$cand}"
   done
-  # 目录里的影子命令不在（老安装 / 手动删过）：用安装目录里的脚本自己顶上。
-  # `simpleurl uninstall` 的第 303 行就是 exec 到 install.sh，找不到它等于
-  # 命令里最需要能用的那条永远用不了。
-  if [ -z "$cli" ] && [ -x "$INSTALL_DIR/install.sh" ]; then
+  # 绝不能拿「正在跑的这份」去转发：`./install.sh status` 在目录里没有影子命令时
+  # 会 exec 到 $INSTALL_DIR/install.sh，而那就是它自己 —— fork 不出来、也没有输出，
+  # 屏幕上什么都不发生，进程一直躺在那里。用 inode 判「同一份文件」比比路径可靠
+  # （符号链接、相对路径、/tmp 与 /private/tmp 都能认出来）。
+  if [ -z "$cli" ] && [ -x "$INSTALL_DIR/install.sh" ] && ! is_same_file "$SELF_PATH" "$INSTALL_DIR/install.sh"; then
     exec bash "$INSTALL_DIR/install.sh" "$sub" ${1+"$@"}
   fi
   # 机器上只装了别的目录那一份：不要静悄悄地转过去，也不要装作没装。
@@ -2651,7 +2727,7 @@ do_install() {
   # 只有显式 --port / PORT= 才覆盖。
   if [ -z "$PORT_EXPLICIT" ] && [ -f "$MARK_FILE" ]; then
     local rec_port; rec_port="$(sed -n 's/^port=//p' "$MARK_FILE" | head -1)"
-    [ -n "$rec_port" ] && PORT="$rec_port"
+    [ -n "$rec_port" ] && PORT="$rec_port" && PORT_FROM_MARK="y"
   fi
 
   if [ -f "$existing_env" ]; then
@@ -2773,9 +2849,18 @@ do_install() {
         http://*|https://*) PUBLIC_URL="${ANSWER%/}" ;;
         *) PUBLIC_URL="http://$ANSWER" ;;
       esac
+      # 端口只在「人没自己写」时才补。以前判据是「不含 :$PORT 就补」，
+      # 于是填 s.example.com:8080 + 端口 18960 会拼成 s.example.com:8080:18960，
+      # 而填 http://s.example.com:8080 也不认——两种都只在屏幕上错一行，
+      # 装完拿去发短链才发现链接是坏的。现在：已经带端口的原样留着，
+      # 一个端口都没有才补上监听端口。
       case "$PUBLIC_URL" in
-        *":$PORT"|https://*) : ;;
-        *) PUBLIC_URL="$PUBLIC_URL:$PORT" ;;
+        https://*) : ;;
+        *) case "${PUBLIC_URL#*://}" in
+             *:*:*) warn "对外地址里有多个冒号（$PUBLIC_URL），原样使用，请自己核对" ;;
+             *:*) : ;;
+             *) PUBLIC_URL="$PUBLIC_URL:$PORT" ;;
+           esac ;;
       esac
       ok "对外地址：$PUBLIC_URL"
       # 有域名就该配 HTTPS：顺手生成一份能用的反代配置，别让人自己拼
@@ -2815,6 +2900,20 @@ do_install() {
     }
     # 老安装里存的 public 等价于 open，先归一，后面写 .env / 日报都用得着
     case "${ACCESS_MODE:-}" in open|admin) : ;; public|"") ACCESS_MODE="open" ;; *) ACCESS_MODE="open" ;; esac
+
+    # 升级时 .env 是原样保留的，但端口可能被 --port 换掉、记录里那个口也可能
+    # 早被人改了。PUBLIC_URL 里带着旧端口时，短链发出去就是打不开的地址，
+    # 而屏幕上一切正常。这里只提醒、不改文件：那是人写的东西。
+    if [ -n "${PUBLIC_URL:-}" ]; then
+      local _pu_host="${PUBLIC_URL#*://}" _pu_port=""
+      case "$_pu_host" in
+        *:*) _pu_port="${_pu_host##*:}"; _pu_port="${_pu_port%%/*}" ;;
+      esac
+      case "$_pu_port" in
+        ""|*[!0-9]*) : ;;   # 没写端口，或 https 默认口之类，不算不一致
+        *) [ "$_pu_port" = "$PORT" ] || warn "对外地址写的是 $PUBLIC_URL（端口 $_pu_port），而这次装在 $PORT 上；短链会指到旧端口，确认后在 .env 里改 PUBLIC_URL" ;;
+      esac
+    fi
   fi
 
   echo
@@ -2828,7 +2927,16 @@ do_install() {
   fi
   [ -n "$want" ] || die "既没有 Docker 也没有 Python 3.10+，先装一个再来"
   case "$want" in
-    docker) have_docker || { warn "指定了 Docker 方式，但 Docker 不可用，改用 Python"; want="python"; } ;;
+    docker)
+      if ! have_docker; then
+        # 人明确说了要 Docker，就不能悄悄换成 Python：两种方式的数据、日志、
+        # 启停方法全不一样，换掉之后 `docker ps` 里找不到容器，看着像没装成功。
+        # 只有「没人指定、脚本自己挑的」才允许降级（下面这行 reach 不到那情况）。
+        if [ -n "$RUNTIME_OVERRIDE" ]; then
+          die "指定了 --runtime docker，但 docker 不可用（docker info 失败）。先装好 Docker，或去掉该参数"
+        fi
+        warn "Docker 不可用，改用 Python 直装"; want="python"
+      fi ;;
     python) : ;;
   esac
 
