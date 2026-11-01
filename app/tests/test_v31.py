@@ -273,9 +273,12 @@ class TestMirrorHosts:
 # ---------------------------------------------------------------- 停服要等进程真的走
 class TestStopWaitsForTheProcess:
     def test_stop_running_escalates(self):
+        # v2.7 起「停一个进程」收进 stop_pid：TERM → 等 → KILL，三处调用同一份逻辑
         body = _code_only("stop_running")
-        assert "kill -9" in body, "只发 TERM 就去删库，进程可能还在写 WAL"
-        assert body.count("sleep 1") >= 1
+        assert "stop_pid" in body
+        helper = _code_only("stop_pid")
+        assert "kill -9" in helper, "只发 TERM 就去删库，进程可能还在写 WAL"
+        assert "sleep 1" in helper
 
     def test_env_is_not_rewritten_on_upgrade(self):
         """升级不要把 .env 整份重写 —— README 教人在这份文件里改 PUBLIC_URL。"""

@@ -233,6 +233,7 @@ class TestUninstallScope:
         body = self._body(text)
         loop = body[body.index("for f in /usr/local/bin/simpleurl"):]
         loop = loop[: loop.index("\n  done")]
+        # v2.7 起整段改成了 if 包住，连 continue 都不用了
         assert "|| continue" not in loop
         assert loop.count("for f in") == 1
 

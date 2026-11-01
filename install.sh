@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.6.0"
+VERSION="2.7.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -61,15 +61,35 @@ dir_from_args() { # args...
   done
 }
 
-# LOG_FILE / MARK_FILE 都是从 INSTALL_DIR 派生的常量，而 --dir 在参数解析时才读到。
+# 安装目录规范化。不这么做，同一个目录用不同写法就会变成「两份安装」：
+#   · `bash install.sh --dir ./site` 在 install.sh 眼里是 ./site，在生成的
+#     simpleurl 眼里（DIR 由它自己 cd 到物理路径）是 /abs/site —— 于是自己的
+#     目录里有命令却认不出来（退回 install.sh 硬顶），卸载时也把两者当成两个目录。
+#   · /tmp/su1-link 这种软链更糟：/tmp/su1-link 与 /tmp/su1 各自有标记文件，
+#     app/ 被复制到软链深处（.venv/bin/python 的软链当场失效），代码版本却从
+#     标记文件读 —— 屏幕上说「代码未变动」，实际装进去的可能是另一份分支。
+# 先按物理路径（pwd -P）解析，再用它拼出所有派生路径。
+#
+# LOG_FILE / MARK_FILE 也是从 INSTALL_DIR 派生的常量，而 --dir 在参数解析时才读到。
 # 早先只改 INSTALL_DIR、没重算这两个，结果拿到 --dir 的安装把日志往
 # $HOME/simpleurl 写 —— 目录不存在，nohup 当场失败，报一句跟真正原因无关的错。
+_abs_dir() { # path
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *)  printf '%s/%s' "$(pwd)" "$1" ;;
+  esac
+}
+_canon_dir() { # path
+  local p; p="$(_abs_dir "$1")"
+  ( cd "$p" 2>/dev/null && pwd -P ) || printf '%s' "$p"
+}
+
 CLI_DIR="$(dir_from_args "$@")"
 SIMPLEURL_HOME="${SIMPLEURL_HOME:-$CLI_DIR}"
 if [ -n "${SIMPLEURL_HOME:-}" ]; then
-  INSTALL_DIR="$SIMPLEURL_HOME"
+  INSTALL_DIR="$(_canon_dir "$SIMPLEURL_HOME")"
 elif [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/.simpleurl-managed" ]; then
-  INSTALL_DIR="$SELF_DIR"
+  INSTALL_DIR="$(_canon_dir "$SELF_DIR")"
 else
   # 第三条路：本机已经装过（CLI 里记着目录）。从任意位置跑 `bash install.sh upgrade`
   # 是最自然的用法，不该因为「脚本不在安装目录里」就跑去 $HOME/simpleurl 报
@@ -81,10 +101,11 @@ else
                "$HOME"/simpleurl/simpleurl "$HOME"/*/simpleurl/simpleurl; do
     [ -f "$_mark" ] || continue
     _dir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$_mark" 2>/dev/null | head -1)"
-    if [ -n "$_dir" ] && [ -f "$_dir/.simpleurl-managed" ]; then INSTALL_DIR="$_dir"; break; fi
+    if [ -n "$_dir" ] && [ -f "$_dir/.simpleurl-managed" ]; then INSTALL_DIR="$(_canon_dir "$_dir")"; break; fi
   done
   unset _mark _dir
 fi
+
 # 8000 是各种开发服务器的默认口，撞车概率太高；8940 冷门、好记、不占常用段
 PORT="${PORT:-8940}"
 SERVICE_NAME="${SERVICE_NAME:-simpleurl}"
@@ -95,6 +116,10 @@ DOCKER_MIRRORS="${DOCKER_MIRRORS:-https://docker.1ms.run,https://docker.m.daoclo
 COMPOSE_FILE_NAME="docker-compose.yml"
 LOG_FILE="$INSTALL_DIR/simpleurl.log"
 MARK_FILE="$INSTALL_DIR/.simpleurl-managed"   # 有它才认作本脚本装的目录（内含运行方式等）
+# 这台机器上还装着哪些 SimpleURL。两份安装共用一个命令名，后装的那份会把
+# /usr/local/bin/simpleurl 覆盖成自己的；卸掉它时得知道「先装那份在哪」，
+# 否则命令被删掉、站点还在跑，人以为装的东西凭空没了。
+SIBLING_FILE="$INSTALL_DIR/.simpleurl-siblings"
 
 RUNTIME=""          # docker | python，安装时定，simpleurl 命令会读它
 SOURCE_REUSED=""    # y 表示这轮没换代码，只重装了依赖 / 重启了服务
@@ -128,7 +153,10 @@ while [ $# -gt 0 ]; do
     --port)      shift; PORT="${1:-$PORT}"; PORT_EXPLICIT="y" ;;
     # --dir 要同时改写 SIMPLEURL_HOME：install_cli / 卸载 / 升级都从它算安装目录，
     # 只改 INSTALL_DIR 会让后面几步偷偷回到 $HOME/simpleurl
-    --dir)       shift; SIMPLEURL_HOME="${1:-$SIMPLEURL_HOME}"; INSTALL_DIR="$SIMPLEURL_HOME"
+    # --dir 同样规范化：./site、/tmp/link-to-site、~/site 都收敛到同一个物理路径，
+    # 否则「同一份安装」在脚本和 simpleurl 命令眼里是两个目录
+    --dir)       shift; SIMPLEURL_HOME="${1:-$SIMPLEURL_HOME}"
+                 INSTALL_DIR="$(_canon_dir "$SIMPLEURL_HOME")"; SIMPLEURL_HOME="$INSTALL_DIR"
                  LOG_FILE="$INSTALL_DIR/simpleurl.log"; MARK_FILE="$INSTALL_DIR/.simpleurl-managed" ;;
     --no-health) SKIP_HEALTH="y" ;;
     --strict)    STRICT="y" ;;
@@ -468,34 +496,38 @@ d_bad()  { printf "  %s✗%s %s\n" "$RED" "$RST" "$*"; DOCTOR_FAIL=$((DOCTOR_FAI
 # 现在多两条不需要任何外部命令的路：bash 的 /dev/tcp（能连上就是有人在听）
 # 和内核的 /proc/net/tcp{,6}（十六进制地址:端口，任何 Linux 都有）。
 port_in_use() { # port
-  local p="$1" hex
+  local p="$1" hex f
+  # 四条路依次退，任何一条判出「有」就算数。以前是 elif 链：装了 ss 就只信 ss，
+  # 而 ss 在非 root 下可能什么都看不见（别人的进程、受限容器），于是「端口被占」
+  # 被判成「空闲」，紧接着启动撞上 EADDRINUSE，屏幕上却是一句启动成功。
+  # 凡是「判有」的结论都不会误伤，多条路叠加只会更准。
   if need_cmd ss; then
-    ss -lnt 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {found=1} END{exit !found}'
-    return $?
-  elif need_cmd lsof; then
-    lsof -ti "tcp:$p" >/dev/null 2>&1
-    return $?
-  elif need_cmd netstat; then
-    netstat -lnt 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {found=1} END{exit !found}'
-    return $?
-  elif [ -r /proc/net/tcp ]; then
-    # /proc/net/tcp 的端口是四位十六进制；:1F90 这种写法在 tcp4/tcp6 里都长一样
-    hex="$(printf '%04X' "$p" 2>/dev/null || echo "")"
-    [ -n "$hex" ] || return 1
-    # 逐个文件读：/proc/net/tcp6 在没有 IPv6 的内核上不存在，合并重定向会把
-    # 整条管道判成失败，反过来说成"端口空闲"——空目录一律当空闲，别当已占用。
-    for _f in /proc/net/tcp /proc/net/tcp6; do
-      [ -r "$_f" ] || continue
-      awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h {found=1} END{exit !found}' "$_f" 2>/dev/null && return 0
-    done
-    return 1
-  else
-    # 最后一条：bash 自带的 /dev/tcp。连得上说明有人在听（只对 127.0.0.1 有意义，
-    # 但本脚本起的服务本来就监听 0.0.0.0，够用）。用 subshell 收尾，别让
-    # 连接错误把 set -e 的脚本带崩。
-    (exec 3<>"/dev/tcp/127.0.0.1/$p") >/dev/null 2>&1 && return 0
-    return 1
+    ss -lnt 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {found=1} END{exit !found}' && return 0
   fi
+  if need_cmd lsof; then
+    lsof -ti "tcp:$p" >/dev/null 2>&1 && return 0
+  fi
+  if need_cmd netstat; then
+    netstat -lnt 2>/dev/null | awk -v p=":$p" '$4 ~ p"$" {found=1} END{exit !found}' && return 0
+  fi
+  # 内核视角：/proc/net/tcp 的端口是四位十六进制；:1F90 这种写法在 tcp4/tcp6 里都长一样。
+  # 不需要任何外部命令，容器里也一定有。
+  if [ -r /proc/net/tcp ]; then
+    hex="$(printf '%04X' "$p" 2>/dev/null || echo "")"
+    if [ -n "$hex" ]; then
+      # 逐个文件读：/proc/net/tcp6 在没有 IPv6 的内核上不存在，合并重定向会把
+      # 整条管道判成失败，反过来说成"端口空闲"——读不到当空闲，别当已占用。
+      for f in /proc/net/tcp /proc/net/tcp6; do
+        [ -r "$f" ] || continue
+        awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h {found=1} END{exit !found}' "$f" 2>/dev/null && return 0
+      done
+    fi
+  fi
+  # 最后一条：bash 自带的 /dev/tcp。连得上说明有人在听（只对 127.0.0.1 有意义，
+  # 但本脚本起的服务本来就监听 0.0.0.0，够用）。用 subshell 收尾，别让
+  # 连接错误把 set -e 的脚本带崩。
+  (exec 3<>"/dev/tcp/127.0.0.1/$p") >/dev/null 2>&1 && return 0
+  return 1
 }
 
 # 端口被谁占着、占着它的是不是「自己人」。命中返回 0 并把 pid 写进 PORT_HOLDER_PID。
@@ -548,22 +580,6 @@ port_holder_pid() { # port
 
 # 这个 pid 是上次本脚本留下的服务进程吗？两条件：它自己的命令行落在安装目录里，
 # 或者它就是标记文件里记下的那个 pid。除此之外一律不动。
-is_our_service() { # pid
-  local pid="$1" cwd=""
-  [ -n "$pid" ] || return 1
-  # 没有 /proc（macOS、部分精简容器）或当前用户看不到别的用户的进程时，
-  # 这里一律判定「不是自己人」：宁可多报一次端口占用（并换个口），
-  # 也不能因为读不到就默认「自己的」然后把陌生进程杀掉。
-  [ -d "/proc/$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
-  if [ -f "$INSTALL_DIR/simpleurl.pid" ] && [ "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" = "$pid" ]; then
-    return 0
-  fi
-  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
-  [ "$cwd" = "$INSTALL_DIR" ] && return 0
-  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F -- "$INSTALL_DIR" && return 0
-  return 1
-}
 
 doctor() {
   step "环境体检"
@@ -627,10 +643,15 @@ doctor() {
   #   · 没有安装记录却被占           → 真的冲突，装的时候会换口
   if ! port_in_use "$PORT"; then
     d_ok "端口 $PORT 空闲"
-  elif port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
-    d_ok "端口 $PORT 由上次安装的 SimpleURL 自己占着（重装会先停掉）"
+  elif port_owner_ours "$PORT"; then
+    d_ok "端口 $PORT 由本目录的 SimpleURL 自己占着（重装会先停掉）"
+  elif [ -n "${PORT_ORPHAN_PID:-}" ]; then
+    d_ok "端口 $PORT 上是本目录留下的孤儿进程（安装时会清掉）"
   elif [ "$has_install" = "y" ]; then
     d_warn "端口 $PORT 被别的程序占用（升级仍按记录里的端口启动，届时可能起不来）"
+  elif [ "$PORT_EXPLICIT" = "y" ]; then
+    # 端口是用户指定的：装的时候不会「自动换口」，「会改用 …」那句话是假的
+    d_warn "端口 $PORT 被别的程序占用（你指定了端口，不会自动换；占用它的进程还在就只有失败）"
   else
     local alt; alt="$(next_free_port "$PORT")"
     d_warn "端口 $PORT 被别的程序占用${alt:+，装的时候会自动改用 $alt}"
@@ -1205,9 +1226,16 @@ install_docker_mode() {
     -e "TZ=${TZ:-Asia/Shanghai}" \
     -e "SIMPLEURL_ENV_FILE=/data/.env" \
     --label "simpleurl.managed=1" \
+    --label "simpleurl.dir=$INSTALL_DIR" \
     simpleurl:latest >/dev/null || rollback_or_die "容器启动失败"
   RUNTIME="docker"
   ok "容器已启动：$SERVICE_NAME（数据卷 ${SERVICE_NAME}-data）"
+  # 这一步以前只在 Python 路上做。Docker 装完不验，等于「容器起来了」就算成功：
+  # 凭据写错、端口映射错、镜像里是旧代码，全都要等运维自己发现。
+  if [ "$SKIP_HEALTH" != "y" ]; then
+    wait_health 60 || rollback_or_die "容器已启动但健康检查没过（日志：docker logs $SERVICE_NAME）"
+    verify_end_to_end || rollback_or_die "容器能跑，但业务自检没过（登录 / 建链 / 跳转任一失败）"
+  fi
 
   # /data/.env 是「容器里的那份」，让 simpleurl config / password 改得动
   if ! docker exec "$SERVICE_NAME" sh -c 'cat > /data/.env && chmod 600 /data/.env' \
@@ -1293,6 +1321,34 @@ install_python_mode() {
   fi
   [ -n "$want_deps" ] && printf '%s\n' "$want_deps" > "$DEPS_FILE"
   RUNTIME="python"
+}
+
+# 装进去的代码要能被它自己的解释器 import，版本还要和安装目录里的源码一致。
+# 两件事都只信「跑起来的结果」，不信标记文件。
+check_installed_code() {
+  local got="" want
+  want="$(remote_version "$INSTALL_DIR")"
+  [ -n "$want" ] || return 0        # 没有 __version__ 就没什么可比的，交给健康检查
+  case "$RUNTIME" in
+    docker)
+      # 容器里问的是 /data 外的同一份代码：镜像构建时 COPY 进去的 app/
+      got="$(docker exec "$SERVICE_NAME" python -c \
+        'import app;print(app.__version__)' 2>/dev/null || true)" ;;
+    *)
+      [ -x "$INSTALL_DIR/.venv/bin/python" ] || return 0
+      got="$(cd "$INSTALL_DIR" && "$INSTALL_DIR/.venv/bin/python" -c \
+        'import app;print(app.__version__)' 2>/dev/null || true)" ;;
+  esac
+  if [ -z "$got" ]; then
+    warn "装进去的 app 连 import 都过不了，多半是依赖没装全"
+    return 1
+  fi
+  if [ "$got" != "$want" ]; then
+    warn "装进目录的代码是 v$got，目录里的源码写着 v$want —— 目录被别的东西覆盖过"
+    return 1
+  fi
+  ok "代码自检通过（app v$got 可 import）"
+  return 0
 }
 
 write_env() {
@@ -1389,38 +1445,47 @@ EOF
   warn "systemd 注册失败，改用后台进程"; return 1
 }
 
+# 这个容器是不是本目录的？认 labels；老容器没打 label 时只能说「不知道」，
+# 这时候按「有安装记录就是自己的」处理 —— 别把升级变成「停别人的站」。
+_container_ours() {
+  need_cmd docker && docker container inspect "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+  local dir; dir="$(docker inspect -f '{{index .Config.Labels "simpleurl.dir"}}' "$SERVICE_NAME" 2>/dev/null || true)"
+  [ -n "$dir" ] || return 0
+  [ "$dir" = "$INSTALL_DIR" ]
+}
+
 stop_running() {
+  # 容器名同样是全局唯一的，两份安装会撞在一起。容器带 labels（新版才打），
+  # 认得出是本目录的就停；认不出又确实有安装记录在用它，就别顺手把别人的站停了。
   if [ "$RUNTIME" = "docker" ]; then
+    _container_ours || { warn "容器 $SERVICE_NAME 不属于本目录，不动它"; return 0; }
     docker stop "$SERVICE_NAME" >/dev/null 2>&1 || true
   elif has_systemd_unit && need_cmd systemctl; then
     local SUDO=""; [ "$(id -u)" != "0" ] && need_cmd sudo && SUDO="sudo"
     $SUDO systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
-  elif [ -f "$INSTALL_DIR/simpleurl.pid" ]; then
-    local pid; pid="$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null || echo "")"
-    # pid 文件可能过期：机器重启过、进程崩过，那个 pid 早被别人复用了。
-    # 不核对就 kill，等于把别人的进程顺手杀掉——所以先确认它真在建
-    # 目录里跑。核对不上就只删文件，不动进程。
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && is_our_service "$pid"; then
-      # 发完 TERM 不能马上接着删库：uvicorn 的收尾（关连接、写完 WAL）要一点时间，
-      # 下面的 while 循环只盯端口 —— 端口可能在进程还活着的时候就已经放开了。
-      # 等进程真的不在，等不到就 KILL。
-      kill "$pid" 2>/dev/null || true
-      local n=0
-      while [ "$n" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do n=$((n + 1)); sleep 1; done
-      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f "$INSTALL_DIR/simpleurl.pid"
   else
-    # 没 pid 文件（被删过、或是手动起的），或者 pid 文件对不上号，但端口上确实
-    # 是自己那个服务：也得停。否则接下来启动撞端口，报一个跟真正原因无关的错。
-    # 这段以前挂在 elif port_holder_pid 那一支上 —— 上面那个分支无论如何都会
-    # 走到 rm -f，pid 文件存在时 elif 永远轮不到，端口上那个孤儿就一直留着。
-    if port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
-      kill "$PORT_HOLDER_PID" 2>/dev/null || true
-      local m=0
-      while [ "$m" -lt 10 ] && kill -0 "$PORT_HOLDER_PID" 2>/dev/null; do m=$((m + 1)); sleep 1; done
-      kill -0 "$PORT_HOLDER_PID" 2>/dev/null && kill -9 "$PORT_HOLDER_PID" 2>/dev/null || true
+    # 三条线索合一：pid 文件、端口上是谁、命令行指向哪里。
+    # 只看 pid 文件会出事：机器重启过、进程崩过、两份安装撞过同一个端口，
+    # 那个号早被别人复用了 —— 不核对就 kill，等于把别人的进程顺手杀掉。
+    # 只看端口也会出事：安装目录被删了而进程还活着，谁的记录都对不上，
+    # 于是这个端口永久卡住，重装只能一遍遍 bind 失败。
+    local pid="" pid_file="$INSTALL_DIR/simpleurl.pid"
+    [ -f "$pid_file" ] && pid="$(cat "$pid_file" 2>/dev/null || echo "")"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && pid_in_this_dir "$pid"; then
+      stop_pid "$pid"
+    else
+      if port_owner_ours "$PORT"; then
+        stop_pid "$PORT_HOLDER_PID"
+      elif [ -n "${PORT_ORPHAN_PID:-}" ]; then
+        # 目录已经不在、记录也没了，但进程的 cwd 明明白白写着是这个目录 ——
+        # 就是这套安装留下的孤儿。不杀掉，这个端口再也用不了。
+        warn "端口 $PORT 上还留着本目录的孤儿进程 ${PORT_ORPHAN_PID}（安装目录已不在），先停掉它"
+        stop_pid "$PORT_ORPHAN_PID"
+      elif port_holder_pid "$PORT"; then
+        warn "端口 $PORT 被 ${PORT_HOLDER_PID} 占着，那不是本目录的服务，不动它"
+      fi
     fi
+    rm -f "$pid_file"
   fi
   # 等它真的放开端口：紧接着就要覆盖源码了，进程还在读旧文件就是在给自己挖坑
   local i=0
@@ -1430,7 +1495,72 @@ stop_running() {
   done
 }
 
-# 停掉「占了目标端口但不是本脚本管理的」进程前先问一声，不默默动手
+# 停一个已经确认过归属的进程：先 TERM，等它自己收尾（关连接、写完 WAL），
+# 等不到再 KILL。uvicorn 的收尾要一点时间，只发 TERM 就说「已停」不作数。
+stop_pid() { # pid
+  local pid="$1" n=0
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  while [ "$n" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do n=$((n + 1)); sleep 1; done
+  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  sleep 1
+  return 0
+}
+
+# 目标端口上是谁？只认「证据」，不认「记录」：
+#   · pid 文件里记着它，且命令行 / cwd 指向本目录（同一个服务）
+#   · 标记文件里记着「这套安装用这个端口」，而占用者的命令行或 cwd 指向本目录
+# 反例（都是踩出来的）：
+#   · 两份安装用同一个端口：B 的 pid 文件里那个号早被 A 重启后复用了，
+#     只认 pid 文件就会判成自己人，B 一停把 A 干掉了；
+#   · 安装目录被 rm -rf 掉了、进程还活着：cwd 与 pid 文件都对不上，谁都不敢动，
+#     于是那个端口永久卡住，重装只能一遍遍 bind 失败。
+# 这个函数只负责「认」，不动手 —— 动手的是 stop_pid。
+PORT_ORPHAN_PID=""
+port_owner_ours() { # port
+  PORT_ORPHAN_PID=""
+  local p="$1" pid cwd cmd rec_port raw_cwd
+  port_holder_pid "$p" || return 1
+  pid="$PORT_HOLDER_PID"
+  [ -n "$pid" ] || return 1
+  [ -d "/proc/$pid" ] || return 1
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  # 命令行里得真有 uvicorn / start.sh：pid 文件里的号可能早被别的程序复用。
+  # 不需要额外的命令行过滤 —— 认不认得出来，全靠下面「参数或 cwd 指向本目录」，
+  # 一条命令只要不是从这个目录起的，就对不上。（之前这里还有一道「必须是
+  # uvicorn」的闸，两边都要过才算自己人，多一道只会让孤儿认不出来。）
+
+  # 命令行 / cwd 指向本目录 —— 这是最硬的证据，跟有没有记录无关。
+  # 先把它判掉，否则「目录被删了」那条永远轮不到：没了记录的孤儿正是靠
+  # cwd 前缀带 deleted 后缀才认得出来的。
+  case "$cwd" in
+    "$INSTALL_DIR"|"$INSTALL_DIR"/*) : ;;
+    *) case " $cmd " in *"$INSTALL_DIR"*) : ;; *) cwd="" ;; esac ;;
+  esac
+  if [ -n "$cwd" ] && [ "$cwd" = "$INSTALL_DIR" ]; then
+    return 0
+  fi
+  rec_port="$(sed -n 's/^port=//p' "$MARK_FILE" 2>/dev/null | head -1)"
+  if [ -f "$INSTALL_DIR/simpleurl.pid" ] && [ "$(cat "$INSTALL_DIR/simpleurl.pid" 2>/dev/null)" = "$pid" ] \
+     && [ -n "$cwd" ]; then
+    return 0
+  fi
+  if [ -n "$rec_port" ] && [ "$p" = "$rec_port" ]; then
+    case "$cmd" in
+      *"$INSTALL_DIR"*) return 0 ;;
+      *) : ;;   # 参数里没有路径（cd 之后启动的那种）：再看 cwd
+    esac
+    [ -n "$cwd" ] && [ "$cwd" = "$INSTALL_DIR" ] && return 0
+  fi
+  # 目录已经不在了（rm -rf 掉了安装目录但进程还活着）：cwd 会带上 deleted 后缀
+  raw_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+  case "$raw_cwd" in
+    "$INSTALL_DIR"*) PORT_ORPHAN_PID="$pid"; return 1 ;;
+  esac
+  return 1
+}
+
 next_free_port() { # start —— 往后找 40 个，都没有就返回空
   local p
   for p in $(seq $(( $1 + 1 )) $(( $1 + 40 ))); do
@@ -1446,13 +1576,24 @@ check_port_free() {
   port_in_use "$PORT" || return 0
   local who=""
   if need_cmd ss; then who="$(ss -lntp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {print $NF; exit}')"; fi
-  # 占着端口的就是上次装的那个进程（重装 / 升级时的常态）：这是自己人，
+  # 占着端口的就是这套安装的进程（重装 / 升级时的常态）：这是自己人，
   # 不算冲突。真正要拦的是「别人的服务」——这时候不能默认硬上，也不能自作主张 kill。
-  if port_holder_pid "$PORT" && is_our_service "$PORT_HOLDER_PID"; then
-    ok "端口 $PORT 由 SimpleURL 自己在用（重装时会先停掉）"
+  if port_owner_ours "$PORT"; then
+    ok "端口 $PORT 由本目录的 SimpleURL 在用（重装时会先停掉）"
     return 0
   fi
-  warn "端口 $PORT 被占用${who:+：$who}"
+  if [ -n "${PORT_ORPHAN_PID:-}" ]; then
+    warn "端口 $PORT 上是本目录留下的孤儿进程 ${PORT_ORPHAN_PID}（安装记录已不在），安装时会先停掉它"
+    return 0
+  fi
+  # 说清「被谁占着」。只报一句「被占用」，人就得自己去 ps 里翻 —— 而真正常见的
+  # 情况是「这台机器上还装着另一份 SimpleURL」，那时候该做的是别装第二份，
+  # 或者换个端口，而不是照着「自动换口」的提示再装出一个自己都不记得的站。
+  local holder_hint=""
+  if port_holder_pid "$PORT"; then
+    holder_hint="（PID ${PORT_HOLDER_PID}：$(tr '\0' ' ' < "/proc/$PORT_HOLDER_PID/cmdline" 2>/dev/null | cut -c1-80)）"
+  fi
+  warn "端口 $PORT 被占用${who:+：$who}$holder_hint"
   local alt; alt="$(next_free_port "$PORT")"
   # 非交互（CI / 面板 / curl | bash --yes）时问不了人，也别硬撞：自己换个空的。
   # 但显式给了端口（--port / PORT=）就得照办：那是在说「我就要这个口」，
@@ -1597,8 +1738,18 @@ verify_end_to_end() {
       code2="$(printf '%s' "$resp2" | sed -n 's/.*"code": *"\([^"]*\)".*/\1/p' | head -1)"
       if [ -n "$code2" ]; then
         ok "访客建链通过（/$code2）"
-        curl -s -m 8 -o /dev/null -b "$anon_jar" -X DELETE -H "Origin: $base" \
-          -H "X-CSRF-Token: $anon_csrf" "$base/api/links/$code2" 2>/dev/null || true
+        # 访客建的东西要用**访客自己的钥匙**删：管理员那把开的是 /api/links/<code>，
+        # 访客手里只有回执（claim_token），对应 /api/links/<code>/self。
+        # 之前这里拿管理员接口删访客的码，开放模式下必然 401 —— 屏幕上多一句
+        # 「没能删掉」，而验收实际上每装一次就往用户库里塞一条垃圾。
+        tok2="$(printf '%s' "$resp2" | sed -n 's/.*"claim_token": *"\([^"]*\)".*/\1/p' | head -1)"
+        del2="$(curl -s -m 8 -o /dev/null -w '%{http_code}' -b "$anon_jar" -X DELETE \
+              -H "Origin: $base" -H "X-CSRF-Token: $anon_csrf" -H "X-Claim-Token: $tok2" \
+              "$base/api/links/$code2/self?t=$tok2" 2>/dev/null || echo 000)"
+        case "$del2" in
+          2*) ok "访客验收数据已清理（/$code2）" ;;
+          *)  warn "访客验收用的短链 /$code2 没能删掉（HTTP $del2），可到后台手动删" ;;
+        esac
       else
         warn "开放模式下访客建链失败，接口返回：$(printf '%s' "$resp2" | head -c 160)"
         return 1
@@ -1874,7 +2025,10 @@ do_stop() {
     sudo systemctl stop "$NAME" >/dev/null 2>&1 && say "已停止 $NAME"
   elif [ -f "$DIR/simpleurl.pid" ]; then
     local pid; pid="$(cat "$DIR/simpleurl.pid" 2>/dev/null)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    # 光看 pid 文件不够：号可能早被别的程序复用了（机器重启过、进程崩过、
+    # 两份安装撞过同一个号）。先确认命令行或工作目录真指向本目录，
+    # 认不出来就只删文件、不动进程 —— 宁可多起一个，也不误杀别人的站。
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && pid_is_ours "$pid"; then
       kill "$pid" 2>/dev/null || true
       # 只发 TERM 就在屏幕上说「已停止」是不作数的：uvicorn 收尾要一点时间，
       # 卡住的进程还会一直占着端口。等不到就上 KILL，还不行就明说。
@@ -1886,6 +2040,10 @@ do_stop() {
       fi
       if kill -0 "$pid" 2>/dev/null; then warn "进程 $pid 没能停掉（权限？）"
       else say "已停止（PID $pid）"; fi
+    elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      # 进程活着，但命令行和目录都对不上：那是别人的（pid 被复用）。
+      # 说清楚，别让人以为「stop 了但没停」。
+      warn "记录里的进程 $pid 不属于本目录（pid 被复用？），未动它；pid 文件已清理"
     else
       say "记录里的进程已不在（pid 文件过期，已清理）"
     fi
@@ -1905,24 +2063,24 @@ do_stop() {
 # 以前三样都没有就 return 0（当成已放开），于是 restart 在旧进程还占着
 # 端口时就去启新的 —— 新进程 bind 失败，屏幕上却是「已启动」。
 port_listening() {
-  local hex
+  local hex f
+  # 同样四条路叠加、判「有」即算。elif 链只信 ss 时，ss 看不见的端口会被判成
+  # 空闲，restart 于是在旧进程仍占着端口时抢跑，失败信息却指向别处。
   if command -v ss >/dev/null 2>&1; then
-    ss -lnt 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
-    return $?
-  elif command -v lsof >/dev/null 2>&1; then
-    lsof -ti "tcp:$PORT" >/dev/null 2>&1
-    return $?
-  elif command -v netstat >/dev/null 2>&1; then
-    netstat -lnt 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}'
-    return $?
-  elif [ -r /proc/net/tcp ]; then
+    ss -lnt 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}' && return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti "tcp:$PORT" >/dev/null 2>&1 && return 0
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -lnt 2>/dev/null | awk -v p=":$PORT" '$4 ~ p"$" {found=1} END{exit !found}' && return 0
+  fi
+  if [ -r /proc/net/tcp ]; then
     hex="$(printf '%04X' "$PORT" 2>/dev/null)"
-    local f
     for f in /proc/net/tcp /proc/net/tcp6; do
       [ -r "$f" ] || continue
       awk -v h=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == h {found=1} END{exit !found}' "$f" 2>/dev/null && return 0
     done
-    return 1
   fi
   (exec 3<>"/dev/tcp/127.0.0.1/$PORT") >/dev/null 2>&1 && return 0
   return 1
@@ -1934,6 +2092,27 @@ wait_port_free() {
     port_listening || return 0
     i=$((i + 1)); sleep 1
   done
+  return 1
+}
+
+# pid 文件里的那个号还属于本目录吗？只认命令行与工作目录两条证据。
+# pid 文件本身不算证据：机器重启过、进程崩过、两份安装撞过同一个端口，
+# 那个号都可能已经被别的程序复用 —— 拿它当「自己人」就会误杀。
+pid_in_this_dir() { # pid
+  local pid="$1"
+  [ -n "$pid" ] && [ -d "/proc/$pid" ] || return 1
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F -- "$INSTALL_DIR" && return 0
+  [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$INSTALL_DIR" ] && return 0
+  return 1
+}
+
+# 这个 pid 是不是本目录的服务？命令行里带 $DIR，或者 cwd 就是 $DIR。
+# 只认这两条：认不出来宁可不停，也不误杀 —— pid 会被别的程序复用。
+pid_is_ours() { # pid
+  local pid="$1"
+  [ -n "$pid" ] && [ -d "/proc/$pid" ] || return 1
+  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -F -- "$DIR" && return 0
+  [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$DIR" ] && return 0
   return 1
 }
 
@@ -1990,6 +2169,10 @@ set_password() {
   env_put "$DIR/.env" ADMIN_PASSWORD "$pass"
   # 改成账号密码以后，旧的独立令牌就没有存在意义了：留着等于多一把没人记得的钥匙
   env_put "$DIR/.env" ADMIN_TOKEN ""
+  # 改完要拿新密码真登一次。这里以前改完就重启、屏幕上写「新密码：xxx」，
+  # 至于它能不能进门全靠运气：.env 里上一次被写成空的 ADMIN_PASSWORD 时，
+  # 站点启用的还是更早那份 ADMIN_TOKEN，新密码根本没人认。
+  # 顺序：先重启（新密码已落盘）再验，验不过就把新密码留在屏幕上并报错。
   if [ "$RUNTIME" = "docker" ]; then
     # 容器启动参数里也带着凭据，只改 /data/.env 不够——重建一遍才真的生效
     docker exec "$NAME" sh -c 'cat > /data/.env && chmod 600 /data/.env' < "$DIR/.env" >/dev/null 2>&1 || true
@@ -2012,6 +2195,37 @@ set_password() {
   say "新密码：$pass"
   say "后台：$(site_url)/admin"
   say "（改完记得同步改你自己的密码管理器）"
+  verify_login "$user" "$pass" || warn "新密码没能登录成功（旧密码可能还在生效）：看 simpleurl log"
+}
+
+# 拿账号密码真敲一次登录接口。和安装时的验收同一套判据：先取 CSRF，再 POST。
+# 只报「改好了」却不验，等于把发现问题的时机推迟到用户被关在门外那一刻。
+verify_login() { # user password
+  # 没有 curl 就说「没验」，别装作验过了 —— 装完屏幕上那句「新密码已验证可用」
+  # 是这个函数唯一的产出，它不能靠沉默来获得。
+  if ! command -v curl >/dev/null 2>&1; then
+    say "（没有 curl，跳过了新密码的登录验证）"
+    return 0
+  fi
+  local user="$1" pass="$2" base jar csrf code
+  base="http://127.0.0.1:$PORT"
+  jar="$(mktemp 2>/dev/null || echo "/tmp/.su-login.$$")"
+  : > "$jar"
+  curl -s -m 8 -o /dev/null -c "$jar" "$base/" 2>/dev/null || true
+  # cookie 文件是「7 个制表符分隔的字段 + 名字 + 值」：按字段取值，别数字段。
+  # 以前写的是 awk 的 $7 —— 那恰好是值的位置，只因为常用的写法里第 6 个字段
+  # （域）是空的。cookie 带上 Domain 或多一个属性时整行就错开一格，
+  # 取到的是属性名而不是令牌，看起来像「站点没下发 CSRF」。
+  csrf="$(awk -F'\t' '$6 == "su_csrf" {print $7; exit}' "$jar" 2>/dev/null)"
+  if [ -z "$csrf" ]; then rm -f "$jar"; return 1; fi
+  code="$(curl -s -m 8 -o /dev/null -w '%{http_code}' -b "$jar" -c "$jar" \
+      -H 'Content-Type: application/json' -H "Origin: $base" -H "X-CSRF-Token: $csrf" \
+      -d "{\"username\":\"$user\",\"password\":\"$pass\"}" "$base/api/admin/login" 2>/dev/null || echo 000)"
+  rm -f "$jar"
+  case "$code" in
+    200) say "✓ 新密码已验证可用"; return 0 ;;
+    *)   return 1 ;;
+  esac
 }
 
 site_status() {
@@ -2154,8 +2368,52 @@ SU_CLI_EOF
   # 第一份的 install.sh 再也找不到「属于自己的」命令行。有影子就够了，
   # forward_subcommand 优先用它 —— 这也是「这套安装的东西放自己家里」。
   $SUDO sh -c "cp -f '$cli' '$INSTALL_DIR/simpleurl' && chmod 755 '$INSTALL_DIR/simpleurl'" 2>/dev/null || true
+  # 顺序很重要：先把这份命令落盘，再登记兄弟安装 —— 反过来会把「自己还没生成命令」
+  # 那一刻的邻居名单当成最终答案，装第二份时写下的是一份空记录。
+  record_siblings
   ok "管理命令已就位：$cli"
   case ":$PATH:" in *":$bindir:"*) : ;; *) warn "$bindir 不在 PATH，可用绝对路径 $cli" ;; esac
+}
+
+# 把「这台机器上还装着谁」记进 SIBLING_FILE。
+# 两份安装共用一个命令名，后装的那份会把全局命令覆盖成自己的 —— 先装那份
+# 从此只剩目录里的影子命令。卸载后装的那份时，靠这份记录把命令接回去。
+record_siblings() {
+  local d cmd
+  local found=()
+  for cmd in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" \
+             "$HOME"/simpleurl/simpleurl; do
+    [ -f "$cmd" ] || continue
+    d="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$cmd" 2>/dev/null | head -1)"
+    [ -n "$d" ] || continue
+    [ "$d" = "$INSTALL_DIR" ] && continue
+    [ -f "$d/.simpleurl-managed" ] && found+=("$d")
+  done
+  # 目录里那份影子命令也是线索：安装顺序反过来时（先装 A 后装 B），
+  # 全局命令指向 B，A 只剩 /tmp/su-a/simpleurl 这一份 —— 而它同样记着 DIR。
+  # /tmp、/opt、/srv、$HOME 下的一级目录，谁家都可能装 —— 所以从「全局命令指向
+  # 哪儿」「记录里写过哪儿」反推候选目录，而不是满世界找标记文件。
+  for cmd in $(ls -d /tmp/*/simpleurl /opt/*/simpleurl /srv/*/simpleurl \
+                  "$HOME"/*/simpleurl 2>/dev/null); do
+    [ -f "$cmd" ] || continue
+    d="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$cmd" 2>/dev/null | head -1)"
+    [ -n "$d" ] || continue
+    [ "$d" = "$INSTALL_DIR" ] && continue
+    [ -f "$d/.simpleurl-managed" ] && found+=("$d")
+  done
+  # 上一轮记下的也保留：命令被覆盖之后，那份记录可能是唯一线索
+  for d in $(sed -n 's/^dir=//p' "$SIBLING_FILE" 2>/dev/null); do
+    [ "$d" = "$INSTALL_DIR" ] && continue
+    [ -f "$d/.simpleurl-managed" ] || continue
+    case " ${found[*]-} " in *" $d "*) : ;; *) found+=("$d") ;; esac
+  done
+  : > "$SIBLING_FILE"
+  chmod 600 "$SIBLING_FILE" 2>/dev/null || true
+  for d in ${found[@]+"${found[@]}"}; do
+    printf 'dir=%s\n' "$d" >> "$SIBLING_FILE"
+  done
+  [ ${#found[@]} -gt 0 ] && ok "顺带记下机器上另外的安装：${found[*]}"
+  return 0
 }
 
 # ---------------------------------------------------------------- 收尾
@@ -2235,20 +2493,50 @@ do_uninstall() {
   # 删错就把隔壁断了）；同时记下隔壁那份（still_there），本目录删完要用它把
   # 全局命令接回去。以前这里只做第一件，本目录一删「隔壁在哪」就再也没线索了。
   #
+  # 但「隔壁」不能只认全局命令那一条线索：后装的那份会把 /usr/local/bin/simpleurl
+  # 覆盖成自己的，先装那份就只剩自己目录里的影子命令 —— 于是卸载后装的那份时，
+  # 全局命令被删掉、先装那份却接不回来，机器上从此一条 simpleurl 都没有（站点还在跑）。
+  # 所以有安装记录（.simpleurl-managed）的目录都算候选。
+  #
   # 两个细节都是踩过的坑：
   #  · `[ -f ] || continue` 不能用 —— bash 会把整段 for 当函数体跳过，第二个
   #    路径压根没被检查过，于是永远只删 /usr/local/bin 那一份；
   #  · `rm && x=y` 不能当分支尾巴 —— 它是「最后一条命令」，false 会让 set -e
-  #    直接退出，卸载话说到一半人就没了。
-  f=""; cdir=""; still_there=""
+  #    直接退出，卸载话说到一半人就没了；
+  #  · 判断里别写 `|| continue`：它在函数体里跳过的是这一轮循环，但读代码的人
+  #    （包括三天前的我）会以为顺手把后面的活儿也跳过了。层层 if 更不容易读错。
+  f=""; cdir=""; still_there=""; bindir=""
+  # 命令里记着「我属于哪个目录」—— 用它判断该不该删。
+  # 这份解析不支持行首缩进：生成的命令里 DIR 是第一列，这里按第一列取。
+  cli_dir() { # file
+    sed -n 's/^DIR="\(.*\)"$/\1/p' "$1" 2>/dev/null | head -1
+  }
   for f in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
+    # 这里刻意用 if 而不是「没文件就 continue」：注释里那条老写法最容易被
+    # 顺手抄回去，而它正是「第二个路径永远不检查」这起事故的起点。
     if [ -f "$f" ]; then
-      cdir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$f" 2>/dev/null | head -1)"
+      cdir="$(cli_dir "$f")"
       if [ "$cdir" = "$INSTALL_DIR" ]; then
         { $SUDO rm -f "$f" || true; }
       elif [ -n "$cdir" ] && [ "$cdir" != "$INSTALL_DIR" ] && [ -f "$cdir/simpleurl" ]; then
         still_there="$cdir"
       fi
+    fi
+  done
+  # 全局命令这条线索断了：再找两条。
+  #  1. 安装记录里记着的兄弟目录（.siblings，每次安装都会把「机器上还有谁」写进去）
+  #  2. 从旧命令里抄下来的目录（.last-cli），最后一条退路
+  # 为什么不扫 $HOME：`for d in "$HOME"/*/` 在没有匹配时会把字面量 "/root/*" 当成
+  # 一个目录名，后面的判断全部落空却又不报错 —— 看着「扫过了」，其实什么也没扫到；
+  # 而把搜索范围铺到整个 $HOME 去找一个标记文件，代价和收益都不对等。
+  #  · 用 if 而不是 continue：continue 在函数体里跳过的是「整个函数剩下的部分」那种
+  #    误读太容易发生，改成层层 if，读起来就是它实际执行的样子
+  for cdir in $(sed -n 's/^dir=//p' "$SIBLING_FILE" 2>/dev/null) \
+                $(sed -n 's/^last_dir=//p' "$MARK_FILE" 2>/dev/null); do
+    if [ -n "$cdir" ] && [ "$cdir" != "$INSTALL_DIR" ] \
+       && [ -f "$cdir/.simpleurl-managed" ] && [ -x "$cdir/simpleurl" ]; then
+      still_there="$cdir"
+      break
     fi
   done
 
@@ -2259,8 +2547,15 @@ do_uninstall() {
   rm -rf "${INSTALL_DIR:?}"
   # 本目录的全局命令删掉了，隔壁那份还在：把命令接回去，别让人以为装的东西没了。
   if [ -n "$still_there" ] && [ "$still_there" != "$INSTALL_DIR" ] && [ -f "$still_there/simpleurl" ]; then
-    if $SUDO cp -f "$still_there/simpleurl" /usr/local/bin/simpleurl 2>/dev/null; then
+    # 落点跟着权限走：之前一律往 /usr/local/bin 写，非 root 时 cp 失败，
+    # 屏幕上什么也没说，结果就是「隔壁那份明明还在，命令却没了」
+    bindir="/usr/local/bin"
+    [ "$(id -u)" = "0" ] || bindir="$HOME/.local/bin"
+    $SUDO mkdir -p "$bindir" 2>/dev/null || mkdir -p "$bindir" 2>/dev/null || true
+    if $SUDO cp -f "$still_there/simpleurl" "$bindir/simpleurl" 2>/dev/null; then
       ok "全局命令改指向仍在用的那份：$still_there"
+    else
+      warn "没能把命令接回去（权限？）。隔壁那份可以直接用：$still_there/simpleurl"
     fi
   fi
   ok "已卸载干净"
@@ -2403,11 +2698,23 @@ do_install() {
         #  · RUNTIME_OVERRIDE：A 轮认出的运行方式。不带过去，B 轮会把体检结论重算一遍。
         #  · SCRIPT_DOCTORED=y：体检刚跑过、结论是「可以装」，B 轮不用再跑。
         #  · SIMPLEURL_PORT_FIXED=y：A 轮已经就端口做过决定，B 轮别再「自动换个口」。
-        # 端口本身不用传 —— B 轮自己会从 .env 读出同一个值。
+        #  · PORT / PORT_EXPLICIT：端口是从配置文件读回来的值，不是用户显式指定的 ——
+        #    不带过去，B 轮会当它是默认值重新体检，发现被自己占着又「自动换口」，
+        #    于是「重装」把服务搬到了隔壁端口。显式指定也同理：B 轮拿不到证据，
+        #    会把用户要的端口当成冲突处理掉。
+        # 其余显式参数（--no-health / --force / --strict / --branch）一并带过去：
+        # 之前一个都没传，A 轮按 --no-health 跳过验收，B 轮照样等 60 秒再报失败。
+        _reexec_args=("$REEXEC_ACTION" --yes)
+        [ "$SKIP_HEALTH" = "y" ] && _reexec_args+=(--no-health)
+        [ "$ASSUME_YES" = "y" ] && _reexec_args+=(--force)
+        [ "$STRICT" = "y" ] && _reexec_args+=(--strict)
+        [ "$PORT_EXPLICIT" = "y" ] && _reexec_args+=(--port "$PORT")
+        [ "$REPO_BRANCH" != "main" ] && _reexec_args+=(--branch "$REPO_BRANCH")
         SIMPLEURL_HOME="$INSTALL_DIR" SCRIPT_REEXEC=y \
           RUNTIME_OVERRIDE="${RUNTIME_OVERRIDE:-$prev_runtime}" \
           SCRIPT_DOCTORED=y SIMPLEURL_PORT_FIXED=y \
-          exec bash "$fresh_script" "$REEXEC_ACTION" --yes
+          PORT="$PORT" PORT_EXPLICIT="$PORT_EXPLICIT" \
+          exec bash "$fresh_script" ${_reexec_args[@]+"${_reexec_args[@]}"}
       fi
       rm -rf "$INSTALL_DIR/.stage-script"
     else
@@ -2421,7 +2728,11 @@ do_install() {
     local same_rc=0
     same_as_remote || same_rc=$?
     if [ "$same_rc" = "0" ]; then
-      ok "已经是最新代码（v$REMOTE_PEEK），服务不动"
+      # 说清「最新」是怎么判的：只比 app/__init__.py 里的代码版本，不比提交。
+      # 代码没动、只改了安装脚本或文档时，这里也会说「已经是最新」—— 别让人以为升级假跑了。
+      ok "代码已是最新（v$REMOTE_PEEK，与本机记录一致），服务与依赖不动"
+      [ -n "$(local_code_version)" ] && [ "$(script_version "$INSTALL_DIR/install.sh")" != "$VERSION" ] \
+        && warn "安装目录里的脚本是 v$(script_version "$INSTALL_DIR/install.sh")，这份是 v$VERSION（重装即会同步）"
       local url="http://$(detect_ip):$PORT"
       [ -n "$PUBLIC_URL" ] && url="$PUBLIC_URL"
       printf "  站点 %s\n  后台 %s/admin\n\n" "$url" "$url"
@@ -2435,6 +2746,12 @@ do_install() {
   # 旧进程要在换代码之前停：它占着端口、拿着 SQLite 的写锁，还在 import 即将被覆盖的
   # 文件。等装完再停，就会出现「服务其实一直在跑旧代码」这种最难查的状态。
   if [ "$reuse" = "y" ]; then
+    stop_running
+  elif port_in_use "$PORT"; then
+    # 首次安装但端口不干净：check_port_free 已经拦下来问过了（显式端口会照办），
+    # 这里负责真把本目录的孤儿清掉。以前这一步只在「重装」时做，于是
+    # 「删掉安装目录再装回去」会一路顺利到启动才 bind 失败，错误信息指向端口，
+    # 而真正的原因是上一轮留下的进程一直没人收。
     stop_running
   fi
 
@@ -2538,10 +2855,23 @@ do_install() {
     fi
   fi
 
+  # 装进去的东西真的对得上吗？这一步抓的是「装了个寂寞」：脚本靠标记文件里的
+  # code_version 判断「已经最新」，而那个值是从标记文件读回来的 —— 只要复用了旧
+  # 标记，屏幕上就会说「代码未变动」，即便落到目录里的其实是另一份代码。
+  # 所以不看记录，直接问装进去那份代码自己：能不能 import、版本是多少。
+  check_installed_code || die "$INSTALL_DIR/app 跑不起来（依赖装好了但 import 失败，看 simpleurl log）"
+
   CODE_VERSION="$(remote_version "$INSTALL_DIR")"
-  printf 'version=%s\ncode_version=%s\nruntime=%s\nport=%s\ninstalled_at=%s\n' \
+  # last_dir：装的时候全局命令指向哪儿。卸载时它被覆盖过（指向别处）也用得上。
+  _last_dir=""
+  for _cmd in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl"; do
+    [ -f "$_cmd" ] || continue
+    _d="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$_cmd" 2>/dev/null | head -1)"
+    [ -n "$_d" ] && [ "$_d" != "$INSTALL_DIR" ] && { _last_dir="$_d"; break; }
+  done
+  printf 'version=%s\ncode_version=%s\nruntime=%s\nport=%s\ninstalled_at=%s\nlast_dir=%s\n' \
     "$VERSION" "$CODE_VERSION" "$RUNTIME" "$PORT" \
-    "$(date '+%Y-%m-%d %H:%M:%S')" > "$MARK_FILE"
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$_last_dir" > "$MARK_FILE"
   install_cli
   # 走到这里代码已换完、服务已起来、验收也过了 —— 只有这时才换脚本自己。
   # 换早了没意义：中途任何一步失败，留下的该是「还能跑旧那一版」的现场。

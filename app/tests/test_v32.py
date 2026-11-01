@@ -193,8 +193,8 @@ class TestDoctorPortMessage:
 
     def test_has_own_service_branch(self):
         body = func("doctor")
-        assert "由上次安装的 SimpleURL 自己占着" in body
-        assert "is_our_service" in body
+        assert "本目录的 SimpleURL 自己占着" in body
+        assert "port_owner_ours" in body
 
     def test_reinstall_uses_recorded_port(self):
         """已有安装上重跑要沿用记录里的端口，别拿默认值去体检。"""

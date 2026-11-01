@@ -162,10 +162,14 @@ class TestMainScriptCleanup:
         code = "\n".join(
             line for line in body.splitlines() if not line.lstrip().startswith("#")
         )
-        assert not re.search(r"^\s*elif port_holder_pid", code, re.M), \
-            "兜底分支挂在 elif 上永远走不到（上面那个分支必定 rm -f pid 文件）"
+        # 这条兜底必须能被走到：既不能挂在「pid 文件存在」那个分支的 elif 上
+        # （那支必定 rm -f，永远轮不到），也不能被前面的判定吃掉。
+        # v2.7 的写法是 else 分支里依次判：pid 文件 → 端口归属 → 孤儿 → 别人的。
+        assert "elif [ -n \"${PORT_ORPHAN_PID:-}\" ]" in code
+        assert "port_owner_ours" in code
         assert "port_holder_pid" in code
-        assert 'kill "$PORT_HOLDER_PID"' in code
+        # v2.7 起统一走 stop_pid：先 TERM，等它自己收尾，等不到再 KILL
+        assert 'stop_pid "$PORT_HOLDER_PID"' in code
 
 
 class TestDoctorStrict:

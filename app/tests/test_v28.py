@@ -219,9 +219,11 @@ def test_install_only_kills_its_own_process():
     自己上次装的那份则应该自动接管。
     """
     src = INSTALL.read_text(encoding="utf-8")
-    assert "is_our_service()" in src
+    # v2.7 起这个判断改名 port_owner_ours：除了 cwd / 命令行，还认「记录里就是这个
+    # 端口」和「目录被删了但进程还在」两种情形。判据没放松，反而更严了。
+    assert "port_owner_ours()" in src
     assert "/proc/$pid/cwd" in src
-    assert "SimpleURL 自己在用" in src
+    assert "本目录的 SimpleURL 在用" in src
 
 
 def test_install_reinstalls_deps_when_requirements_change():
@@ -374,7 +376,7 @@ class TestInstallV29:
     def test_doctor_treats_own_service_as_ok(self):
         src = self.text()
         body = src[src.index("doctor() {"): src.index("# ---------------------------------------------------------------- 源码")]
-        assert "is_our_service" in body
+        assert "port_owner_ours" in body
 
     def test_verify_checks_anonymous_create_in_open_mode(self):
         """管理员一路畅通、访客被 401 挡住，是权限改造后最典型的「装好了但没人能用」。"""
@@ -452,7 +454,8 @@ class TestInstallV30:
         """pid 文件可能过期，那个 pid 早被别人复用了——不核对就 kill 等于误杀。"""
         src = self.text()
         body = src[src.index("stop_running() {"): src.index("next_free_port()")]
-        assert "is_our_service" in body
+        # pid 只是线索，还得拿命令行 / cwd 核一次归属（v2.7 收紧的点）
+        assert "pid_in_this_dir" in body or "port_owner_ours" in body
 
     def test_probe_failure_does_not_abort_install(self):
         """网络探测只该降级，不该中止：离线机器照样能装（源码本地复用）。"""
