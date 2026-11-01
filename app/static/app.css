@@ -827,8 +827,14 @@ select optgroup { background-color: #0c1322; color: #e8edf7; }
 }
 
 /* ============ 管理后台 ============ */
-.admin { padding: 10px 0 40px; animation: rise .3s ease both; }
-.admin-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+/* 后台是「左侧页签 + 右侧面板」的两栏：页签常驻左边，内容占满右边。
+   布局交给 CSS 而不是等脚本加类——脚本晚一步执行时，十一个面板会先
+   全摊在页签下面闪一下。头部横跨两栏，不然标题会挤进左边那格。 */
+.admin {
+  display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 24px; align-items: start;
+  padding: 10px 0 40px; animation: rise .3s ease both;
+}
+.admin-head { grid-column: 1 / -1; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
 .admin-head h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); margin: 8px 0; }
 .admin-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 /* 十一个页签挤在一枚胶囊里，最右边的「设置」被挤成半个字，
@@ -1307,3 +1313,11 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
 .notify-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: 12px; }
 .notify-grid label { font-size: 0.78rem; color: var(--text-dim); display: grid; gap: 6px; }
 .notify-last { margin-top: 10px; font-size: 0.76rem; color: var(--text-faint); line-height: 1.6; }
+
+/* ---------- 日志尾巴 ---------- */
+.log-tail {
+  margin: 12px 0 0; padding: 14px; max-height: 360px; overflow: auto;
+  font-family: var(--mono); font-size: 0.76rem; line-height: 1.65; color: var(--text-dim);
+  background: rgba(7, 11, 20, .62); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); white-space: pre-wrap; word-break: break-all;
+}

@@ -258,6 +258,15 @@
       <div class="chart-head"><h2>部署自检</h2><span class="hint">看着配了、其实没生效的地方</span></div>
       <ul class="ref-list" id="status-warn"></ul>
     </div>
+    <div class="chart-card">
+      <div class="chart-head"><h2>进程与版本</h2><span class="hint" id="sys-version">—</span></div>
+      <ul class="ref-list" id="sys-list"></ul>
+      <div class="dash-actions">
+        <button class="btn ghost" id="sys-refresh" type="button">刷新</button>
+        <button class="btn ghost" id="sys-log-toggle" type="button">看日志尾巴</button>
+      </div>
+      <pre class="log-tail" id="sys-log" hidden></pre>
+    </div>
   </div>
 
   <!-- 二维码 -->

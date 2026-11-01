@@ -501,6 +501,21 @@ def api_blocked_events(
     return {"items": items, "total": len(items)}
 
 
+@router.get("/system", summary="系统信息：版本 / 运行时长 / 内存 / 日志尾巴")
+def api_system(request: Request, db: Session = Depends(get_db), lines: int = Query(0, ge=0, le=200)):
+    """排障时最先要看的东西，一次给全。
+
+    日志默认不带（可能是几百 KB 的文本），前端点「看日志」再要，
+    免得每次刷新面板都把整段日志重新传一遍。
+    """
+    require_admin(request)
+    from app.core import health
+
+    data = health.snapshot(db)
+    data["log_tail"] = health.log_tail(lines=lines or 40) if lines else []
+    return data
+
+
 @router.get("/runtime", summary="运行状态")
 def api_runtime(request: Request, db: Session = Depends(get_db)):
     """升级、排障先看这里：库多大、排队多少、丢了什么、哪些链接快到期。"""

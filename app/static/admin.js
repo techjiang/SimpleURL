@@ -1101,6 +1101,7 @@
       $('#status-list').innerHTML = rows
         .map(([k, v]) => `<li><span>${k}</span><b>${escapeHtml(String(v))}</b></li>`)
         .join('');
+      loadSystem();
       $('#status-note').textContent = `点击明细保留 ${s.retention_days} 天，更早的明细可手动清理；累计点击数不受影响。回收站里的链接保留 30 天，到期随每日清理一并彻底删除。`;
       // 丢了点击才是真问题：写库卡住时这个数字会往上涨
       if (s.dropped_clicks > 0) {
@@ -1114,6 +1115,50 @@
         .map((w) => `<li><span>${escapeHtml(w.text)}</span><b>${w.level === 'warn' ? '⚠︎' : 'ⓘ'}</b></li>`)
         .join('');
     } catch (err) { toast(err.message); }
+  }
+
+  /* 版本 / 运行时长 / 内存 / 出网能力。排障时这几行比翻日志快得多：
+     「是不是刚重启过」「是不是内存吃满了」「是不是这台机器根本没网」。 */
+  async function loadSystem() {
+    try {
+      const s = await api('/api/admin/system');
+      const mem = s.memory || {};
+      const rows = [
+        ['版本', 'v' + s.version],
+        ['运行时长', s.uptime_human],
+        ['进程', `PID ${s.pid} · Python ${s.python}`],
+        ['系统', s.platform],
+        ['内存（RSS）', mem.available ? `${mem.rss_human}${mem.threads ? ' · ' + mem.threads + ' 线程' : ''}` : '读不到'],
+        ['部署模式', s.debug ? '调试（DEBUG=true）' : '生产'],
+        ['管理功能', s.admin_enabled === false ? '未配置密钥，已关闭' : '已启用'],
+        ['出网能力', s.outbound_blocked === true ? '出不去（取标题、通知都用不了）' : s.outbound_blocked === false ? '正常' : '未知'],
+      ];
+      $('#sys-list').innerHTML = rows
+        .map(([k, v]) => `<li><span>${k}</span><b>${escapeHtml(String(v))}</b></li>`)
+        .join('');
+      $('#sys-version').textContent = s.log_path ? '日志：' + s.log_path : '未配置日志路径';
+    } catch (err) { toast(err.message); }
+  }
+
+  function bindSystem() {
+    const btn = $('#sys-refresh');
+    if (btn) btn.addEventListener('click', () => { loadSystem(); loadStatus(); });
+    const logBtn = $('#sys-log-toggle');
+    let loaded = false;
+    if (logBtn) logBtn.addEventListener('click', async () => {
+      const box = $('#sys-log');
+      if (!box.hidden) { box.hidden = true; logBtn.textContent = '看日志尾巴'; return; }
+      try {
+        const s = await api('/api/admin/system?lines=60');
+        loaded = true;
+        box.textContent = (s.log_tail && s.log_tail.length)
+          ? s.log_tail.join('\n')
+          : '没有可读的日志文件。一键安装脚本会自动写进 .env；手动部署可设置 SIMPLEURL_LOG=<路径>。';
+        box.hidden = false;
+        logBtn.textContent = '收起日志';
+        if (loaded) box.scrollTop = box.scrollHeight;
+      } catch (err) { toast(err.message); }
+    });
   }
 
   function bindStatus() {
@@ -1331,7 +1376,7 @@
   async function boot() {
     bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
     bindBlockedFilter();
-    bindMigrate(); bindSettings(); bindCredentials(); bindStatus(); bindQr(); bindNotify();
+    bindMigrate(); bindSettings(); bindCredentials(); bindStatus(); bindSystem(); bindQr(); bindNotify();
     bindTrash(); bindExpiringNotify();
     await loadDashboard();
   }
