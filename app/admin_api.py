@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import secrets
+import shutil
+import tempfile
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
@@ -24,7 +27,7 @@ from app.core.admin import (
 )
 from app.core.clicks import click_buffer
 from app.core.config import settings
-from app.core.db import get_db
+from app.core.db import get_db, get_engine, session_scope
 from app.core.security import client_ip, rate_limiter
 from app.core.timeutil import local_day_sql, local_day_start, today_local
 from app.core.settings_store import EDITABLE, code_length_value, effective, get_all, set_value
@@ -45,6 +48,10 @@ from app.schemas import (
 from app.services import NO_CLICK_LABELS, ServiceError, flush_clicks, import_yourls, runtime_status
 
 logger = logging.getLogger("simpleurl")
+# 还原包上限：整个库塞进内存里验一遍，太大就不该走这条路（改用 simpleurl restore，
+# 那条路是流式的）。512 MB 够绝大多数自托管站点。
+MAX_RESTORE_BYTES = 512 * 1024 * 1024
+
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
@@ -753,35 +760,159 @@ def api_admin_trash(request: Request, q: str | None = Query(None), db: Session =
     return {"items": items, "retention_days": TRASH_RETENTION_DAYS, "total": len(items)}
 
 
-@router.get("/backup", summary="下载 SQLite 库文件")
-def api_backup(request: Request, db: Session = Depends(get_db)):
-    """把库文件原样下载回去。
+@router.get("/backup", summary="下载数据库备份")
+def api_backup(request: Request, download: int = 1, db: Session = Depends(get_db)):
+    """把库里的一切打包下载回去。
 
     数据能自托管，前提是数据拿得走。导出 JSON / CSV 只覆盖链接，账号、
     配置、点击明细还在库里；真要迁移或留底，得有一个「把整个库拿走」的口子。
+
+    **不能直接 `FileResponse` 那个库文件**：站点开着 WAL，最近的写入先落在
+    `-wal` 里，主库可能是几 MB 之前的版本。这里先让 sqlite 自己折成一份
+    自包含的单文件（`VACUUM INTO`），再原样发回去 —— 折完的那份是真正的
+    SQLite 库，`sqlite3` 打开就能用，不需要在旁边放 WAL。
+
+    `download=0` 只返回一次同源的快照摘要（条数 / 体积），给脚本用。
     只支持 SQLite：Postgres 请用 pg_dump。
     """
-    require_settings_admin(request)
-    import datetime as _dt
     from pathlib import Path
+    from tempfile import mkstemp
 
     from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
 
-    url = settings.database_url
-    if not url.startswith("sqlite"):
-        raise ServiceError("当前使用 Postgres，请用 pg_dump 备份；这里只支持下载 SQLite 库文件", 422)
-    path = Path(url.split("sqlite:///")[-1].split("?")[0]).expanduser()
+    from app import __version__
+    from app.core.archive import ArchiveError, snapshot, sqlite_path
+
+    actor = require_settings_admin(request)
+    path = sqlite_path(settings.database_url)
+    if path is None:
+        raise ServiceError("当前不是文件型 SQLite，请用 pg_dump 备份；这里只支持下载 SQLite 库", 422)
     if not path.is_file():
         raise ServiceError(f"库文件不存在：{path.name}（内存库无法备份）", 422)
-    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M")
-    report.record(db, "settings", actor=require_settings_admin(request), detail="下载数据库备份", request=request)
+
+    # 折库落在自己的临时目录里，再改名到最终位置：snapshot() 的产出名是固定的
+    # simpleurl.db，两个管理员同时点下载时不该抢同一个文件。
+    work = Path(tempfile.mkdtemp(prefix="su-snap-"))
+    fd, tmp = mkstemp(prefix="simpleurl-", suffix=".db")
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        snap = snapshot(path, work)
+        os.replace(snap, tmp_path)
+    except (ArchiveError, OSError) as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise ServiceError(f"备份失败：{exc}", 500) from exc
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    size = tmp_path.stat().st_size
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
+    report.record(
+        db, "settings", actor=actor,
+        detail=f"下载数据库备份（{size // 1024 or 1} KB）", request=request,
+    )
     db.commit()
+    if download == 0:
+        tmp_path.unlink(missing_ok=True)
+        return {"ok": True, "size": size, "filename": f"simpleurl-{stamp}.db", "version": __version__}
     return FileResponse(
-        path,
+        tmp_path,
         media_type="application/octet-stream",
         filename=f"simpleurl-{stamp}.db",
         headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(lambda: tmp_path.unlink(missing_ok=True)),
     )
+
+
+@router.post("/restore", summary="从备份包还原数据库")
+async def api_restore(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """把另一个站点的备份恢复到这里。
+
+    备份是「把全部拿走」的那一头，这是它的另一头 —— 没有它的备份只能叫导出一份文件。
+    以前还原只能用 `simpleurl restore`，那要能 ssh 上去、还得找到安装目录；
+    这个入口给的是「换服务器 / 搬库」时最缺的那一步。
+
+    接受两种东西：`simpleurl backup` 打出来的 .tar.gz（里面是折好的库 + .env），
+    以及后台下载的那份 .db。**先验后换**：库要能过 `PRAGMA integrity_check`、
+    links 表要在，验过了才动现有数据 —— 一个坏包不能把在跑的站点换没了。
+    换之前把现有库拷一份到 `.restore-backup-<时间戳>.db`，屏幕上说清楚路径。
+    """
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from app import __version__
+    from app.core.archive import ArchiveError, extract_db, sqlite_path, verify
+
+    actor = require_settings_admin(request)
+    # 先把要回的话都算好（actor 已经拿到），后面就只剩文件操作：
+    # 数据一换，任何还想读旧库的动作都会踩到「database is locked」。
+    target = sqlite_path(settings.database_url)
+    if target is None:
+        raise ServiceError("当前不是文件型 SQLite，无法从备份包还原；Postgres 请用 pg_restore", 422)
+    if not target.is_file():
+        raise ServiceError(f"库文件不存在：{target.name}，还没初始化过", 422)
+
+    raw = await file.read()
+    if not raw:
+        raise ServiceError("上传的文件是空的", 422)
+    if len(raw) > MAX_RESTORE_BYTES:
+        raise ServiceError(f"备份包太大（上限 {MAX_RESTORE_BYTES // (1024 * 1024)} MB）", 413)
+
+    work = Path(tempfile.mkdtemp(prefix="su-restore-"))
+    try:
+        upload = work / "upload.bin"
+        upload.write_bytes(raw)
+        note = ""
+        db_file = upload
+        env_file = None
+        if raw[:2] == b"\x1f\x8b":
+            try:
+                db_file, env_file, note = extract_db(upload, work / "x")
+            except ArchiveError as exc:
+                raise ServiceError(str(exc), 422) from exc
+        else:
+            moved = work / "snapshot.db"
+            upload.replace(moved)
+            db_file = moved
+        if db_file.read_bytes()[:16] != b"SQLite format 3\x00":
+            raise ServiceError("这不是一份 SQLite 备份（tar.gz 或 .db 都不是）", 422)
+        try:
+            links = verify(db_file)
+        except ArchiveError as exc:
+            raise ServiceError(str(exc), 422) from exc
+
+        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        keep = target.with_name(f".restore-backup-{stamp}.db")
+        # 先落地再换名：直接写目标文件的话，中途失败会留下一个半份库
+        staging = target.with_name(f".restore-incoming-{stamp}.db")
+        shutil.copyfile(db_file, staging)
+        shutil.copyfile(target, keep)
+        db.close()
+        get_engine().dispose()
+        os.replace(staging, target)
+        # 旧的 WAL / SHM 属于旧库，留着会和刚换上的库对不上号
+        for suffix in ("-wal", "-shm"):
+            Path(str(target) + suffix).unlink(missing_ok=True)
+        # 留痕只记一条，记在**换完之后**：原 session 还捏着旧库的连接，
+        # 换文件之后再用它写就是 `database is locked`（先把错误抛出去，
+        # 屏幕上只剩 Internal Server Error，而还原其实已经成功了）。
+        with session_scope() as fresh:
+            report.record(
+                fresh, "settings", actor=actor,
+                detail=f"从备份还原（{links} 条链接，原库留底 {keep.name}）", request=request,
+            )
+        return {
+            "ok": True,
+            "links": links,
+            "kept": str(keep),
+            "version": __version__,
+            "note": note,
+            "env_ignored": env_file is not None,
+        }
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 @router.post("/import/csv", summary="从 CSV 清单导入")

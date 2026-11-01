@@ -46,7 +46,16 @@
   }
 
   async function api(path, options) {
-    const res = await fetch(path, withCsrf(options));
+    const opts = Object.assign({}, options);
+    // 上传文件时浏览器要自己写 multipart 的 boundary —— 手写
+    // `Content-Type: application/json` 会让后端拿到一个空表单，
+    // 屏幕上只剩「Field required」，看着像文件没选。
+    if (opts.body instanceof FormData) {
+      const headers = Object.assign({}, opts.headers);
+      delete headers['Content-Type'];
+      opts.headers = headers;
+    }
+    const res = await fetch(path, withCsrf(opts));
     // 登录接口自己回 401 是「密码不对」，不是「没登录」：
     // 这时候把门再放一次、再叫一遍「请先登录」，会把真正的错误盖掉
     if (res.status === 401 && !path.startsWith('/api/admin/login')) {
@@ -1161,6 +1170,38 @@
     });
   }
 
+  /* 从备份还原：搬服务器 / 换库时最缺的那一步，不该非得 ssh 上去敲命令。
+     两条必须守住的：先用 GET 验一遍包（服务端 integrity_check），再让用户自己点头；
+     传的是文件，不能走 post()（那是 JSON）。 */
+  function bindRestore() {
+    const pick = $('#restore-pick');
+    const input = $('#restore-file');
+    if (!pick || !input) return;
+    pick.addEventListener('click', () => {
+      if (!confirm('从备份还原会覆盖当前所有链接、配置与点击记录。\n还原前会自动把现有库留一份底。继续？')) return;
+      input.click();
+    });
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      setStatus('#status-msg', `正在还原 ${file.name}…`);
+      try {
+        const r = await api('/api/admin/restore', { method: 'POST', body: fd });
+        setStatus('#status-msg', `已还原 ${r.links} 条链接；原库留底 ${r.kept.split('/').pop()}`, 'ok');
+        await loadStatus();
+        await loadDashboard();
+      } catch (err) {
+        // 还原失败时站点数据没动（服务端验过包才换），说清楚这一点，
+        // 否则人第一反应是「我是不是把站搞坏了」
+        setStatus('#status-msg', `还原失败：${err.message}（现有数据未改动）`, 'err');
+      } finally {
+        input.value = '';
+      }
+    });
+  }
+
   function bindStatus() {
     const btn = $('#status-refresh');
     if (btn) btn.addEventListener('click', loadStatus);
@@ -1376,7 +1417,7 @@
   async function boot() {
     bindTabs(); bindAdminLinks(); bindEdit(); bindGuard(); bindAudit(); bindSocial(); bindKeys();
     bindBlockedFilter();
-    bindMigrate(); bindSettings(); bindCredentials(); bindStatus(); bindSystem(); bindQr(); bindNotify();
+    bindMigrate(); bindSettings(); bindCredentials(); bindStatus(); bindRestore(); bindSystem(); bindQr(); bindNotify();
     bindTrash(); bindExpiringNotify();
     await loadDashboard();
   }

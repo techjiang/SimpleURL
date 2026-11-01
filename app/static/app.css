@@ -77,7 +77,11 @@ h1, h2 { margin: 0; line-height: 1.2; letter-spacing: -0.02em; }
 }
 
 /* ============ 背景光晕 ============ */
-.aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+/* 光斑用 vw 摆在视口外（right: -10vw），blur(90px) 又往外扩一圈，
+   于是把文档的 scrollWidth 撑出视口 —— 手机上表现为整页能往右拖一小段，
+   背景跟着滑走、右边留一条空边。「拖得动但没内容」最容易被当成页面坏了。
+   contain: paint 让子元素不参与祖先的滚动尺寸计算，比再多几处 overflow 缝补靠谱。 */
+.aurora { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; width: 100vw; max-width: 100%; contain: paint; }
 .aurora span { position: absolute; display: block; border-radius: 50%; filter: blur(90px); opacity: 0.5; }
 .aurora span:nth-child(1) { width: 46vw; height: 46vw; top: -14vw; left: -8vw; background: radial-gradient(circle, #2563eb, transparent 65%); }
 .aurora span:nth-child(2) { width: 38vw; height: 38vw; top: 24vh; right: -10vw; background: radial-gradient(circle, #7c3aed, transparent 65%); animation: float 18s ease-in-out infinite; }
@@ -882,6 +886,15 @@ code, .key-cell { font-family: var(--mono); font-size: 0.8rem; background: rgba(
   font-size: 0.82rem; color: var(--text-dim);
 }
 .table-wrap .pager-row span:empty { display: none; }
+/* 后台的两栏（216px 页签 + 内容）只在够宽时才成立。中间那一段宽度里
+   右边被压到 480px 上下，仪表盘的五张卡各占 ~90px —— 数字横排写不下，
+   于是「1」竖着排成一列一条的窄柱。整块宽度不够时先把页签折到上面去，
+   内容拿满整行；窄屏下卡片再掉成两列。 */
+@media (max-width: 860px) {
+  .admin { grid-template-columns: minmax(0, 1fr); }
+  .admin-tabs { grid-column: 1 / -1; }
+  .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 720px) {
   .admin-cols { grid-template-columns: 1fr; }
   /* 窄屏：十一个页签横滑时右边永远有一个被切成半个字，看着像坏了。

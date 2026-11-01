@@ -23,7 +23,7 @@
 - **可选私密** — 配一个 `ACCESS_TOKEN` 就能把整个站点锁起来
 - **安全加固** — CSP、CSRF 防护、Argon2id 口令哈希、登录限速、可信代理
 - **到期提醒** — 列表与仪表盘都标出「还剩几天」，7 天内到期可一键筛出，也能一键推到通知通道
-- **库备份** — 后台一键下载整个 SQLite 库文件，账号 / 配置 / 点击明细一起带走
+- **库备份** — 后台一键下载整个库（打包前先合并 WAL，拿到的是最新那份），账号 / 配置 / 点击明细一起带走；换服务器时能一键还原回去
 - **运行状态** — 后台一屏看库体积 / 待结算 / 丢了多少点击 / 部署自检告警
 - **点击对账** — 没计入点击的访问按原因分账：UA 屏蔽 / 平台拦截 / 放行不计数 / 超出配额，配额用尽会亮告警
 - **二维码工坊** — 160~1024px 六档尺寸、PNG / SVG 双格式、可带品牌图标（错误纠正提到 H），矢量印刷不糊
@@ -101,7 +101,8 @@ docker compose up -d         # 首次需构建
 | `POST` | `/api/admin/notify/test` | 给某个通道发一条测试消息 |
 | `POST` | `/api/admin/notify/send-digest` | 立即推送当前告警摘要 |
 | `POST` | `/api/admin/notify/expiring` | 把 N 天内到期的链接打包推给所有通道，`days` 默认 7 |
-| `GET` | `/api/admin/backup` | 下载 SQLite 库文件（Postgres 请用 `pg_dump`） |
+| `GET` | `/api/admin/backup` | 下载库备份（先合并 WAL，拿到的是自包含单文件；`download=0` 只回摘要） |
+| `POST` | `/api/admin/restore` | 从备份包还原（`.tar.gz` 或 `.db`），先验包再换，换前自动留底 |
 | `GET` | `/api/admin/audit` | 操作留痕，支持 `limit` / `action` |
 | `POST` | `/api/admin/flush-clicks` | 立即结算延迟计数 |
 | `GET` | `/api/admin/runtime` | 运行状态：库体积、待结算、丢弃数、到期数、部署自检 |
@@ -300,8 +301,8 @@ simpleurl status      # 状态 + 健康检查（等价 ./install.sh status）
 simpleurl log         # 跟踪日志
 simpleurl restart     # 重启
 simpleurl password    # 看当前管理员密码（只读；--reset 才换新的，`password 新密码` 直接设）
-simpleurl backup      # 备份数据库与配置
-simpleurl restore     # 从备份恢复
+simpleurl backup      # 备份数据库与配置（先合并 WAL，包能直接还原）
+simpleurl restore     # 从备份恢复（先验包，换前自动留底）
 simpleurl upgrade     # 升级到最新代码
 simpleurl doctor      # 环境体检
 simpleurl url         # 打印站点与后台地址
@@ -337,6 +338,38 @@ simpleurl config      # 查看 / 编辑配置
   端口被占时脚本会照办并停下报错——偷偷换一个口，摘要、防火墙、反代上游就全对不上了。
 
 远端版本比本地旧时**不会**覆盖（防降级），要强行覆盖换 `--branch <分支>`。
+
+### v2.8：备份这件事以前只是「看起来做完了」
+
+四条都是同一个形状：两条命令各自说成功，数据在半路没了。
+
+- **备份打的是主库，最近的写入还在 `-wal` 里**。站点开着 WAL，新链接先进 WAL，
+  主库文件可能还是几 MB 之前的样子。于是 `simpleurl backup` 打出来的包能解开、
+  库能打开、表也在 —— 就是没有最近的链接；而 `restore` 回头把它盖回去时，
+  屏幕上写「已恢复，服务已重启」。现在打包前先让 sqlite 自己折一份自包含的单文件
+  （`VACUUM INTO`，合并 WAL、不留半截事务），折不出来就失败并说清原因，
+  不拿一个能解压的坏包冒充成功。后台「下载数据库备份」走的是同一套实现。
+- **还原多了个口子：后台直接传包**。以前还原只能 `simpleurl restore`，得先 ssh 上去、
+  还得知道安装目录在哪。现在后台「从备份还原」直接上传 `.tar.gz` 或 `.db`：
+  先过 `PRAGMA integrity_check` 与 `links` 表，验过了才动现有数据，换之前还会把
+  原来的库拷一份到 `.restore-backup-<时间戳>.db`。验不过就原样退出，
+  屏幕上明说「现有数据未改动」。
+- **`sqlite:////tmp/x.db` 的根目录被削掉了**。解析库路径时用的是 `lstrip("/")`，
+  于是 `/tmp/su/simpleurl.db` 变成 `tmp/su/simpleurl.db`，报「没有数据库文件」，
+  而文件明明在那儿。四个斜杠各有含义，照着 SQLAlchemy 的规则只削最前面那一个。
+- **所有 POST 的表单都被读写了一遍**。YOURLS 兼容层的 `_FormCacheMiddleware` 挂在
+  全局，`request.form()` 读完之后 body 不会还回去 —— 任何 multipart 上传走到路由
+  就只剩空表单，报 `Field required: file`，看着像「客户端没传文件」。现在只读
+  `/yourls-api` 自己的路径。
+
+两处顺手收掉的安装脚本毛病：
+
+- **拷一份新脚本去装，会被包里那份旧脚本顶回去**。落盘判据比的是「待更新 vs 当前」，
+  但传给 pending 的却是源码包里那份 —— 于是屏幕上「安装完成 v2.7.0」、
+  安装目录里的脚本原封不动。现在手上这份更新时就用自己替换包里的那份。
+- **任意路径下 `doctor` 报的是默认端口**。「端口被占的是不是自己人」得先知道
+  是哪个安装目录，而这段推算只发生在参数解析之前。现在三条入口（install /
+  upgrade / doctor）共用 `_installed_dir()`，在 `/tmp` 里体检也能认出这台机器上的那份。
 
 ### v2.5 修掉的几处安装事故
 

@@ -367,7 +367,10 @@ class TestNonInstallNameDoesNotHijack:
 
 class TestScriptVersion:
     def test_version_bumped(self):
-        assert 'VERSION="2.7.0"' in BODY
+        """v2.5 的那条修法必须在，而且版本号只增不减。"""
+        assert "port_holder_pid" in BODY
+        ver = BODY.split('VERSION="', 1)[1].split('"', 1)[0]
+        assert tuple(int(x) for x in ver.split(".")) >= (2, 7, 0)
 
     def test_syntax_ok(self):
         r = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)

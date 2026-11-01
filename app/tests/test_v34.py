@@ -105,10 +105,15 @@ class TestInstallDirCanonical:
         assert "_canon_dir" in seg
 
     def test_marker_scan_canonicalises(self):
-        """老安装的命令行里可能记着软链路径：顺着它找到目录后同样要规范化。"""
-        idx = BODY.index("for _mark in")
-        seg = BODY[idx: idx + 800]
+        """老安装的命令行里可能记着软链路径：顺着它找到目录后同样要规范化。
+
+        扫描逻辑在 v2.8 抽成了 `_installed_dir()` —— doctor 也要用它
+        （否则任意路径下体检报的是默认端口）。
+        """
+        idx = BODY.index("_installed_dir() {")
+        seg = BODY[idx: idx + BODY[idx:].index("\n}\n")]
         assert "_canon_dir" in seg
+        assert "/usr/local/bin/simpleurl" in seg
 
     @pytest.mark.parametrize("shape", ["symlink", "relative"])
     def test_same_dir_for_symlink_and_relative(self, tmp_path, shape):
@@ -422,7 +427,8 @@ class TestScriptStillSane:
         assert r.returncode == 0, r.stderr
 
     def test_version_bumped(self):
-        assert 'VERSION="2.7.0"' in BODY
+        # 这一轮的脚本版本；再往上抬时把这里一起改
+        assert 'VERSION="2.8.0"' in BODY
 
     def test_no_placeholder_left_in_template(self):
         """渲染占位只剩三个，且都被替换过 —— 少一个就落到磁盘上一串 __SU_*__。"""
@@ -569,7 +575,7 @@ class TestScriptStillSane:
         assert r.returncode == 0, r.stderr
 
     def test_version_bumped(self):
-        assert 'VERSION="2.7.0"' in BODY
+        assert 'VERSION="2.8.0"' in BODY
 
     def test_no_placeholder_left_in_template(self):
         """渲染占位只剩三个，且都被替换过 —— 少一个就落到磁盘上一串 __SU_*__。"""

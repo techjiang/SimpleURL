@@ -250,6 +250,8 @@
         <button class="btn ghost" id="status-refresh" type="button">刷新</button>
         <button class="btn ghost" id="prune-events" type="button">清理过期点击明细</button>
         <a class="btn ghost" id="download-backup" href="/api/admin/backup" download>下载数据库备份</a>
+        <button class="btn ghost" id="restore-pick" type="button">从备份还原</button>
+        <input type="file" id="restore-file" accept=".tar.gz,.tgz,.db,application/gzip" hidden />
         <span class="status" id="status-msg" role="status"></span>
       </div>
       <p class="hint" id="status-note"></p>

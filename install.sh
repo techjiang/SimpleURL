@@ -15,7 +15,7 @@
 #   · 每写一步都有自检：Python 版本、端口、磁盘、健康检查，问题当场说清楚
 set -euo pipefail
 
-VERSION="2.7.0"
+VERSION="2.8.0"
 # 本地脚本所在目录。`curl | bash` 时为空，只能靠下载源码包。
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 SELF_PATH="${BASH_SOURCE[0]:-install.sh}"
@@ -85,6 +85,23 @@ _canon_dir() { # path
 }
 
 CLI_DIR="$(dir_from_args "$@")"
+# 机器上唯一那份已安装目录（从全局命令 / 影子命令反推）。没有就输出空串。
+#
+# 抽成函数是因为 `./install.sh doctor` 要在参数解析**之前**跑预算：
+# 「端口被占的是不是自己人」得先知道是哪个安装目录，否则换成任意路径下的一份拷贝去
+# 体检，屏幕上会写「端口 8940 空闲」，而人在 /tmp/su 里、18970 正由自己占着。
+# 这段原来是内联的，于是只有 install 认得出「这台机器装过」，doctor 两眼一抹黑。
+_installed_dir() {
+  local mark dir
+  for mark in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" \
+              "$HOME"/simpleurl/simpleurl "$HOME"/*/simpleurl/simpleurl; do
+    [ -f "$mark" ] || continue
+    dir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$mark" 2>/dev/null | head -1)"
+    if [ -n "$dir" ] && [ -f "$dir/.simpleurl-managed" ]; then printf '%s' "$(_canon_dir "$dir")"; return 0; fi
+  done
+  printf ''
+}
+
 SIMPLEURL_HOME="${SIMPLEURL_HOME:-$CLI_DIR}"
 if [ -n "${SIMPLEURL_HOME:-}" ]; then
   INSTALL_DIR="$(_canon_dir "$SIMPLEURL_HOME")"
@@ -94,16 +111,10 @@ else
   # 第三条路：本机已经装过（CLI 里记着目录）。从任意位置跑 `bash install.sh upgrade`
   # 是最自然的用法，不该因为「脚本不在安装目录里」就跑去 $HOME/simpleurl 报
   # 「没有安装记录」。装了多份时以最近一次安装为准。
-  INSTALL_DIR="$HOME/simpleurl"
   # 先看全局命令（两份安装时以最近一次为准），再扫常见位置下的影子 ——
   # 全局命令被后装的那份覆盖后，影子是唯一还能认出前一份目录的线索。
-  for _mark in /usr/local/bin/simpleurl "$HOME/.local/bin/simpleurl" \
-               "$HOME"/simpleurl/simpleurl "$HOME"/*/simpleurl/simpleurl; do
-    [ -f "$_mark" ] || continue
-    _dir="$(sed -n 's/^DIR="\(.*\)"$/\1/p' "$_mark" 2>/dev/null | head -1)"
-    if [ -n "$_dir" ] && [ -f "$_dir/.simpleurl-managed" ]; then INSTALL_DIR="$(_canon_dir "$_dir")"; break; fi
-  done
-  unset _mark _dir
+  INSTALL_DIR="$(_installed_dir)"
+  [ -n "$INSTALL_DIR" ] || INSTALL_DIR="$HOME/simpleurl"
   # 走到这条分支说明「脚本不在任何安装目录里」——典型场景是把 install.sh 单独
   # 拷到 /tmp 或某个空目录去跑。这时候再按上面那样去认「机器上已有的那份」，
   # 就会替一个从没提到过的目录干活：实测在 /tmp/suB 里敲 `bash /tmp/suB/install.sh`，
@@ -170,7 +181,27 @@ while [ $# -gt 0 ]; do
     upgrade|update) ACTION="upgrade" ;;
     --yes|-y)    INTERACTIVE=0 ;;
     uninstall|remove) ACTION="uninstall"; INTERACTIVE=0 ;;
-    doctor|check) ACTION="doctor" ;;
+    # 体检也认这台机器上那份安装：`doctor` 只做诊断、不写任何文件，最常被拿去
+    # 回答「我现在这套到底什么情况」，而内联的目录推算只发生在参数解析之前 ——
+    # 不在这里补一次，任意路径下拷一份脚本去体检，报的是 $HOME/simpleurl 和默认端口，
+    # 屏幕上写「8940 空闲」，而人在 /tmp/su 里、18970 正由自己的服务占着。
+    doctor|check)
+                 ACTION="doctor"
+                 if [ -z "${SIMPLEURL_HOME:-}" ] && [ -z "$CLI_DIR" ]; then
+                   _d="$(_installed_dir)"
+                   if [ -n "$_d" ]; then
+                     INSTALL_DIR="$_d"
+                     LOG_FILE="$INSTALL_DIR/simpleurl.log"; MARK_FILE="$INSTALL_DIR/.simpleurl-managed"
+                     SIBLING_FILE="$INSTALL_DIR/.simpleurl-siblings"
+                     # 端口沿用安装记录（只有 PORT= / --port 才算人显式说的）——
+                     # 和 do_install 里那条判断一样，别让体检和实际行动各说一套
+                     if [ "$PORT_EXPLICIT" != "y" ] && [ -s "$MARK_FILE" ]; then
+                       _rp="$(sed -n 's/^port=//p' "$MARK_FILE" | head -1)"
+                       [ -n "$_rp" ] && PORT="$_rp" && PORT_FROM_MARK="y"
+                     fi
+                   fi
+                   unset _d _rp
+                 fi ;;
     --runtime)   shift; RUNTIME_OVERRIDE="${1:-}" ;;
     --branch)    shift; REPO_BRANCH="${1:-main}"; REPO_TARBALL="$(default_tarball)" ;;
     --port)      shift; PORT="${1:-$PORT}"; PORT_EXPLICIT="y" ;;
@@ -918,18 +949,27 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
       *"$GIT_HOST"*) urls+=("${REPO_TARBALL/"$GIT_HOST"/"$API_HOST"}") ;;
     esac
   fi
+  local staged="" got=1
   for u in ${urls[@]+"${urls[@]}"}; do
     rm -f "$tarball"
     # is_tarball 认 gzip 魔数，网页外壳（HTML）在这一步就被挡掉
     if fetch "$u" "$tarball" >/dev/null 2>&1 && is_tarball "$tarball"; then
       if extract_tarball "$tarball" "$stage"; then
-        rm -f "$tarball"
-        return 0
+        rm -f "$tarball"; staged="y"; got=0; break
       fi
       warn "源码包解压失败，换下一个地址"
     fi
     rm -f "$tarball"
   done
+  if [ -n "$staged" ]; then
+    # 源码包里带的 install.sh 不一定是最新的：远端 main 落后于手上这份脚本时
+    # （刚改完还没推、或者从别处拷一份新脚本过来装），包里那份是旧的。
+    # 直接让它进 stage 就等于「用旧脚本盖掉新脚本」——落盘判据一比对，说
+    # 「新脚本版本更低」，屏幕上一切正常，安装目录里却还是老版本。
+    # 这里只做一件事：手上这份更新时，用自己替换包里的那份。
+    _prefer_self_script "$stage"
+    return 0
+  fi
 
   # 走到这里说明源码包没拿到。CNB 的网页归档地址在无令牌时必定给出 HTML 外壳，
   # 所以「升级」会悄悄退化成 git clone；两者都不通最后才报错。
@@ -943,6 +983,21 @@ stage_source() { # 把最新代码放到 $1（一个空目录）。失败返回�
     rm -rf "$stage/clone"
   fi
   return 1
+}
+
+# 源码包 / 克隆出来的 stage 里那份 install.sh，如果比正在跑的这份旧，
+# 就用正在跑的替换掉。理由见 stage_source 里的注释：包里的脚本不该有
+# 「把手上更新的脚本顶回去」的权力。
+_prefer_self_script() { # stage
+  local stage="$1" packaged="$1/install.sh" mine=""
+  [ -n "$SELF_DIR" ] && [ -f "$SELF_PATH" ] && mine="$SELF_PATH"
+  [ -n "$mine" ] || return 0
+  [ "$(_canon_dir "$mine")" = "$(_canon_dir "$packaged" 2>/dev/null || echo "")" ] && return 0
+  if [ -f "$packaged" ] && ! version_lt "$(script_version "$packaged")" "$(script_version "$mine")"; then
+    return 0
+  fi
+  mkdir -p "$stage"
+  cp -f "$mine" "$packaged" 2>/dev/null || true
 }
 
 # 用户放在 app/ 里的自定义文件：换代码前挪走，换完放回来。
@@ -971,12 +1026,27 @@ stash_user_files() { # 返回暂存目录（没有要留的就返回空）
 # 于是从仓库目录装出来的机器，第一次升级就把自己的 install.sh 弄丢，
 # `simpleurl upgrade / doctor / uninstall` 从此一律报「缺少 install.sh」。
 # 现在无条件留影子：有就留，没有就把正在跑的这份（$SELF_PATH）留一份。
+#
+# 「留谁」要挑一下：原来一律优先安装目录里那份，于是「从别处拷一份新脚本装过去」
+# 会反过来被旧脚本顶掉 —— 实测把 v2.8 拷到 /tmp 再 `bash /tmp/install.sh --dir /tmp/su`，
+# 安装目录里躺着 v2.7，落盘判据看到「待更新 2.8 vs 当前 2.7」本来是升级，
+# 但传给 pending 的却是 v2.7 那份，于是屏幕上「安装完成 v2.7.0」、
+# 安装目录里的脚本原封不动 —— 人以为换了壳，其实白跑一轮。
+# 判据和 self_update_script 一致：谁新留谁；一样时优先安装目录里那份（它是「正主」）。
 preserve_self() { # stage
-  local stage="$1" src=""
+  local stage="$1" src="" dirver="" selfver=""
   if [ -f "$INSTALL_DIR/install.sh" ]; then
     src="$INSTALL_DIR/install.sh"
   elif [ -n "$SELF_DIR" ] && [ -f "$SELF_PATH" ]; then
     src="$SELF_PATH"
+  fi
+  if [ -f "$INSTALL_DIR/install.sh" ] && [ -n "$SELF_DIR" ] && [ -f "$SELF_PATH" ] \
+     && [ "$(_canon_dir "$SELF_PATH")" != "$(_canon_dir "$INSTALL_DIR/install.sh")" ]; then
+    dirver="$(script_version "$INSTALL_DIR/install.sh")"
+    selfver="$(script_version "$SELF_PATH")"
+    if version_lt "$dirver" "$selfver"; then
+      src="$SELF_PATH"
+    fi
   fi
   [ -n "$src" ] || return 0
   cp -f "$src" "$stage/.install.sh.before" 2>/dev/null || return 0
@@ -995,12 +1065,21 @@ apply_source() { # stage
   # 这一对必须成对出现，少一半就是两种事故：先拷后删 = 把自己正在跑的脚本删掉
   # （upgrade 中途整份脚本消失）；先删后不拷 = 安装目录里再没有 install.sh，
   # 之后的 upgrade / doctor / uninstall 一律报「缺少 install.sh」。
+  local _incoming=""
   if [ -f "$stage/install.sh" ]; then
-    if [ -f "$INSTALL_DIR/install.sh" ] && cmp -s "$stage/install.sh" "$INSTALL_DIR/install.sh"; then
+    _incoming="$stage/install.sh"
+  elif [ -n "${SELF_SNAPSHOT:-}" ] && [ -f "$SELF_SNAPSHOT" ]; then
+    # 源码包里没带 install.sh（CNB 的包就是这样）：影子是唯一能拿到的脚本。
+    # 这一支以前不存在，于是「装的是本地新脚本」这条路上 pending 永远立不起来，
+    # 落盘的还是安装目录里那份旧的。
+    _incoming="$SELF_SNAPSHOT"
+  fi
+  if [ -n "$_incoming" ]; then
+    if [ -f "$INSTALL_DIR/install.sh" ] && cmp -s "$_incoming" "$INSTALL_DIR/install.sh"; then
       # 一模一样，不用更新（也就不用留 pending）
       rm -f "$stage/install.sh"
     else
-      cp -f "$stage/install.sh" "$INSTALL_DIR/.install.sh.pending"
+      cp -f "$_incoming" "$INSTALL_DIR/.install.sh.pending"
       SELF_UPDATE_PENDING="y"
       rm -f "$stage/install.sh"
     fi
@@ -1389,6 +1468,7 @@ write_env() {
   cat > "$file" <<EOF
 # SimpleURL 配置，由 install.sh $VERSION 生成于 $(date '+%Y-%m-%d %H:%M:%S')
 # 改完执行 simpleurl restart 生效；也可以 simpleurl config 直接编辑
+# 登录只用下面这组账号密码；脚本 / CI 用的令牌入口默认关闭，要开自己加。
 SITE_NAME=$SITE_NAME
 HOST=0.0.0.0
 PORT=$PORT
@@ -1397,7 +1477,7 @@ ACCESS_MODE=$ACCESS_MODE
 DATABASE_URL=$DATABASE_URL
 SECRET_KEY=$SECRET_KEY
 TZ=${TZ:-Asia/Shanghai}
-# 后台凭据：登录页用账号密码；ADMIN_TOKEN 是脚本 / CI 的兼容入口（X-Admin-Token 头）
+# 后台凭据：登录页用账号密码
 ADMIN_USERNAME=$ADMIN_USER
 ADMIN_PASSWORD=$ADMIN_PASS
 EOF
@@ -2281,8 +2361,14 @@ site_status() {
   return 0
 }
 
-# 备份数据库与配置。失败要当场说清楚是「目录建不出来」还是「打包失败」——
-# 以前这两步都不看返回值，屏幕上只剩一条 mkdir 的原生报错，人还以为备份成了。
+# 备份数据库与配置。
+#
+# 以前这里是一条 tar 打包命令，看着挺对，实际上打包的是**主库文件**：
+# 站点开着 WAL，最近的写入先落在 simpleurl.db-wal 里，主库可能还是几 MB 之前的
+# 样子，而 -wal 压根没进包。更糟的是失败方式 —— backup 说「已备份到」，
+# restore 说「已恢复，服务已重启」，两条都成功，丢的数据要等下次用才发现。
+# 现在打包前先用 sqlite 自己折一份自包含的单文件（VACUUM INTO，合并 WAL、
+# 不留半截事务），折不出来就失败并说清原因，不拿一个能解压的坏包冒充成功。
 do_backup() {
   local out="${1:-$HOME/simpleurl-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
   local dir; dir="$(dirname "$out")"
@@ -2297,32 +2383,128 @@ do_backup() {
     else
       warn "备份失败（容器没起来或数据卷为空）"; return 2
     fi
+    return 0
+  fi
+  if [ ! -f "$DIR/simpleurl.db" ]; then warn "没有数据库文件可备份：$DIR/simpleurl.db"; return 2; fi
+  local py="$DIR/.venv/bin/python" result rc=0
+  if [ -x "$py" ] && [ -f "$DIR/app/core/archive.py" ]; then
+    # 走应用里的同一套实现：命令行备份和后台「下载备份」必须产出同一种东西，
+    # 否则「脚本说能恢复、后台下回来的却缺最近的链接」这种事迟早会发生。
+    result="$(cd "$DIR" && "$py" - "$out" <<'PYEOF' 2>&1
+import sys
+from pathlib import Path
+from app import __version__
+from app.core.archive import ArchiveError, build_archive, env_file_for, sqlite_path
+from app.core.config import settings
+
+out = Path(sys.argv[1])
+db = sqlite_path(settings.database_url)
+try:
+    info = build_archive(db, env_file_for(settings.database_url), out, version=__version__)
+except ArchiveError as exc:
+    print(f"FAIL {exc}")
+    raise SystemExit(2)
+size = info["size"]
+human = f"{size/1024:.0f}KB" if size < 1024 * 1024 else f"{size/1024/1024:.1f}MB"
+count = "—" if info["links"] is None else info["links"]
+print(f"OK|{human}|{count}")
+PYEOF
+)" || rc=$?
+    # 用 | 分隔返回一行摘要：空格分隔的话「3 KB」会被拆成两个字段，
+    # 屏幕上就会打出「已备份到 xx（3，含 KB 条链接）」这种话。
+    case "$result" in
+      OK\|*)
+        local human count rest
+        human="${result#OK|}"; count="${human#*|}"; human="${human%%|*}"
+        say "已备份到 $out（${human}，含 ${count} 条链接）"
+        return 0 ;;
+      FAIL*) warn "备份失败：${result#FAIL }"; return 2 ;;
+      *) : ;;
+    esac
+    [ "$rc" = "0" ] && { say "已备份到 $out"; return 0; }
+    warn "应用里的备份逻辑跑不起来（${result:-无输出}），退回直接打包"
+  fi
+  # 兜底：没有 venv / 代码不全时的老路，但至少把 -wal / -shm 一起带走 ——
+  # 三个文件凑齐，解出来的库才是完整的（SQLite 会自己回放 WAL）。
+  local files=(simpleurl.db)
+  [ -f "$DIR/simpleurl.db-wal" ] && files+=("simpleurl.db-wal")
+  [ -f "$DIR/simpleurl.db-shm" ] && files+=("simpleurl.db-shm")
+  files+=(.env)
+  if tar -czf "$out" -C "$DIR" "${files[@]}" 2>/dev/null; then
+    warn "已备份到 $out（直接打包，含 WAL；建议 venv 修好后再备份一次）"
   else
-    if [ ! -f "$DIR/simpleurl.db" ]; then warn "没有数据库文件可备份：$DIR/simpleurl.db"; return 2; fi
-    if tar -czf "$out" -C "$DIR" simpleurl.db .env 2>/dev/null; then
-      say "已备份到 $out（$(du -h "$out" 2>/dev/null | cut -f1)）"
-    else
-      warn "打包失败：$out"; return 2
-    fi
+    warn "打包失败：$out"; return 2
   fi
 }
 
 # 从备份里恢复数据。只覆盖数据库和配置，代码不动。
+# 恢复前先把现有的库留一份底 —— 恢复错包的代价比备份错包大得多。
 do_restore() {
-  local src="${1:-}" tmp
+  local src="${1:-}" tmp py rc=0 out keep
   [ -n "$src" ] && [ -f "$src" ] || { warn "用法：simpleurl restore <备份文件.tar.gz>"; return 2; }
   if [ "$RUNTIME" = "docker" ]; then
     warn "容器模式请手动恢复：docker run --rm -v ${NAME}-data:/data -v $(dirname "$src"):/b alpine tar -xzf /b/$(basename "$src") -C /data"
     return 2
   fi
+  py="$DIR/.venv/bin/python"
+  if [ -x "$py" ] && [ -f "$DIR/app/core/archive.py" ]; then
+    out="$(cd "$DIR" && "$py" - "$src" <<'PYEOF' 2>&1
+import shutil, sys, tempfile
+from pathlib import Path
+from app.core.archive import ArchiveError, extract_db, verify
+from app.core.config import settings
+from app.core.archive import sqlite_path
+
+src = Path(sys.argv[1])
+target = sqlite_path(settings.database_url)
+if target is None:
+    print("FAIL 当前不是文件型 SQLite"); raise SystemExit(2)
+work = Path(tempfile.mkdtemp(prefix="su-restore-"))
+try:
+    if src.read_bytes()[:2] == b"\x1f\x8b":
+        db, _env, _note = extract_db(src, work)
+    else:
+        db = work / "snapshot.db"; shutil.copyfile(src, db)
+    links = verify(db)
+    stamp = __import__("time").strftime("%Y%m%d-%H%M%S")
+    keep = target.with_name(f".restore-backup-{stamp}.db")
+    if target.is_file():
+        shutil.copyfile(target, keep)
+    shutil.copyfile(db, target)
+    for suffix in ("-wal", "-shm"):
+        Path(str(target) + suffix).unlink(missing_ok=True)
+    print(f"OK {links} {keep}")
+except ArchiveError as exc:
+    print(f"FAIL {exc}"); raise SystemExit(2)
+finally:
+    shutil.rmtree(work, ignore_errors=True)
+PYEOF
+)" || rc=$?
+    case "$out" in
+      OK\ *)
+        set -- $out
+        do_stop >/dev/null
+        do_start >/dev/null
+        say "已从 $src 恢复（$2 条链接），原库留底：$3，服务已重启"
+        return 0 ;;
+      FAIL\ *) warn "恢复失败：${out#FAIL }"; return 2 ;;
+    esac
+    [ "$rc" = "0" ] || { warn "恢复失败：${out:-无输出}"; return 2; }
+  fi
+  # 兜底：没有 venv 时按老办法解包覆盖。至少要能读出来再换，不然一个坏包就把站点换了。
   tmp="$(mktemp -d)"
-  tar -xzf "$src" -C "$tmp" 2>/dev/null || { warn "不是有效的备份包"; rm -rf "$tmp"; return 2; }
+  if ! tar -xzf "$src" -C "$tmp" 2>/dev/null || [ ! -f "$tmp/simpleurl.db" ]; then
+    warn "不是有效的备份包（里面没有 simpleurl.db）"; rm -rf "$tmp"; return 2
+  fi
   do_stop >/dev/null
-  [ -f "$tmp/simpleurl.db" ] && cp -a "$tmp/simpleurl.db" "$DIR/" && rm -f "$DIR/simpleurl.db-wal" "$DIR/simpleurl.db-shm"
+  keep="$DIR/.restore-backup-$(date +%Y%m%d-%H%M%S).db"
+  [ -f "$DIR/simpleurl.db" ] && cp -a "$DIR/simpleurl.db" "$keep"
+  cp -a "$tmp/simpleurl.db" "$DIR/"
+  rm -f "$DIR/simpleurl.db-wal" "$DIR/simpleurl.db-shm"
   [ -f "$tmp/.env" ] && cp -a "$tmp/.env" "$DIR/"
   rm -rf "$tmp"
   do_start >/dev/null
-  say "已从 $src 恢复，服务已重启"
+  say "已从 $src 恢复，原库留底：$keep，服务已重启"
 }
 
 # 不带参数就报状态：敲下去是想知道「现在怎么样」，不是想读一屏用法。
@@ -2403,8 +2585,8 @@ simpleurl password              看当前管理员密码（只读）
 simpleurl password --reset      换成随机新密码
 simpleurl password 新密码       设成指定的密码
 simpleurl config              查看 / 编辑配置
-simpleurl backup [路径]        备份数据库与配置
-simpleurl restore <备份>       从备份恢复数据
+simpleurl backup [路径]        备份数据库与配置（先合并 WAL，包可直接还原）
+simpleurl restore <备份>       从备份恢复数据（先验包，再留底，再换）
 simpleurl upgrade             拉新代码升级（失败自动回滚数据）
 simpleurl doctor              环境体检
 simpleurl uninstall           卸载

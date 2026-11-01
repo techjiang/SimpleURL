@@ -436,12 +436,19 @@ class TestInstallV30:
         assert 'die "安装目录' in body
 
     def test_upgrade_finds_install_dir_from_existing_cli(self):
-        """从任意位置跑 `bash install.sh upgrade` 是最自然的用法。"""
+        """从任意位置跑 `bash install.sh upgrade` 是最自然的用法。
+
+        v2.8 把「从全局命令 / 影子命令反推安装目录」抽成了 `_installed_dir()`，
+        三条入口（install / doctor / upgrade）共用一份，所以断言钉在函数体上。
+        """
         src = self.text()
-        head = src[: src.index('  INSTALL_DIR="$HOME/simpleurl"')]
-        tail = src[src.index('  INSTALL_DIR="$HOME/simpleurl"'): src.index("# 8000 是")]
-        assert ".simpleurl-managed" in head
-        assert "local/bin/simpleurl" in tail, "装了但不在安装目录里跑时，得从 CLI 里认出真实目录"
+        assert ".simpleurl-managed" in src[: src.index("# 8000 是")]
+        start = src.index("_installed_dir() {")
+        body = src[start: start + src[start:].index("\n}\n")]
+        assert "local/bin/simpleurl" in body, "装了但不在安装目录里跑时，得从 CLI 里认出真实目录"
+        assert "_canon_dir" in body
+        cut = src.index("# 8000 是")
+        assert "_installed_dir" in src[src.index('elif [ -n "$SELF_DIR"'):cut]
 
     def test_user_static_files_survive_upgrade(self):
         """app/ 整体覆盖时，用户自己加的 site.css / site.js 不能被删。"""

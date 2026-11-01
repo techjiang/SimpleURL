@@ -51,7 +51,7 @@ def _params(request: Request) -> dict:
 
 
 class _FormCacheMiddleware(BaseHTTPMiddleware):
-    """把 POST 的表单 body 缓存到 request.state，供路由读取。
+    """把 YOURLS 接口的 POST 表单缓存到 request.state，供路由读取。
 
     Starlette 的 request.form() 只能读一次，且不同 httpx 版本下 TestClient
     发 form 的行为有差异，所以在中间件里统一读一次最稳妥。
@@ -59,10 +59,16 @@ class _FormCacheMiddleware(BaseHTTPMiddleware):
     读失败要记下原因：这里吞掉异常，路由那边就只剩「参数为空」，
     客户端明明发了一整份 form 却被告知缺 url —— 真正的病根（缺
     python-multipart）永远不会浮出水面。
+
+    **只看 /yourls-api 自己的路径**。原来这里对**所有** POST 都读一遍
+    request.form()：它把 body 读完之后不会放回去，于是任何 multipart 上传
+    走到路由就只剩空表单 —— FastAPI 报 `Field required: file`，看起来像
+    「客户端没传文件」。这个中间件本来只为 YOURLS 兼容层存在，
+    没有理由去动别人的请求体。
     """
 
     async def dispatch(self, request: Request, call_next):
-        if request.method == "POST":
+        if request.method == "POST" and request.url.path.startswith("/yourls-api"):
             try:
                 request.state.form = await request.form()
             except Exception as exc:  # noqa: BLE001 - 记下来，交给路由决定怎么报
